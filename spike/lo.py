@@ -60,7 +60,7 @@ def run_probe(fn, name):
     """
     ctx = uno.getComponentContext()
     path = evidence_path(name)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         def log(*parts):
             f.write(" ".join(str(p) for p in parts) + "\n")
             f.flush()
