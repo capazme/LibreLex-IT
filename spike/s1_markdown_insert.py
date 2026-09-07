@@ -8,27 +8,61 @@ from lo import PARAGRAPH_BREAK, new_writer_doc, paragraphs, prop, redlines, run_
 MD = "# Titolo inserito\n\nParagrafo con **grassetto** e *corsivo*.\n\n> Citazione in blocco.\n\n- uno\n- due\n"
 
 
+def _load_with_filter_fallback(load_fn, log):
+    """Call load_fn(filter_name), trying FilterName "Markdown" first and
+    falling back once to "Markdown (Writer)" if it raises. Shared by every
+    call site that loads/inserts the Markdown fixture, so the fallback rule
+    ("if FilterName 'Markdown' raises, catch, log, retry once with
+    'Markdown (Writer)'") applies uniformly rather than only to the primary
+    path. Returns (result_of_load_fn, filter_name_that_worked).
+    """
+    try:
+        result = load_fn("Markdown")
+        return result, "Markdown"
+    except Exception as exc:
+        log("FilterName 'Markdown' raised:", repr(exc))
+        log("retrying with FilterName 'Markdown (Writer)'")
+        result = load_fn("Markdown (Writer)")
+        return result, "Markdown (Writer)"
+
+
 def _insert_markdown_at_cursor(cur, log):
-    """Insert MD at cur via insertDocumentFromURL, trying FilterName "Markdown"
-    first and falling back to "Markdown (Writer)" if it raises. Returns the
-    filter name that worked.
+    """Insert MD at cur via insertDocumentFromURL, using the shared filter
+    fallback. Returns the filter name that worked.
     """
     tmpdir = pathlib.Path(tempfile.mkdtemp())
     md = tmpdir / "insert.md"
     md.write_text(MD, encoding="utf-8")
     url = uno.systemPathToFileUrl(str(md))
     try:
-        try:
-            cur.insertDocumentFromURL(url, (prop("FilterName", "Markdown"),))
-            filter_used = "Markdown"
-        except Exception as exc:
-            log("FilterName 'Markdown' raised:", repr(exc))
-            log("retrying with FilterName 'Markdown (Writer)'")
-            cur.insertDocumentFromURL(url, (prop("FilterName", "Markdown (Writer)"),))
-            filter_used = "Markdown (Writer)"
+        _, filter_used = _load_with_filter_fallback(
+            lambda name: cur.insertDocumentFromURL(url, (prop("FilterName", name),)),
+            log,
+        )
     finally:
         md.unlink()
     return filter_used
+
+
+def _load_scratch_markdown(desktop, log):
+    """Load MD into a hidden scratch Writer doc via loadComponentFromURL,
+    using the same shared filter fallback as the primary path. Returns
+    (scratch_doc, filter_name_that_worked).
+    """
+    tmpdir = pathlib.Path(tempfile.mkdtemp())
+    md = tmpdir / "insert.md"
+    md.write_text(MD, encoding="utf-8")
+    url = uno.systemPathToFileUrl(str(md))
+    try:
+        scratch, filter_used = _load_with_filter_fallback(
+            lambda name: desktop.loadComponentFromURL(
+                url, "_blank", 0, (prop("Hidden", True), prop("FilterName", name))
+            ),
+            log,
+        )
+    finally:
+        md.unlink()
+    return scratch, filter_used
 
 
 def _log_paragraphs(doc, log):
@@ -89,13 +123,7 @@ def variant(ctx, log):
     """Load the markdown into a hidden scratch doc, copy all, paste at the cursor while recording."""
     log("=== VARIANT: scratch doc + insertTransferable ===")
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
-    tmpdir = pathlib.Path(tempfile.mkdtemp())
-    md = tmpdir / "insert.md"
-    md.write_text(MD, encoding="utf-8")
-    scratch = desktop.loadComponentFromURL(
-        uno.systemPathToFileUrl(str(md)), "_blank", 0,
-        (prop("Hidden", True), prop("FilterName", "Markdown")))
-    md.unlink()
+    scratch, filter_used = _load_scratch_markdown(desktop, log)
     scratch_ctrl = scratch.CurrentController
     scratch_ctrl.select(scratch.Text)  # select everything
     transferable = scratch_ctrl.getTransferable()
@@ -107,19 +135,23 @@ def variant(ctx, log):
     text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
     text.insertString(cur, "Terzo paragrafo.", False)
 
-    # ViewCursor (com.sun.star.text.TextViewCursor) does not implement
-    # XParagraphCursor, so gotoEndOfParagraph is not available on it as the
-    # brief assumed. Compute the target range with a plain text cursor
-    # instead, then move the view cursor onto that range: insertTransferable
-    # inserts at the view cursor's position.
+    # ViewCursor (com.sun.star.text.TextViewCursor) was observed to not
+    # support gotoEndOfParagraph in this headless/Hidden-document setup (see
+    # diagnostic below), unlike the brief's snippet assumed. Compute the
+    # target range with a plain text cursor instead, then move the view
+    # cursor onto that range: insertTransferable inserts at the view
+    # cursor's position.
     cur.gotoStart(False)
     cur.gotoEndOfParagraph(False)
+    log("DIAGNOSTIC: doc.CurrentController is None:", doc.CurrentController is None)
     vc = doc.CurrentController.ViewCursor
+    log("DIAGNOSTIC: hasattr(ViewCursor, 'gotoEndOfParagraph'):", hasattr(vc, "gotoEndOfParagraph"))
     vc.gotoRange(cur, False)
     doc.RecordChanges = True
     doc.CurrentController.insertTransferable(transferable)
     doc.RecordChanges = False
 
+    log("FILTER USED:", filter_used)
     log("--- VARIANT paragraphs ---")
     _log_paragraphs(doc, log)
     log("--- VARIANT redlines ---")
