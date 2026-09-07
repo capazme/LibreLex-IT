@@ -1,0 +1,2 @@
+PARAGRAPHS: [('Standard', 'ciao')]
+LO VERSION: 26.8.0.3
