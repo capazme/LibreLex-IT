@@ -87,21 +87,19 @@ full diagnostic chain. M1 will need a real (non-sandboxed) machine to
 
 ## Finding 5 — Markdown import filter
 
-First LibreOffice version with Markdown *import* in Writer: not established;
-26.8 verified empirically (Task 2). Checked in a real browser on 2026-09-07
-(no anti-bot block encountered): the release notes for
-https://wiki.documentfoundation.org/ReleaseNotes/25.8 and
-https://wiki.documentfoundation.org/ReleaseNotes/25.2 both loaded fully but
-contain no mention of "Markdown" anywhere (confirmed with an in-page text
-search on each), so neither release introduced or changed the feature per
-TDF's own change log, and the version genuinely introducing it lies earlier
-and was out of scope for this check (see task-6-brief.md step 1). The only
-primary source that does describe the feature is
-https://help.libreoffice.org/latest/en-US/text/swriter/guide/markdown.html
-("LibreOffice Writer can open and save files in the Markdown (.md) file
-format, as well as paste Markdown content in a text document."), but that
-page documents current ("latest", i.e. 26.8) behaviour and carries no
-version number for when import was added. The extension refuses to start on
-older versions (spec §4.5); absent an authoritative minimum, it should gate
-on 26.8 (the empirically verified floor from Task 2) rather than guess an
-earlier cutoff.
+First LibreOffice version with Markdown *import* in Writer: **26.2**, per
+https://wiki.documentfoundation.org/ReleaseNotes/26.2 ("Added support for
+importing from Markdown format, either via files or via the clipboard.
+(Ujjawal Kumar) tdf#162153"). The same release notes page also records
+Markdown export as a separate, simultaneous addition ("Added support for
+exporting to Markdown format ... tdf#160734 tdf#168152 tdf#168172 tdf#168317
+tdf#168341 tdf#168662") and Markdown-template support for import ("Added
+support for using ODT/DOCX templates while importing a Markdown document").
+Checked in a real browser on 2026-09-07 (no anti-bot block encountered):
+the 25.8 and 25.2 release notes contain no mention of "Markdown" (checked
+previously), confirming the feature is newer than 25.8; the 26.2 notes list
+it under a dedicated "Markdown" heading in the Filters section; the 26.8
+notes were also checked and contain no mention of "Markdown" at all (no new
+changes for that release — the filter was already introduced in 26.2 and
+untouched since). The extension refuses to start on older versions (spec
+§4.5); it should gate on LibreOffice **26.2** as the minimum version.
