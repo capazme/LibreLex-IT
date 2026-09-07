@@ -1,0 +1,10 @@
+ORIGINAL PROFILE NAME: ('', '')
+PROBE A: no writable RedlineAuthor on the document: com.sun.star.beans.UnknownPropertyException
+AFTER PROBE A: [('Insert', 'Unknown Author', '<no RedlineText>')]
+AFTER PROBE A getString(): ['<getString() failed: com.sun.star.uno.RuntimeException>']
+AFTER PROBE B: [('Insert', 'Unknown Author', '<no RedlineText>'), ('Insert', 'LibreLex', '<no RedlineText>')]
+AFTER PROBE B getString(): ['<getString() failed: com.sun.star.uno.RuntimeException>', '<getString() failed: com.sun.star.uno.RuntimeException>']
+RESTORED PROFILE NAME: ('', '')
+AFTER RESTORE: [('Insert', 'Unknown Author', '<no RedlineText>'), ('Insert', 'LibreLex', '<no RedlineText>'), ('Insert', 'Unknown Author', '<no RedlineText>')]
+AFTER RESTORE getString(): ['<getString() failed: com.sun.star.uno.RuntimeException>', '<getString() failed: com.sun.star.uno.RuntimeException>', '<getString() failed: com.sun.star.uno.RuntimeException>']
+AUTHORS: before='Unknown Author' during='LibreLex' after='Unknown Author'
