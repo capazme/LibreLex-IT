@@ -18,3 +18,6 @@ config.toml
 
 # macOS
 .DS_Store
+
+# Phase 0 spike: throwaway LibreOffice profile (never the real user profile)
+spike/lo_profile/

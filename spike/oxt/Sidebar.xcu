@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Derived from LibreThinker (https://github.com/mihailthebuilder/librethinker-extension), MPL-2.0. -->
+<oor:component-data oor:name="Sidebar" oor:package="org.openoffice.Office.UI"
+    xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <node oor:name="Content">
+    <node oor:name="DeckList">
+      <node oor:name="LibreLexSpikeDeck" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">LibreLex spike</value></prop>
+        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexSpikeDeck</value></prop>
+        <prop oor:name="ContextList"><value oor:separator=";">Writer, any, visible ;</value></prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int"><value>700</value></prop>
+      </node>
+    </node>
+    <node oor:name="PanelList">
+      <node oor:name="LibreLexSpikePanel" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">Streaming test</value></prop>
+        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexSpikePanel</value></prop>
+        <prop oor:name="DeckId" oor:type="xs:string"><value>LibreLexSpikeDeck</value></prop>
+        <prop oor:name="ContextList"><value oor:separator=";">Writer, any, visible ;</value></prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/LibreLexSpikeFactory/Panel</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int"><value>100</value></prop>
+        <prop oor:name="WantsCanvas" oor:type="xs:boolean"><value>false</value></prop>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

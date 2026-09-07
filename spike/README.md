@@ -62,3 +62,25 @@ desktop afterwards so soffice exits.
 
 Each run writes `spike/evidence/<probe name>.txt`. These files are checked
 in as evidence of what each probe found on this LibreOffice install.
+
+## Known environment limitation: out-of-process UNO bridges are killed
+
+The same restriction that forces the run-as-macro convention above also
+breaks `unopkg add`'s internal "enable" step for a `.oxt` bundling a Python
+UNO component: `unopkg` copies the package into the profile fine, but
+enabling/registering the Python component requires `unopkg` to spawn a
+child `soffice` and validate the component over an out-of-process UNO pipe
+bridge. In this environment that bridge is refused
+(`com.sun.star.connection.NoConnectException`), and directly reproducing
+the same bridge with LibreOffice's bundled
+`Contents/Resources/python -c "import uno; ...resolve(...)"` against a
+`soffice --accept="pipe,...;urp;"` confirms it: the python process is
+SIGKILLed (exit 137), the exact same signature already seen for connecting
+over a socket. `spike/build_oxt.sh` (Task 5) still runs the literal
+`unopkg add`/`list` commands and prints their real output for the record,
+but the extension ends up copied and *not* registered
+(`is registered: no`); the headless registration check
+(`spike/evidence/s4_registration.txt`) reflects that honestly. This is an
+environment restriction, not a packaging bug — see task-5-report.md for the
+full diagnostic chain. M1 will need a real (non-sandboxed) machine to
+`unopkg add`/test extensions.
