@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-07
 - **Status:** Draft for review (brainstorming output, pre-implementation)
-- **Owner:** Giuseppe Puzio (capazme)
+- **Owner:** Guglielmo Puzio (capazme)
 - **License of the project:** Apache-2.0 (see §4.6 for third-party code rules)
 
 ## 1. Summary
