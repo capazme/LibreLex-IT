@@ -60,7 +60,7 @@ without it being checked against Normattiva / EUR-Lex / Italgiure.
 | 4 | v1 scope | All four capabilities in §1.1, phased (§11) | User choice |
 | 5 | Topology | Thin `.oxt` + local `librelex-core` over stdio (Option 1) | Full Python ecosystem in the core, testable without LibreOffice, no open ports; see §4.1 |
 | 6 | Existing projects | Own Apache-2.0 codebase; reuse MPL-2.0/MIT code with headers, GPL projects as pattern only | See §3 |
-| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8: headings → "Heading N", body → "Text body", blockquote → "Quotations", lists → list styles |
+| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8 by headless conversion (headings → "Heading N", body → "Text body", blockquote → "Quotations", list items → "Text body" paragraphs carrying a list style); the cursor-insertion probe re-verified body, blockquote and list items, while its heading merged into the cursor paragraph (see §5.4) |
 | 8 | Review UX | Tracked changes for writes, comments for verification | Unanimous pattern of commercial legal copilots; zero custom diff UI |
 
 ## 3. Prior art and reuse
@@ -253,7 +253,10 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
    and unlinks the file immediately. Before the call, the adapter inserts a
    paragraph break (or positions the cursor at the start of an empty
    paragraph), because otherwise the first Markdown paragraph merges into the
-   cursor's paragraph and loses its style.
+   cursor's paragraph and loses its style. The insertion also leaves a
+   trailing empty paragraph (evidence: `spike/evidence/s1_markdown_insert.txt`),
+   which the adapter removes before computing the inserted range and the
+   bookmark.
 2. Before inserting it enables `RecordChanges` if it was off, and restores the
    previous state afterwards.
 3. Author of the revision: `RedlineAuthor` is not writable through the UNO API
@@ -272,7 +275,8 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
    (e.g. the SAPG canon: Times New Roman 12, 1.5 spacing).
 6. Redline text must not be read from the redline object: `RedlineText` is
    `None` and `redline.getString()` raises `RuntimeException`; use
-   `RedlineStart`/`RedlineEnd` ranges if the text is ever needed. View-cursor
+   `RedlineStart`/`RedlineEnd` ranges if the text is ever needed (unverified;
+   to be settled in M1). View-cursor
    paragraph navigation (e.g. `gotoEndOfParagraph`) is unavailable on hidden
    documents, so the adapter positions with text cursors.
 
@@ -288,7 +292,8 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
   a last resort anchors at the paragraph start and says so in the comment
   text. The result is reported (`exact` / `found` / `paragraph_start`).
 - Citations inside footnotes: comments are placed inside footnotes directly
-  (verified accepted).
+  (verified accepted headless; on-screen rendering is covered by the manual
+  smoke checklist).
 - Orphan rule: after every `insertTextContent` the adapter checks
   `Anchor.getString()` against the expected text and removes the annotation
   field if the anchor is empty, because a rejected insertion leaves an orphan
@@ -606,7 +611,7 @@ core reads `serverInfo.version` at handshake.
 
 | Phase | Content | Exit criterion |
 |-------|---------|----------------|
-| 0 · Spike (time-boxed) | Validate the four open assumptions of §12 in LibreOffice 26.8 | Findings written back into this spec |
+| 0 · Spike (time-boxed) | Validate the five open assumptions of §12 in LibreOffice 26.8 | Findings written back into this spec |
 | M1 · Backbone + cite & verify | Repo, protocol, bridge, sidebar panel (transcript, status and quick actions; the free-chat input is disabled until M2), document adapter, MCP client with allowlist, extractor, verify pipeline, insert norm, config + consent | Verify a real act and insert a norm from the panel, no LLM required |
 | M2 · Copilot + research | LLM client, agent loop, research profile, grounding on write, context trimming, usage/cost | Ask for precedents and get verified massime inserted as tracked changes |
 | M3 · Drafting | Draft profile, multi-turn data collection, section-by-section insertion with calculators | Draft a decreto ingiuntivo from the template with computed amounts |
