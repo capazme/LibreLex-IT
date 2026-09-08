@@ -70,6 +70,16 @@ done
 if [ "$TIMED_OUT" -eq 1 ]; then
   echo "TIMEOUT: soffice did not exit within 120s, killing pid $SOFFICE_PID" >&2
   kill "$SOFFICE_PID" 2>/dev/null || true
+  KILL_WAITED=0
+  while kill -0 "$SOFFICE_PID" 2>/dev/null; do
+    if [ "$KILL_WAITED" -ge 5 ]; then
+      echo "soffice pid $SOFFICE_PID still alive after SIGTERM, sending SIGKILL" >&2
+      kill -9 "$SOFFICE_PID" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+    KILL_WAITED=$((KILL_WAITED + 1))
+  done
 fi
 
 wait "$SOFFICE_PID" 2>/dev/null || true

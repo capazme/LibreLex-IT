@@ -81,9 +81,13 @@ over a socket. `spike/build_oxt.sh` (Task 5) still runs the literal
 but the extension ends up copied and *not* registered
 (`is registered: no`); the headless registration check
 (`spike/evidence/s4_registration.txt`) reflects that honestly. This is an
-environment restriction, not a packaging bug — see task-5-report.md for the
-full diagnostic chain. M1 will need a real (non-sandboxed) machine to
-`unopkg add`/test extensions.
+environment restriction, not a packaging bug. Full transcript of a real run:
+`spike/evidence/s4_unopkg.txt`; the relevant lines are the `unopkg add`
+failure, `ERROR: Exception occurred: An error occurred while enabling:
+librelex_spike.py: com.sun.star.connection.NoConnectException "Connector :
+couldn't connect to pipe ...`, and the resulting `unopkg list` showing
+`is registered: no` for the package and every bundled component. M1 will
+need a real (non-sandboxed) machine to `unopkg add`/test extensions.
 
 ## Finding 5 — Markdown import filter
 
@@ -103,3 +107,6 @@ notes were also checked and contain no mention of "Markdown" at all (no new
 changes for that release — the filter was already introduced in 26.2 and
 untouched since). The extension refuses to start on older versions (spec
 §4.5); it should gate on LibreOffice **26.2** as the minimum version.
+
+The spike .oxt still declares minimal version 4.1; the real extension must
+declare LibreOffice 26.2.

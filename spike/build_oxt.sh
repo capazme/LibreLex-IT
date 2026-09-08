@@ -33,7 +33,9 @@ kill_leftover_soffice() {
   local pids
   pids="$(ps ax -o pid=,command= | grep -F "$PROFILE_DIR" | grep -F soffice | grep -v grep | awk '{print $1}' || true)"
   if [ -n "$pids" ]; then
-    echo "Killing leftover soffice process(es) locked to $PROFILE_DIR: $pids" >&2
+    # This also kills any GUI instance the user opened on this same profile
+    # (e.g. following the manual-test instructions this script prints below).
+    echo "closing leftover soffice on spike/lo_profile: $pids" >&2
     kill $pids 2>/dev/null || true
     sleep 2
   fi
@@ -142,3 +144,4 @@ echo
 echo "Installed into the private spike profile. To do the manual GUI test, open LibreOffice with:"
 echo "  $SOFFICE -env:UserInstallation=$PROFILE_URL"
 echo "Then in Writer: View > Sidebar > \"LibreLex spike\" > \"Start stream\", and type in the document during the stream."
+echo "Close the LibreOffice window opened on this profile before re-running this script."
