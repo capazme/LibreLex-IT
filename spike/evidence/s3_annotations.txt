@@ -1,0 +1,13 @@
+FOOTNOTE INSERT: ok, string = 'Cfr. Cass. sez. III n. 12345/2024.'
+--- after body annotation ---
+author='LibreLex · verifica' content='commento nel corpo' anchor='art. 2043 c.c.' range=''
+TARGET INTACT AFTER BODY ANNOTATION: yes -> "Come previsto dall'art. 2043 c.c., il danno va risarcito.1"
+FOOTNOTE ANNOTATION: accepted
+--- after footnote attempt ---
+author='LibreLex · verifica' content='commento nel corpo' anchor='art. 2043 c.c.' range=''
+author='LibreLex · verifica' content='commento nella nota' anchor='Cass. sez. III n. 12345/2024' range=''
+FALLBACK ANCHOR ANNOTATION: rejected -> com.sun.star.uno.RuntimeException no SwTextAttr inserted?
+--- after anchor fallback ---
+author='LibreLex · verifica' content='commento nel corpo' anchor='art. 2043 c.c.' range=''
+author='LibreLex · verifica' content="commento sull'ancora della nota" anchor='' range=''
+author='LibreLex · verifica' content='commento nella nota' anchor='Cass. sez. III n. 12345/2024' range=''

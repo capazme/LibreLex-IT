@@ -60,7 +60,7 @@ without it being checked against Normattiva / EUR-Lex / Italgiure.
 | 4 | v1 scope | All four capabilities in §1.1, phased (§11) | User choice |
 | 5 | Topology | Thin `.oxt` + local `librelex-core` over stdio (Option 1) | Full Python ecosystem in the core, testable without LibreOffice, no open ports; see §4.1 |
 | 6 | Existing projects | Own Apache-2.0 codebase; reuse MPL-2.0/MIT code with headers, GPL projects as pattern only | See §3 |
-| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8: headings → "Heading N", body → "Text body", blockquote → "Quotations", lists → list styles |
+| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8 by headless conversion (headings → "Heading N", body → "Text body", blockquote → "Quotations", list items → "Text body" paragraphs carrying a list style); the cursor-insertion probe re-verified body, blockquote and list items, while its heading merged into the cursor paragraph (see §5.4) |
 | 8 | Review UX | Tracked changes for writes, comments for verification | Unanimous pattern of commercial legal copilots; zero custom diff UI |
 
 ## 3. Prior art and reuse
@@ -74,7 +74,7 @@ deep-dive on WriterAgent). Summary of what is reused and under which terms.
 | [WriterAgent](https://github.com/KeithCu/writeragent) | GPL-3.0+ (MPL-2.0 until 2026) | Patterns only: streaming UI via `queue.Queue` + drain loop on the UI thread with `processEventsToIdle()` batched at 250 ms; `RecordChanges` + `XRedlinesSupplier`; anchored annotations | No code copied. Not usable as a base: agent loop embedded in the extension, no plugin loader, MCP *server* only (never client), "ACP" backend experimental |
 | [mcp-libre](https://github.com/patrup/mcp-libre) | MIT | Structured document reading over UNO | Code with attribution in NOTICE |
 | [localwriter](https://github.com/balisujohn/localwriter) | MPL-2.0 (+ CC-BY-SA parts) | Config handling and selection read/replace patterns | Pattern; MPL files allowed if copied |
-| LibreOffice Writer `Markdown` filter | native (LibreOffice ≥ version to be fixed in the spike; 26.8 verified) | Markdown → styled paragraphs at the cursor | `XDocumentInsertable.insertDocumentFromURL` with `FilterName = "Markdown"` |
+| LibreOffice Writer `Markdown` filter | native, LibreOffice ≥ 26.2 (26.8 verified) | Markdown → styled paragraphs at the cursor | `XDocumentInsertable.insertDocumentFromURL` with `FilterName = "Markdown"` |
 | VisuaLexAPI `visualex_api/tools/citation_linker.py` | own code | Norm-citation extractor with positions (state machine, 267 lines) | Ported into `librelex_core.citations` |
 | mcp-legal-it `verifica_citazioni` regexes | Apache-2.0 (own) | Judgment-citation patterns | Ported / kept in sync |
 | [Linkoln 3](https://gitlab.com/IGSG/LINKOLN/linkoln) (IGSG-CNR) | Apache-2.0, Java, JAR 3.4.4 (Jul 2026) | Test oracle and reference grammar (URN-NIR, CELEX, ECLI) | Not a runtime dependency: needs a JRE; the online demo runs on a CNR server and must never receive client text |
@@ -182,8 +182,8 @@ LibreLex-IT/
 
 ### 4.5 Runtime requirements
 
-- LibreOffice with the `Markdown` import filter (26.8 verified; minimum version
-  fixed during the spike) and its bundled Python (3.13 on 26.8).
+- LibreOffice 26.2 or newer (Markdown import filter; 26.8 verified) and its
+  bundled Python (3.13 on 26.8).
 - `uv` on PATH (or a configured path), as already required by mcp-legal-it.
 - mcp-legal-it at or above the minimum version defined in §10.
 - An OpenAI-compatible endpoint (CLIProxyAPI, OpenRouter, Ollama, custom).
@@ -250,7 +250,13 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
 1. The adapter writes the markdown to a temporary file in a private directory
    (0700, file 0600), inserts it at the target cursor with
    `XDocumentInsertable.insertDocumentFromURL(url, [FilterName="Markdown"])`,
-   and unlinks the file immediately.
+   and unlinks the file immediately. Before the call, the adapter inserts a
+   paragraph break (or positions the cursor at the start of an empty
+   paragraph), because otherwise the first Markdown paragraph merges into the
+   cursor's paragraph and loses its style. The insertion also leaves a
+   trailing empty paragraph (evidence: `spike/evidence/s1_markdown_insert.txt`),
+   which the adapter removes before computing the inserted range and the
+   bookmark.
 2. Before inserting it enables `RecordChanges` if it was off, and restores the
    previous state afterwards.
 3. Author of the revision: `RedlineAuthor` is not writable through the UNO API
@@ -259,26 +265,39 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
    (`org.openoffice.UserProfile/Data`, keys `givenname`/`sn`) to "LibreLex"
    for the duration of the insertion and restores them in a `finally` block.
    Config flag `redline_author = "librelex" | "user"`, default `librelex`.
-   If the spike shows this to be fragile, the default becomes `user` and the
-   provenance lives in the undo label and in the bookmark.
+   Confirmed by the spike: verified, the next redline carries the new author
+   within the same session; the document has no writable `RedlineAuthor`
+   property.
 4. Every write is wrapped in one undo context named after the action
    ("LibreLex: inserisci art. 2043 c.c.").
 5. Only paragraph styles are applied (through the Markdown filter); no direct
    paragraph formatting, so inserted text inherits the document template
    (e.g. the SAPG canon: Times New Roman 12, 1.5 spacing).
+6. Redline text must not be read from the redline object: `RedlineText` is
+   `None` and `redline.getString()` raises `RuntimeException`; use
+   `RedlineStart`/`RedlineEnd` ranges if the text is ever needed (unverified;
+   to be settled in M1). View-cursor
+   paragraph navigation (e.g. `gotoEndOfParagraph`) is unavailable on hidden
+   documents, so the adapter positions with text cursors.
 
 ### 5.5 Comments
 
 - `com.sun.star.text.textfield.Annotation` with `Author`, `Content`,
   `DateTimeValue`, inserted with `insertTextContent(cursor, annotation, True)`
   on a cursor spanning the target range (pattern confirmed by three sources).
+  The range is read and validated through `Anchor.getString()` (`TextRange`
+  exists but is empty on 26.8).
 - Anchoring is verified: the adapter compares the range text with
   `expected_text`; on mismatch it searches the paragraph (`find_text`), and as
   a last resort anchors at the paragraph start and says so in the comment
   text. The result is reported (`exact` / `found` / `paragraph_start`).
-- Citations inside footnotes: the comment is anchored on the footnote anchor
-  in the body (Writer does not allow comments inside footnotes; behaviour
-  confirmed in the spike).
+- Citations inside footnotes: comments are placed inside footnotes directly
+  (verified accepted headless; on-screen rendering is covered by the manual
+  smoke checklist).
+- Orphan rule: after every `insertTextContent` the adapter checks
+  `Anchor.getString()` against the expected text and removes the annotation
+  field if the anchor is empty, because a rejected insertion leaves an orphan
+  field.
 
 ### 5.6 Provenance of inserted norms
 
@@ -518,11 +537,14 @@ notes).
    - LLM client on recorded HTTP fixtures: SSE streaming, tool-call
      reassembly across deltas.
    - Protocol: pydantic round-trips, line framing with large payloads.
-2. **Document adapter tests in headless LibreOffice**: pytest starts
-   `soffice --headless --accept=socket,...` with a private profile, opens a
-   fixture `.odt`, reads paragraphs and footnotes, inserts markdown under
-   `RecordChanges` and checks redlines and author, anchors a comment and
-   reads its range back, checks bookmarks. Runs in CI on Ubuntu.
+2. **Document adapter tests in headless LibreOffice**: pytest builds a
+   private profile, installs the `.oxt` with
+   `unopkg -env:UserInstallation=...`, and runs check macros launched via
+   `vnd.sun.star.script:` URLs on `soffice --headless` against a fixture
+   `.odt`; the macros read paragraphs and footnotes, insert markdown under
+   `RecordChanges` and check redlines and author, anchor a comment and read
+   its range back, check bookmarks, and write their results to files that
+   pytest reads. Runs in CI on Ubuntu.
 3. **End-to-end and live**: `make e2e` runs the core with a fake LLM and a
    real mcp-legal-it over stdio on a sample act in headless LibreOffice and
    checks the comments. Tests hitting Normattiva/Italgiure carry the `live`
@@ -538,6 +560,10 @@ The sidebar itself is covered by a manual smoke checklist.
   `unopkg add --force`) and requires a LibreOffice restart on every change,
   which is why it stays minimal. APSO for an in-app Python console during
   development only.
+- LibreOffice's bundled Python binary and unopkg's out-of-process helper
+  cannot be spawned from the automation harness on this macOS setup (both are
+  SIGKILLed), which is why tests drive LibreOffice through macros rather than
+  by connecting to it as an external process.
 
 ### 9.3 Packaging and versions
 
@@ -585,7 +611,7 @@ core reads `serverInfo.version` at handshake.
 
 | Phase | Content | Exit criterion |
 |-------|---------|----------------|
-| 0 · Spike (time-boxed) | Validate the four open assumptions of §12 in LibreOffice 26.8 | Findings written back into this spec |
+| 0 · Spike (time-boxed) | Validate the five open assumptions of §12 in LibreOffice 26.8 | Findings written back into this spec |
 | M1 · Backbone + cite & verify | Repo, protocol, bridge, sidebar panel (transcript, status and quick actions; the free-chat input is disabled until M2), document adapter, MCP client with allowlist, extractor, verify pipeline, insert norm, config + consent | Verify a real act and insert a norm from the panel, no LLM required |
 | M2 · Copilot + research | LLM client, agent loop, research profile, grounding on write, context trimming, usage/cost | Ask for precedents and get verified massime inserted as tracked changes |
 | M3 · Drafting | Draft profile, multi-turn data collection, section-by-section insertion with calculators | Draft a decreto ingiuntivo from the template with computed amounts |
@@ -602,22 +628,50 @@ chat.
 1. `insertDocumentFromURL` with `FilterName="Markdown"` inserts at the cursor
    (not only at document level) and the insertion is recorded as a redline
    when `RecordChanges` is on.
+   Result (2026-09-07): holds. `cursor.insertDocumentFromURL(url,
+   (FilterName="Markdown",))` inserts at the cursor and, with `RecordChanges`
+   on, is recorded as one redline of type `Insert` (`FILTER USED: Markdown`,
+   `REDLINE COUNT: 1`). Caveat: the first Markdown paragraph merges into the
+   cursor's paragraph and loses its style unless a paragraph break precedes
+   the insertion (now §5.4 item 1).
 2. Temporarily changing `org.openoffice.UserProfile/Data` first/last name
    makes the next redline carry "LibreLex" as author, and restoring it is
    reliable (`finally`, plus a startup check that the profile name is not
    left altered).
+   Result (2026-09-07): holds. Setting `givenname`/`sn` to "LibreLex" makes
+   the next redline carry that author, and restoring the values restores the
+   previous author within the same session (`AUTHORS: before='Unknown
+   Author' during='LibreLex' after='Unknown Author'`; `RESTORED PROFILE NAME`
+   equals `ORIGINAL PROFILE NAME`). The document itself has no writable
+   `RedlineAuthor` property (`UnknownPropertyException`).
 3. Annotations anchored to a range work in the body; in footnotes the fallback
    to the footnote anchor is needed.
+   Result (2026-09-07): holds, better than assumed. Body:
+   `Anchor.getString()` returns the exact anchored text (`'art. 2043
+   c.c.'`); `TextRange` exists but is empty on 26.8. Footnotes: an
+   annotation anchored on a range inside the footnote text is accepted
+   (`FOOTNOTE ANNOTATION: accepted`) — no fallback to the footnote anchor is
+   needed; anchoring on the footnote-anchor character in the body is
+   rejected and leaves an orphan annotation field (handled per §5.5).
 4. A Python sidebar panel built from an XDL dialog (LibreThinker skeleton)
    can be updated from a queue drained on the UI thread without freezing
    LibreOffice during streaming.
+   Result (2026-09-07): pending the user's GUI test; extension built and
+   statically verified; registration not verifiable from the automation
+   harness (unopkg's out-of-process helper is SIGKILLed like the bundled
+   Python, so `s4_registration.txt` shows `not None = False`).
 5. Minimum LibreOffice version shipping the Markdown import filter.
+   Result (2026-09-07): 26.2. ReleaseNotes/26.2, section Filters › Markdown:
+   "Added support for importing from Markdown format, either via files or
+   via the clipboard." 25.8 and 25.2 notes have no Markdown mention; 26.8
+   adds nothing new; 26.8.0.3 verified empirically.
 
 ## 13. Risks
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Redline author cannot be set reliably | Provenance less visible | Fallback: user as author, provenance in undo label and bookmark |
+| Redline author | Provenance less visible if unreliable | verified in the spike; `user` fallback kept as a config flag |
+| Python sidebar panel + worker-thread streaming unverified until the user's GUI test | panel design unproven | spike .oxt ready (`spike/build_oxt.sh`); fallback is batching UI updates every 250 ms as WriterAgent does |
 | Government sources slow or blocking (Italgiure, Normattiva) | Verification takes minutes or fails | Batching, concurrency cap, retry, "non verificata" verdict in summary, never in the document |
 | Extractor misses citation forms | False "verified" sense of safety | Corpus-driven tests, Linkoln oracle, summary lists "non interpretabili" |
 | Prompt injection from documents or judgments | Unwanted text inserted | Structural mitigations of §8.4; every write is a tracked change |

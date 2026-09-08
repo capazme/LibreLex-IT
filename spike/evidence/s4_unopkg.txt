@@ -1,0 +1,48 @@
+ERROR: Exception occurred: An error occurred while enabling: librelex_spike.py: com.sun.star.connection.NoConnectException "Connector : couldn't connect to pipe "5b634eb4f04a89bdd7f4a5264386ba8785e3918470bad64ea37e8333fff427ab": 10"
+
+ERROR: unopkg failed.
+
+unopkg add failed; checking for a locked leftover soffice process and retrying once...
+ERROR: Exception occurred: An error occurred while enabling: librelex_spike.py: com.sun.star.connection.NoConnectException "Connector : couldn't connect to pipe "c2aebce4cdc287e6b2eca21e3ed2e4fee13a5afd22477d6523ad488389aae": 10"
+
+ERROR: unopkg failed.
+
+unopkg add still failed after retry; continuing to report actual state via 'list' and the headless check.
+--- unopkg list (spike profile) ---
+All deployed user extensions:
+
+Identifier: org.librelex.spike
+  Version: 0.0.1
+  URL: vnd.sun.star.expand:$UNO_USER_PACKAGES_CACHE/uno_packages/lu845801fy2hx.tmp_/librelex-spike.oxt
+  is registered: no
+  Media-Type: application/vnd.sun.star.package-bundle
+  Description: 
+  bundled Packages: {
+      URL: vnd.sun.star.expand:$UNO_USER_PACKAGES_CACHE/uno_packages/lu845801fy2hx.tmp_/librelex-spike.oxt/librelex_spike.py
+      is registered: no
+      Media-Type: application/vnd.sun.star.uno-component;type=Python
+      Description: 
+
+      URL: vnd.sun.star.expand:$UNO_USER_PACKAGES_CACHE/uno_packages/lu845801fy2hx.tmp_/librelex-spike.oxt/Factory.xcu
+      is registered: no
+      Media-Type: application/vnd.sun.star.configuration-data
+      Description: 
+
+      URL: vnd.sun.star.expand:$UNO_USER_PACKAGES_CACHE/uno_packages/lu845801fy2hx.tmp_/librelex-spike.oxt/Sidebar.xcu
+      is registered: no
+      Media-Type: application/vnd.sun.star.configuration-data
+      Description: 
+
+  }
+
+Fontconfig warning: no <cachedir> elements found. Check configuration.
+Fontconfig warning: adding <cachedir>/usr/local/var/cache/fontconfig</cachedir>
+Fontconfig warning: adding <cachedir prefix="xdg">fontconfig</cachedir>
+--- /Users/gpuzio/Desktop/CODE/LibreLex-IT/spike/evidence/s4_registration.txt ---
+createInstanceWithContext: not None = False
+type(obj).__name__ = NoneType
+
+Installed into the private spike profile. To do the manual GUI test, open LibreOffice with:
+  /Applications/LibreOffice.app/Contents/MacOS/soffice -env:UserInstallation=file:///Users/gpuzio/Desktop/CODE/LibreLex-IT/spike/lo_profile
+Then in Writer: View > Sidebar > "LibreLex spike" > "Start stream", and type in the document during the stream.
+Close the LibreOffice window opened on this profile before re-running this script.

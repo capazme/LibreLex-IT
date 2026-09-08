@@ -1,0 +1,32 @@
+=== PRIMARY: insertDocumentFromURL ===
+FILTER USED: Markdown
+--- paragraphs in order (style | text) ---
+'Standard'             | 'Primo paragrafo.Titolo inserito'
+'Text body'            | 'Paragrafo con grassetto e corsivo.'
+'Quotations'           | 'Citazione in blocco.'
+'Text body'            | 'uno'
+'Text body'            | 'due'
+'Text body'            | ''
+'Standard'             | 'Terzo paragrafo (era il secondo).'
+--- redlines (type | author | text) ---
+'Insert'   | 'Unknown Author' | '<no RedlineText>'
+  RedlineText diagnostic: exception = AttributeError("'NoneType' object has no attribute 'getString'")
+  RedlineText diagnostic: dir(redline) = ['ElementType', 'End', 'EndRedline', 'ImplementationId', 'IsInHeaderFooter', 'MergeLastPara', 'PropertySetInfo', 'RedlineAuthor', 'RedlineComment', 'RedlineDateTime', 'RedlineDescription', 'RedlineEnd', 'RedlineIdentifier', 'RedlineStart', 'RedlineSuccessorData', 'RedlineText', 'RedlineType', 'Start', 'StartRedline', 'String', 'Text', 'Types', 'addPropertyChangeListener', 'addVetoableChangeListener', 'appendTextContent', 'appendTextPortion', 'compareRegionEnds', 'compareRegionStarts', 'convertToTable', 'convertToTextFrame', 'createEnumeration', 'createTextCursor', 'createTextCursorByRange', 'finishParagraph', 'finishParagraphInsert', 'getElementType', 'getEnd', 'getImplementationId', 'getPropertySetInfo', 'getPropertyValue', 'getSomething', 'getStart', 'getString', 'getText', 'getTypes', 'hasElements', 'insertControlCharacter', 'insertString', 'insertTextContent', 'insertTextContentAfter', 'insertTextContentBefore', 'insertTextContentWithProperties', 'insertTextPortion', 'queryAdapter', 'queryInterface', 'removePropertyChangeListener', 'removeTextContent', 'removeTextContentAfter', 'removeTextContentBefore', 'removeVetoableChangeListener', 'setPropertyValue', 'setString']
+REDLINE COUNT: 1
+=== VARIANT: scratch doc + insertTransferable ===
+DIAGNOSTIC: doc.CurrentController is None: False
+DIAGNOSTIC: hasattr(ViewCursor, 'gotoEndOfParagraph'): False
+FILTER USED: Markdown
+--- VARIANT paragraphs ---
+'Standard'             | 'Primo paragrafo.Titolo inserito'
+'Text body'            | 'Paragrafo con grassetto e corsivo.'
+'Quotations'           | 'Citazione in blocco.'
+'Text body'            | 'uno'
+'Text body'            | 'due'
+'Standard'             | ''
+'Standard'             | 'Terzo paragrafo.'
+--- VARIANT redlines ---
+'Insert'   | 'Unknown Author' | '<no RedlineText>'
+  RedlineText diagnostic: exception = AttributeError("'NoneType' object has no attribute 'getString'")
+  RedlineText diagnostic: dir(redline) = ['ElementType', 'End', 'EndRedline', 'ImplementationId', 'IsInHeaderFooter', 'MergeLastPara', 'PropertySetInfo', 'RedlineAuthor', 'RedlineComment', 'RedlineDateTime', 'RedlineDescription', 'RedlineEnd', 'RedlineIdentifier', 'RedlineStart', 'RedlineSuccessorData', 'RedlineText', 'RedlineType', 'Start', 'StartRedline', 'String', 'Text', 'Types', 'addPropertyChangeListener', 'addVetoableChangeListener', 'appendTextContent', 'appendTextPortion', 'compareRegionEnds', 'compareRegionStarts', 'convertToTable', 'convertToTextFrame', 'createEnumeration', 'createTextCursor', 'createTextCursorByRange', 'finishParagraph', 'finishParagraphInsert', 'getElementType', 'getEnd', 'getImplementationId', 'getPropertySetInfo', 'getPropertyValue', 'getSomething', 'getStart', 'getString', 'getText', 'getTypes', 'hasElements', 'insertControlCharacter', 'insertString', 'insertTextContent', 'insertTextContentAfter', 'insertTextContentBefore', 'insertTextContentWithProperties', 'insertTextPortion', 'queryAdapter', 'queryInterface', 'removePropertyChangeListener', 'removeTextContent', 'removeTextContentAfter', 'removeTextContentBefore', 'removeVetoableChangeListener', 'setPropertyValue', 'setString']
+VARIANT REDLINE COUNT: 1

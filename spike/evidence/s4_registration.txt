@@ -1,0 +1,2 @@
+createInstanceWithContext: not None = False
+type(obj).__name__ = NoneType
