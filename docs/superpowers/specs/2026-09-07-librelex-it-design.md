@@ -210,9 +210,15 @@ LibreLex-IT/
   controllate dal professionista"*.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
-- Streaming: the bridge reader thread pushes events onto a `queue.Queue`; a
-  drain loop on the UI thread applies them in batches (250 ms), the pattern
-  validated in WriterAgent. All UNO calls happen on the UI thread.
+- Streaming: the bridge reader thread pushes events onto a `queue.Queue` and
+  schedules a drain on the UI thread through `com.sun.star.awt.AsyncCallback`
+  (verified in the spike: 100 chunks in 5 s with fluid typing); batching the
+  drains at 250 ms (WriterAgent's pattern) stays as a knob if a real LLM
+  stream proves chattier. All UNO calls happen on the UI thread.
+- Panel construction: the controls are added to the model the container
+  window already owns (`window.getModel()` + `createInstance`/`insertByName`),
+  never by replacing it with a new `UnoControlDialogModel`: the spike showed
+  that `setModel` detaches the dialog into a floating top-level window.
 - Menu entries (Tools → LibreLex) and context-menu entries on a selection for
   the quick actions (M4).
 
@@ -594,9 +600,12 @@ screenshot of the panel and of the tracked changes in the document.
 Two small, backward-compatible changes on mcp-legal-it (one MINOR release):
 
 1. `formato="json"` parameter on `verifica_citazioni` and `cite_law`,
-   returning structured verdicts / article metadata (URN, vigenza date,
-   source URL, text by comma). Parsing the current markdown output is
-   fragile; the core requires the JSON form and refuses older servers.
+   returning structured verdicts / article metadata (URN when the source is
+   Normattiva, else null; the consultation date, which the core prints as
+   the "testo vigente al" date; source URL; full article text, which the
+   core splits into one blockquote line per line; and the act metadata).
+   Parsing the current markdown output is fragile; the core requires the
+   JSON form and refuses older servers.
 2. A console entry point `mcp-legal-it` in `pyproject.toml`
    (`[project.scripts]`), so the core can start it with
    `uvx --from git+https://github.com/capazme/mcp-legal-it@vX.Y.Z mcp-legal-it`
@@ -656,10 +665,20 @@ chat.
 4. A Python sidebar panel built from an XDL dialog (LibreThinker skeleton)
    can be updated from a queue drained on the UI thread without freezing
    LibreOffice during streaming.
-   Result (2026-09-07): pending the user's GUI test; extension built and
-   statically verified; registration not verifiable from the automation
-   harness (unopkg's out-of-process helper is SIGKILLed like the bundled
-   Python, so `s4_registration.txt` shows `not None = False`).
+   Result (2026-09-10, user's GUI test on LibreOffice 26.8): holds. From a
+   Terminal, `spike/build_oxt.sh` registers the component (from the
+   automation harness it cannot: unopkg's out-of-process helper is
+   SIGKILLed like the bundled Python, hence `not None = False` in
+   `s4_registration.txt`); the deck "LibreLex spike" appears in the sidebar;
+   "Start stream" delivered all 100 chunks plus `[done]` through
+   `AsyncCallback` while typing in the document stayed fluid. Caveat found:
+   the spike panel rendered its controls in a separate top-level window,
+   not inside the sidebar panel, because it replaced the container window's
+   model with a new `UnoControlDialogModel` (`setModel`); the real panel must
+   add its control models to the model the container already has
+   (`window.getModel()` + `insertByName`). Evidence: the user's screenshots
+   (sidebar deck with an empty panel body; floating "LibreLex spike" window
+   at chunk 100/[done]).
 5. Minimum LibreOffice version shipping the Markdown import filter.
    Result (2026-09-07): 26.2. ReleaseNotes/26.2, section Filters › Markdown:
    "Added support for importing from Markdown format, either via files or
@@ -671,7 +690,7 @@ chat.
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Redline author | Provenance less visible if unreliable | verified in the spike; `user` fallback kept as a config flag |
-| Python sidebar panel + worker-thread streaming unverified until the user's GUI test | panel design unproven | spike .oxt ready (`spike/build_oxt.sh`); fallback is batching UI updates every 250 ms as WriterAgent does |
+| Python sidebar panel + worker-thread streaming | verified in the spike (fluid typing during a 100-chunk stream); residual risk is the panel construction detail of §5.1 | build controls on the container's own model; 250 ms batching kept as a fallback knob |
 | Government sources slow or blocking (Italgiure, Normattiva) | Verification takes minutes or fails | Batching, concurrency cap, retry, "non verificata" verdict in summary, never in the document |
 | Extractor misses citation forms | False "verified" sense of safety | Corpus-driven tests, Linkoln oracle, summary lists "non interpretabili" |
 | Prompt injection from documents or judgments | Unwanted text inserted | Structural mitigations of §8.4; every write is a tracked change |
