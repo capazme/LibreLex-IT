@@ -28,7 +28,7 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
                            version: str = "2.14.0",
                            fail_first: set[str] | None = None) -> tuple[FastMCP, dict]:
     verdicts = verdicts or {}
-    articles = articles or {"art. 2043 c.c.": ARTICLE_2043}
+    articles = {"art. 2043 c.c.": ARTICLE_2043} if articles is None else articles
     fail_first = set(fail_first or ())
     calls: dict = {"verifica": [], "cite": []}
     server = FastMCP("Legal IT (fake)", version=version)
