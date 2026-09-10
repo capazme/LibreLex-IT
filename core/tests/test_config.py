@@ -1,0 +1,83 @@
+# Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
+import os
+import stat
+import sys
+
+import pytest
+
+from librelex_core import config as c
+
+
+def test_defaults_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("LIBRELEX_LLM_API_KEY", raising=False)
+    cfg = c.load_config(tmp_path / "missing.toml")
+    assert cfg.llm.preset == "openrouter"
+    assert cfg.mcp_legal_it.mode == "local"
+    assert cfg.mcp_legal_it.command[0] == "uvx"
+    assert cfg.document.redline_author == "librelex"
+    assert cfg.limits.max_iterations == 12
+    assert cfg.logging.enabled is False
+
+
+def test_load_toml_and_env_override(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[llm]\npreset = "ollama"\nbase_url = "http://localhost:11434/v1"\n'
+        'api_key = "file-key"\n'
+        '[mcp_legal_it]\nmode = "remote"\n'
+        'remote_url = "https://example.org/legal-it/mcp"\nbearer = "b"\n'
+        '[limits]\nmax_iterations = 3\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LIBRELEX_LLM_API_KEY", "env-key")
+    monkeypatch.setenv("LIBRELEX_MCP_BEARER", "env-bearer")
+    cfg = c.load_config(path)
+    assert cfg.llm.preset == "ollama" and cfg.llm.api_key == "env-key"
+    assert cfg.mcp_legal_it.bearer == "env-bearer" and cfg.mcp_legal_it.mode == "remote"
+    assert cfg.limits.max_iterations == 3 and cfg.limits.tool_timeout_s == 60
+
+
+def test_remote_url_must_be_https(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[mcp_legal_it]\nmode = "remote"\nremote_url = "http://example.org/mcp"\n')
+    with pytest.raises(c.ConfigError, match="https"):
+        c.load_config(path)
+
+
+def test_remote_url_localhost_http_allowed(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[mcp_legal_it]\nmode = "remote"\nremote_url = "http://127.0.0.1:8000/mcp"\n')
+    assert c.load_config(path).mcp_legal_it.remote_url.startswith("http://127.0.0.1")
+
+
+def test_invalid_toml_raises(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[llm\nbroken")
+    with pytest.raises(c.ConfigError):
+        c.load_config(path)
+
+
+def test_config_path_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "x.toml"))
+    assert c.config_path() == tmp_path / "x.toml"
+
+
+def test_config_dir_per_platform(monkeypatch):
+    monkeypatch.delenv("LIBRELEX_CONFIG", raising=False)
+    d = str(c.config_dir())
+    if sys.platform == "darwin":
+        assert d.endswith("Library/Application Support/LibreLex")
+    elif sys.platform == "win32":
+        assert d.endswith("LibreLex")
+    else:
+        assert d.endswith("librelex")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
+def test_ensure_private(tmp_path):
+    path = tmp_path / "cfg" / "config.toml"
+    path.parent.mkdir()
+    path.write_text("")
+    c.ensure_private(path)
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
