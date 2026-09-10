@@ -21,3 +21,6 @@ config.toml
 
 # Phase 0 spike: throwaway LibreOffice profile (never the real user profile)
 spike/lo_profile/
+
+# Claude Code worktrees
+.claude/worktrees/
