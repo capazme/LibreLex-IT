@@ -70,6 +70,40 @@ async def test_selection_scope():
     assert "art. 2043 c.c." in calls["verifica"][0]
 
 
+async def test_selection_reads_once():
+    doc = FakeDocument(TEXT, selection=(1, 0, len(TEXT[1])))
+    calls: list[int] = []
+    orig = doc.read_selection
+
+    async def spy():
+        calls.append(1)
+        return await orig()
+
+    doc.read_selection = spy
+    await _run(doc, scope="selection")
+    assert len(calls) == 1
+
+
+async def test_summary_lists_unverifiable_and_retry():
+    server, calls = make_fake_legal_server(verdicts={
+        "Cass. n. 5000/2015": ("non verificabile", "fuori archivio"),
+        "art. 2043 c.c.": ("non verificata", "fonte irraggiungibile"),
+    })
+    doc = FakeDocument(["Cass. n. 5000/2015 e art. 2043 c.c."])
+    events = []
+
+    async def emit(msg):
+        events.append(msg)
+
+    async with LegalToolsClient(server) as tools:
+        summary = await run_verify(doc, tools, "document", emit, request_id="r1")
+
+    assert summary["non_verificabili"] == ["Cass. n. 5000/2015"]
+    assert summary["da_riprovare"] == ["art. 2043 c.c."]
+    assert doc.comments == []
+    assert summary["per_verdetto"] == {"non verificabile": 1, "non verificata": 1}
+
+
 async def test_footnotes_can_be_excluded():
     doc = FakeDocument(TEXT[:1], footnotes={0: "Cass. n. 777/2023"})
     server, calls = make_fake_legal_server()

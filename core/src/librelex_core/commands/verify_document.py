@@ -32,14 +32,20 @@ def comment_text(v: Verdict) -> str:
 
 async def _paragraphs_for_scope(
     doc: DocumentClient, scope: str, include_footnotes: bool
-) -> list[Paragraph]:
+) -> tuple[list[Paragraph], int]:
+    """Return the paragraphs to extract from and the offset to add to citation spans.
+
+    Reads the selection exactly once (spec §7.1): both the extracted text and
+    the anchor offset come from the same `read_selection()` call, so a
+    selection change between reads can never desync text and offset.
+    """
     if scope == "selection":
         sel = await doc.read_selection()
         if not sel.text or sel.anchor is None:
-            return []
-        return [Paragraph(id=sel.anchor.paragraph_id, text=sel.text)]
+            return [], 0
+        return [Paragraph(id=sel.anchor.paragraph_id, text=sel.text)], sel.anchor.start
     paras = await doc.read_paragraphs()
-    return [x for x in paras if include_footnotes or x.kind != "footnote"]
+    return [x for x in paras if include_footnotes or x.kind != "footnote"], 0
 
 
 async def run_verify(
@@ -47,11 +53,7 @@ async def run_verify(
     emit: Emit, request_id: str, include_footnotes: bool = True,
 ) -> dict[str, Any]:
     await emit(p.Status(request_id=request_id, text="Leggo il documento"))
-    paragraphs = await _paragraphs_for_scope(doc, scope, include_footnotes)
-    offset = 0
-    if scope == "selection" and paragraphs:
-        sel = await doc.read_selection()
-        offset = sel.anchor.start if sel.anchor else 0
+    paragraphs, offset = await _paragraphs_for_scope(doc, scope, include_footnotes)
 
     citations: list[Citation] = extract_all(paragraphs)
     for c in citations:
@@ -87,6 +89,8 @@ async def run_verify(
         })
 
     per_verdetto = Counter(v.verdetto for v in report.verdicts.values())
+    non_verificabili = [c for c, v in report.verdicts.items() if v.verdetto == "non verificabile"]
+    da_riprovare = [c for c, v in report.verdicts.items() if v.verdetto == "non verificata"]
     summary = {
         "scope": scope,
         "citazioni_totali": len(citations),
@@ -95,6 +99,8 @@ async def run_verify(
         "problemi": problems,
         "da_controllare_a_mano": report.unverified_courts,
         "non_interpretabili": report.unparsed,
+        "non_verificabili": non_verificabili,
+        "da_riprovare": da_riprovare,
         "commenti_inseriti": inserted,
     }
     await emit(p.Status(
