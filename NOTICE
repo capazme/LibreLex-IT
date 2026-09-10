@@ -1,0 +1,12 @@
+LibreLex-IT
+Copyright 2026 Guglielmo Puzio
+
+This product includes software developed at The Apache Software Foundation
+(http://www.apache.org/) only through its license text.
+
+Third-party code and data:
+- Norm citation extractor ported from VisuaLexAPI (MIT, Copyright 2024-2026 Guglielmo Puzio).
+- Judgment citation patterns adapted from mcp-legal-it (Apache-2.0, same author).
+- Sidebar skeleton files in extension/ derived from LibreThinker
+  (https://github.com/mihailthebuilder/librethinker-extension), Mozilla Public License 2.0;
+  those files keep their MPL header and remain under MPL-2.0.
