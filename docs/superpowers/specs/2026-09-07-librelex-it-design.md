@@ -60,7 +60,7 @@ without it being checked against Normattiva / EUR-Lex / Italgiure.
 | 4 | v1 scope | All four capabilities in §1.1, phased (§11) | User choice |
 | 5 | Topology | Thin `.oxt` + local `librelex-core` over stdio (Option 1) | Full Python ecosystem in the core, testable without LibreOffice, no open ports; see §4.1 |
 | 6 | Existing projects | Own Apache-2.0 codebase; reuse MPL-2.0/MIT code with headers, GPL projects as pattern only | See §3 |
-| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8 by headless conversion (headings → "Heading N", body → "Text body", blockquote → "Quotations", list items → "Text body" paragraphs carrying a list style); the cursor-insertion probe re-verified body, blockquote and list items, while its heading merged into the cursor paragraph (see §5.4) |
+| 7 | Text insertion | Markdown via Writer's native `Markdown` import filter | Verified on LibreOffice 26.8 by headless conversion (headings → "Heading N", body → "Text body", blockquote → "Quotations", list items → "Text body" paragraphs carrying a list style) (evidence: `spike/evidence/s5_markdown_styles.txt`, probe `spike/s5_markdown_styles.sh`); the cursor-insertion probe re-verified body, blockquote and list items, while its heading merged into the cursor paragraph (see §5.4) |
 | 8 | Review UX | Tracked changes for writes, comments for verification | Unanimous pattern of commercial legal copilots; zero custom diff UI |
 
 ## 3. Prior art and reuse

@@ -1,0 +1,8 @@
+paragraph/heading styles used: ['Heading_20_1', 'Heading_20_2', 'P1', 'P2', 'Quotations', 'Text_20_body']
+list styles: ['L1', 'L2']
+span styles: ['T1', 'T2']
+automatic style P1 (family=paragraph): parent-style-name=Text_20_body, fo:font-weight=None, fo:font-style=None
+automatic style P2 (family=paragraph): parent-style-name=Text_20_body, fo:font-weight=None, fo:font-style=None
+automatic style T1 (family=text): parent-style-name=None, fo:font-weight=bold, fo:font-style=None
+automatic style T2 (family=text): parent-style-name=None, fo:font-weight=None, fo:font-style=italic
+heading outline levels: [1, 2]

@@ -110,3 +110,31 @@ untouched since). The extension refuses to start on older versions (spec
 
 The spike .oxt still declares minimal version 4.1; the real extension must
 declare LibreOffice 26.2.
+
+## Probe 5b — Markdown → paragraph styles by headless conversion
+
+`spike/s5_markdown_styles.sh` proves the cell in the design spec §2 decisions
+table (row 7): that Writer's native Markdown *import* filter maps Markdown
+constructs to real, named paragraph/character styles, not to ad hoc direct
+formatting, when the conversion happens headlessly via `--convert-to` (no
+GUI, no UNO macro, unlike the other probes in this directory). It writes a
+small Markdown probe (headings, bold/italic, a blockquote, a bullet list,
+a numbered list, plain paragraphs) to a temp file, converts it to `.odt`
+with a fresh private profile, then inspects `content.xml` inside the
+resulting `.odt` (a zip) with the system `python3`'s stdlib `zipfile` and
+`re` — no Python UNO bridge involved, since a `.odt` is just XML in a zip.
+
+It records, in `spike/evidence/s5_markdown_styles.txt`: which named
+paragraph/heading styles are actually used in the body (`Heading_20_1`,
+`Heading_20_2`, `Text_20_body`, `Quotations`), the list styles, the span
+(character) styles, each automatic style's `parent-style-name` and any
+bold/italic properties. Bold/italic land as character (`text`-family)
+automatic styles (`T1`, `T2`) carrying `fo:font-weight`/`fo:font-style`
+directly, not as new named paragraph styles; list items get their own
+paragraph automatic styles (`P1`, `P2`) parented to `Text_20_body` and
+carrying a `style:list-style-name`. This is the concrete evidence backing
+the mapping cited in the design spec.
+
+Run it directly, no `run.sh` wrapper needed since it never touches UNO:
+
+    ./spike/s5_markdown_styles.sh
