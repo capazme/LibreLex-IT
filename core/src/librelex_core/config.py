@@ -108,7 +108,15 @@ def load_config(path: Path | None = None) -> Config:
     try:
         cfg = Config.model_validate(data)
     except ValidationError as e:
-        raise ConfigError(f"invalid configuration in {path}: {e}") from e
+        # Build the message from loc/msg only: pydantic's default str(e) embeds the
+        # offending input value, which can be a secret (e.g. a stray llm.api_key_old
+        # next to a real key). That message ends up in the extension's log file
+        # (spec §5.2), violating spec §8.1 "Keys never appear in logs" (review finding 4).
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+            for err in e.errors(include_url=False)
+        )
+        raise ConfigError(f"invalid configuration in {path}: {detail}") from e
     if key := os.environ.get("LIBRELEX_LLM_API_KEY"):
         cfg.llm.api_key = key
     if bearer := os.environ.get("LIBRELEX_MCP_BEARER"):

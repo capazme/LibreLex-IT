@@ -57,6 +57,20 @@ def test_invalid_toml_raises(tmp_path):
         c.load_config(path)
 
 
+def test_invalid_config_error_does_not_leak_secret_value(tmp_path):
+    # A stray key next to a real secret must not echo the secret's value in the error:
+    # the core's stderr ends up in the extension log file (spec §5.2), which would
+    # violate spec §8.1 "Keys never appear in logs" (review finding 4).
+    path = tmp_path / "config.toml"
+    path.write_text('[llm]\napi_key = "sk-LEAKED-98765"\napi_key_old = "sk-LEAKED-98765"\n')
+    with pytest.raises(c.ConfigError) as exc_info:
+        c.load_config(path)
+    message = str(exc_info.value)
+    assert "sk-LEAKED-98765" not in message
+    assert "api_key_old" in message
+    assert "Extra inputs are not permitted" in message
+
+
 def test_config_path_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "x.toml"))
     assert c.config_path() == tmp_path / "x.toml"

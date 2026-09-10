@@ -43,6 +43,15 @@ def test_context_carries_across_body_paragraphs_not_from_footnotes():
     assert [c.canonical for c in cs] == ["art. 4 D.Lgs. 196/2003", "art. 5 D.Lgs. 196/2003"]
 
 
+def test_bare_cds_does_not_swallow_the_norm():
+    # "art. 5 c.d.s. n. 285/1992" is a norm citation (codice della strada); before the
+    # fix, judgments matched "c.d.s." as Consiglio di Stato and won the overlap, so the
+    # norm was silently dropped (review finding 5).
+    paras = [P(0, "Violazione dell'art. 5 c.d.s. n. 285/1992.")]
+    cs = extract_all(paras)
+    assert [(c.kind, c.canonical) for c in cs] == [("norma", "art. 5 codice della strada")]
+
+
 def test_offsets_are_paragraph_relative():
     paras = [P(0, "xx art. 1 c.p. yy"), P(1, "Cass. n. 1/2020")]
     cs = extract_all(paras)

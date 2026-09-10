@@ -73,6 +73,7 @@ class CoreServer:
             lambda: LegalToolsClient.from_config(
                 config.mcp_legal_it, timeout_s=config.limits.tool_timeout_s))
         self._tools: LegalToolsClient | None = None
+        self._tools_lock = asyncio.Lock()
         self._transport: LineTransport | None = None
         self._write_lock = asyncio.Lock()
         self._hello_ok = False
@@ -88,10 +89,17 @@ class CoreServer:
 
     # --- tools ---------------------------------------------------------------
     async def _get_tools(self) -> LegalToolsClient:
+        # Two documents can each run a command concurrently (the busy rule is per doc_id,
+        # spec §5.2), so both could see self._tools is None and race to build a client.
+        # The lock (double-checked) makes the lazy init happen at most once; without it
+        # the loser's client is never closed (main.py finally only awaits self._tools),
+        # leaking a second "uvx ... mcp-legal-it" subprocess in local mode (review finding 3).
         if self._tools is None:
-            client = self._tools_factory()
-            await client.__aenter__()
-            self._tools = client
+            async with self._tools_lock:
+                if self._tools is None:
+                    client = self._tools_factory()
+                    await client.__aenter__()
+                    self._tools = client
         return self._tools
 
     # --- main loop -----------------------------------------------------------

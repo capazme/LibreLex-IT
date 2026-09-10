@@ -19,26 +19,35 @@ _SEZ = (
 _DATE = r"(?:\d{1,2}\s+[a-zà]+\s+(?P<dyear>(?:19|20)\d{2})\s*,?\s*)?"
 _TIPO = r"(?:sent(?:\.|enza)|ord(?:\.|inanza))?\s*,?\s*"
 _NUM = r"(?:n\.?\s*)?(?P<num>\d{1,6})(?:\s*(?:/|\s+del\s+)\s*(?P<year>(?:19|20)\d{2}))?"
+# "sentenza/ordinanza <data> n. <numero>" is the standard order in Italian briefs, but
+# "<data>, sentenza n. <numero>" also occurs; _TIPO and _DATE are each already fully
+# optional, so trying one before and one after the other makes the order irrelevant
+# without ever matching the same word twice (review finding 6).
+_DATE_TIPO = _TIPO + _DATE + _TIPO
 
 _CASS_RE = re.compile(
     r"\bcass(?:\.|azione)?\s*(?:civ\.?|pen\.?|civile|penale)?\s*,?\s*"
-    + _SEZ + _DATE + _TIPO + _NUM,
+    + _SEZ + _DATE_TIPO + _NUM,
     re.IGNORECASE,
 )
 _COST_RE = re.compile(
-    r"\b(?:corte\s+cost(?:\.|ituzionale)?|c\.\s*cost\.)\s*,?\s*" + _DATE + _TIPO + _NUM,
+    r"\b(?:corte\s+cost(?:\.|ituzionale)?|c\.\s*cost\.)\s*,?\s*" + _DATE_TIPO + _NUM,
     re.IGNORECASE,
 )
 _CDS_RE = re.compile(
-    r"\b(?:cons(?:\.|iglio)\s+(?:di\s+)?stato|c\.?\s?d\.?\s?s\.?)\s*,?\s*"
-    r"(?:(?:ad\.?\s*plen\.?|adunanza\s+plenaria)\s*,?\s*)?" + _SEZ + _DATE + _TIPO + _NUM,
+    # No bare "c.d.s.": that abbreviation is Italian legal shorthand for "codice della
+    # strada" (Highway Code), not "Consiglio di Stato". Matching it here swallowed real
+    # norm citations like "art. 5 c.d.s. n. 285/1992" because judgments win every
+    # overlap in extract_all (review finding 5).
+    r"\b(?:cons(?:\.|iglio)\s+(?:di\s+)?stato|cons\.\s*st\.)\s*,?\s*"
+    r"(?:(?:ad\.?\s*plen\.?|adunanza\s+plenaria)\s*,?\s*)?" + _SEZ + _DATE_TIPO + _NUM,
     re.IGNORECASE,
 )
 # Case-sensitive on purpose: the seat is one or more capitalised words
 # ("Lazio", "Lombardia Milano").
 _TAR_RE = re.compile(
     r"\b[Tt]\.?[Aa]\.?[Rr]\.?\s+(?P<seat>[A-ZÀ-Ü][\w'’-]+(?:\s+[A-ZÀ-Ü][\w'’-]+)*)\s*,?\s*"
-    + _SEZ + _DATE + _TIPO + _NUM,
+    + _SEZ + _DATE_TIPO + _NUM,
 )
 _CGUE_RE = re.compile(
     r"\b(?:cgue|c\.g\.u\.e\.|corte\s+di\s+giustizia(?:\s+(?:ue|dell['’]unione\s+europea))?)\s*,?\s*"

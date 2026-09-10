@@ -62,3 +62,54 @@ def test_expand_year():
 
 def test_huge_text_is_ignored():
     assert extract_norms("art. 1 c.c. " * 60_000) == []
+
+
+def test_numbered_act_without_number_and_year_has_no_canonical():
+    # "n. <numero> del <anno>" is not matched by _NUM_YEAR yet (follow-up work), so the act
+    # is recognised but its number/year stay unset. canonical() must not fabricate a bare
+    # act label here: sending it to verifica_citazioni would flag a valid citation as
+    # non-existent (review finding 1).
+    cs = extract_norms("ai sensi dell'art. 5 del d.lgs. n. 231 del 2001")
+    assert len(cs) == 1
+    assert cs[0].act is not None and cs[0].act.label == "D.Lgs."
+    assert cs[0].number is None and cs[0].year is None
+    assert cs[0].canonical() is None
+
+    cs2 = extract_norms("l'art. 25 della legge n. 300 del 1970")
+    assert len(cs2) == 1
+    assert cs2[0].act is not None and cs2[0].act.label == "L."
+    assert cs2[0].canonical() is None
+
+
+def test_eu_numbered_act_with_incomplete_pair_has_no_canonical():
+    cs = extract_norms("art. 5 della direttiva 95/CE")
+    assert len(cs) == 1
+    assert cs[0].act is not None and cs[0].act.eu
+    assert cs[0].number is None and cs[0].year is None
+    assert cs[0].canonical() is None
+
+
+def test_multi_article_explicit_form_attaches_the_stated_act_to_every_article():
+    # "artt. 1414 e 1415 c.c." was not matched by the old single-article _EXPLICIT_RE
+    # (the act does not follow the first number), so "artt. 1414" fell to the bare-article
+    # fallback and inherited whatever act the previous paragraph had last mentioned
+    # (review finding 2).
+    got = [c.canonical() for c in extract_norms("gli artt. 1414 e 1415 c.c.") if c.canonical()]
+    assert got == ["art. 1414 c.c.", "art. 1415 c.c."]
+
+    got3 = [c.canonical() for c in extract_norms("artt. 5, 6 e 7 c.p.") if c.canonical()]
+    assert got3 == ["art. 5 c.p.", "art. 6 c.p.", "art. 7 c.p."]
+
+
+def test_bare_article_does_not_inherit_context_when_an_act_follows_in_clause():
+    # Even outside the multi-article form covered above, a bare article that is
+    # immediately followed, in the same clause, by a resolvable act abbreviation must
+    # not silently inherit an unrelated act from an earlier paragraph: attributing it to
+    # the wrong act is a false assurance risk (review finding 2, spec §13).
+    text = (
+        "La responsabilità ex d.lgs. 231/2001 è cosa nota. Vengono in rilievo "
+        "l'art. 1414, in relazione al c.c., e altro."
+    )
+    cs = extract_norms(text)
+    bare = next(c for c in cs if c.display_text.strip().startswith(("art. 1414", "l'art. 1414")))
+    assert bare.canonical() is None

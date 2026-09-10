@@ -27,8 +27,21 @@ def test_parse_reference():
 
 def test_bookmark_name():
     url = "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262:2~art2043"
-    assert bookmark_name(url).startswith("LibreLex.norma.https_www_normattiva_it")
+    # Truncation keeps the tail (see finding-7 test below), so the article discriminator
+    # at the end of the slug must survive, not the host at the start.
+    assert bookmark_name(url).endswith("art2043")
     assert len(bookmark_name("x" * 500)) <= len("LibreLex.norma.") + 80
+
+
+def test_bookmark_name_keeps_the_article_discriminator_when_truncated():
+    # art. 2043 and art. 2059 c.c. share the first 80 characters of the slugified URL;
+    # truncating the head collides both bookmarks (review finding 7). The article
+    # discriminator sits at the end of the URL, so truncation must keep the tail.
+    url_2043 = ("https://www.normattiva.it/uri-res/N2Ls?"
+                "urn:nir:stato:regio.decreto:1942-03-16;262:2~art2043")
+    url_2059 = ("https://www.normattiva.it/uri-res/N2Ls?"
+                "urn:nir:stato:regio.decreto:1942-03-16;262:2~art2059")
+    assert bookmark_name(url_2043) != bookmark_name(url_2059)
 
 
 def test_format_markdown():
@@ -65,6 +78,26 @@ async def test_run_insert_norm_from_selection():
     async with LegalToolsClient(server) as tools:
         await run_insert_norm(doc, tools, None, emit, "r1")
     assert calls["cite"] == ["art. 2043 c.c."]
+
+
+async def test_run_insert_norm_bookmarks_differ_for_two_articles_of_the_same_act():
+    # End-to-end version of test_bookmark_name_keeps_the_article_discriminator_when_truncated:
+    # run_insert_norm must derive the bookmark from data["urn"] (or data["url"]) in a way
+    # that survives truncation, otherwise the two documents' bookmarks collide (finding 7).
+    prefix = "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262:2"
+    urn_2059 = "urn:nir:stato:regio.decreto:1942-03-16;262:2~art2059"
+    article_2059 = {**ARTICLE_2043, "riferimento": "art. 2059 c.c.", "articolo": "2059",
+                    "url": f"{prefix}~art2059", "urn": urn_2059}
+    server, _ = make_fake_legal_server(
+        articles={"art. 2043 c.c.": ARTICLE_2043, "art. 2059 c.c.": article_2059})
+
+    async def emit(m):
+        pass
+
+    async with LegalToolsClient(server) as tools:
+        out_2043 = await run_insert_norm(FakeDocument(["x"]), tools, "art. 2043 c.c.", emit, "r1")
+        out_2059 = await run_insert_norm(FakeDocument(["x"]), tools, "art. 2059 c.c.", emit, "r2")
+    assert out_2043["bookmark"] != out_2059["bookmark"]
 
 
 async def test_run_insert_norm_unknown_act_raises():

@@ -14,7 +14,7 @@ CASES = [
     ("Corte cost. n. 170/1984", "Corte cost. n. 170/1984"),
     ("Corte costituzionale, sentenza n. 269 del 2017", "Corte cost. n. 269/2017"),
     ("Cons. Stato, sez. VI, n. 2345/2021", "Cons. Stato sez. VI n. 2345/2021"),
-    ("C.d.S. n. 10/2020", "Cons. Stato n. 10/2020"),
+    ("Cons. St. n. 10/2020", "Cons. Stato n. 10/2020"),
     ("TAR Lazio, sez. II, n. 5678/2023", "TAR Lazio n. 5678/2023"),
     ("T.A.R. Lombardia Milano n. 12/2022", "TAR Lombardia Milano n. 12/2022"),
     ("CGUE, 13 maggio 2014, causa C-131/12", "CGUE causa C-131/12"),
@@ -39,3 +39,21 @@ def test_offsets_and_court():
 
 def test_norm_numbers_are_not_judgments():
     assert extract_judgments("art. 5 D.Lgs. 196/2003 e legge 241/1990") == []
+
+
+def test_bare_cds_is_not_consiglio_di_stato():
+    # "c.d.s." is Italian legal shorthand for "codice della strada" (Highway Code), not
+    # "Consiglio di Stato". Matching it as a court swallowed the real norm citation
+    # "art. 5 c.d.s." because extract_all lets judgments win every overlap (finding 5).
+    assert extract_judgments("Violazione dell'art. 5 c.d.s. n. 285/1992") == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Cass., sentenza 12 gennaio 2022, n. 987", "Cass. n. 987/2022"),
+    ("Cass. pen. Sez. III, sentenza 12 gennaio 2022 n. 987", "Cass. sez. III n. 987/2022"),
+])
+def test_cassazione_tipo_before_date_is_matched(text, expected):
+    # "sentenza/ordinanza <data> n. <numero>" is the standard order in Italian briefs;
+    # the original _SEZ + _DATE + _TIPO + _NUM ordering silently dropped it (finding 6).
+    cs = extract_judgments(text)
+    assert [c.canonical() for c in cs] == [expected]

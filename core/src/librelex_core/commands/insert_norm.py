@@ -32,8 +32,14 @@ def parse_reference(text: str) -> str:
     return norms[0].canonical()  # type: ignore[return-value]
 
 
-def bookmark_name(url: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", url).strip("_")[:80]
+def bookmark_name(source: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", source).strip("_")
+    if len(slug) > 80:
+        # Keep the tail, not the head: two articles of the same act share a long common
+        # URL/URN prefix (host, uri-res path, act identifier), and the article
+        # discriminator sits at the very end. Truncating the head produced identical
+        # bookmark names for e.g. art. 2043 and art. 2059 c.c. (review finding 7).
+        slug = slug[-80:]
     return f"LibreLex.norma.{slug}"
 
 
@@ -66,7 +72,9 @@ async def run_insert_norm(
         raise UnparsedReference(f"{canonical}: {data.get('errore') or 'testo non disponibile'}")
     data["riferimento"] = canonical
     markdown = format_norm_markdown(data, date.today())
-    bookmark = bookmark_name(data["url"])
+    # The urn is the JSON contract's stable, shorter identifier (mcp-legal-it
+    # _cite_law_struct); fall back to the url if it is missing.
+    bookmark = bookmark_name(data.get("urn") or data["url"])
     inserted = await doc.insert_markdown("cursor", markdown, f"LibreLex: inserisci {canonical}",
                                          bookmark=bookmark, author="LibreLex")
     await emit(p.Status(request_id=request_id, text=f"Inserito {canonical} come revisione"))

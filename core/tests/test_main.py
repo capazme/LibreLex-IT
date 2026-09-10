@@ -150,6 +150,38 @@ async def test_not_implemented_and_unparsed_reference():
     await h.run(scenario)
 
 
+class _SlowClient:
+    """Stands in for LegalToolsClient: __aenter__ yields control once, so two concurrent
+    callers of _get_tools() would race if the lazy init were not guarded (finding 3)."""
+
+    def __init__(self, counter: dict):
+        self._counter = counter
+
+    async def __aenter__(self) -> "_SlowClient":
+        await asyncio.sleep(0)
+        self._counter["entered"] += 1
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._counter["exited"] += 1
+
+
+async def test_get_tools_lazy_init_is_race_free():
+    counter = {"factory_calls": 0, "entered": 0, "exited": 0}
+
+    def factory() -> _SlowClient:
+        counter["factory_calls"] += 1
+        return _SlowClient(counter)
+
+    server = CoreServer(Config(), tools_factory=factory)
+    t1 = asyncio.create_task(server._get_tools())
+    t2 = asyncio.create_task(server._get_tools())
+    r1, r2 = await asyncio.gather(t1, t2)
+    assert r1 is r2
+    assert counter["factory_calls"] == 1
+    assert counter["entered"] == 1
+
+
 async def test_malformed_line_is_reported_not_fatal():
     h = Harness(FakeDocument(["x"]))
 
