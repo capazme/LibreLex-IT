@@ -8,10 +8,11 @@ from pathlib import Path
 
 import uno
 import unohelper
-from com.sun.star.awt import XActionListener, XCallback, XItemListener
+from com.sun.star.awt import Size, XActionListener, XCallback, XItemListener
 from com.sun.star.lang import XComponent
 from com.sun.star.ui import LayoutSize, XSidebarPanel, XToolPanel, XUIElement, XUIElementFactory
 from com.sun.star.ui.UIElementType import TOOLPANEL
+from com.sun.star.util.MeasureUnit import APPFONT
 
 from librelex_ext import EXTENSION_ID, layout, paths, registry
 from librelex_ext.bridge import Bridge, BridgeError
@@ -64,6 +65,8 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             "com.sun.star.awt.AsyncCallback", ctx)
         self.session = None
         self._height = 0
+        self._width_du = layout.WIDTH
+        self._controls = layout.CONTROLS
 
     # --- XUIElement ------------------------------------------------------------
     def getRealInterface(self):
@@ -98,11 +101,38 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         return self
 
     def getHeightForWidth(self, width):
-        h = self._height or 700
+        """Re-flow the controls for the sidebar's current width and answer in pixels.
+
+        The container window implements XUnitConversion, the only way to go from the pixels
+        the sidebar speaks to the dialog units the control models use. Any failure there
+        (no peer yet, an unsupported unit) falls back to the fixed 190-unit layout and the
+        height the window was created with, which is what the panel did before.
+        """
+        try:
+            du = max(layout.MIN_WIDTH,
+                     self.window.convertSizeToLogic(Size(width, 0), APPFONT).Width)
+            if du != self._width_du:
+                self._width_du = du
+                self._controls = layout.build(du)
+                self._apply_layout(self._controls)
+            h = self.window.convertSizeToPixel(
+                Size(0, layout.total_height(self._controls)), APPFONT).Height
+        except Exception:
+            h = self._height or 700
         return LayoutSize(h, -1, h)
 
     def getMinimalWidth(self):
-        return 240
+        """Narrowest deck the panel can live in, in pixels: the layout's own minimum.
+
+        ``layout.build`` clamps at ``MIN_WIDTH`` dialog units and never re-flows below it,
+        so answering less would let the sidebar clip the right-hand button column. Same
+        conversion caveat as ``getHeightForWidth``: without a peer there is no unit
+        conversion, and the fallback is MIN_WIDTH at a typical 8x16 appfont.
+        """
+        try:
+            return self.window.convertSizeToPixel(Size(layout.MIN_WIDTH, 0), APPFONT).Width
+        except Exception:
+            return 280
 
     # --- XComponent -------------------------------------------------------------
     def dispose(self):
@@ -127,18 +157,37 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
 
     # --- construction -----------------------------------------------------------
     def _build_controls(self):
-        for c in layout.CONTROLS:
+        self._controls = layout.build(self._width_du)
+        for c in self._controls:
             m = self.model.createInstance(f"com.sun.star.awt.UnoControl{c.kind}Model")
             m.Name = c.name
             m.PositionX, m.PositionY, m.Width, m.Height = c.x, c.y, c.w, c.h
             for k, v in c.props.items():
-                m.setPropertyValue(k, v)
+                if k != "Visible":       # not a model property: see _set_visible
+                    m.setPropertyValue(k, v)
             self.model.insertByName(c.name, m)
+        for c in self._controls:
+            if "Visible" in c.props:
+                self._set_visible(c.name, c.props["Visible"])
         for name, command in layout.ACTIONS.items():
             ctrl = self.window.getControl(name)
             ctrl.setActionCommand(command)
             ctrl.addActionListener(self)
-        self.window.getControl("Problems").addItemListener(self)
+        self.window.getControl("Citations").addItemListener(self)
+
+    def _apply_layout(self, controls):
+        """Move and resize the existing models after a width change.
+
+        Geometry only: the progress bar's visibility belongs to set_progress.
+        """
+        for c in controls:
+            m = self.model.getByName(c.name)
+            m.PositionX, m.PositionY, m.Width, m.Height = c.x, c.y, c.w, c.h
+
+    def _set_visible(self, name, visible):
+        """Show or hide a control. The model has no `Visible` property (it is spelled
+        `EnableVisible`), so go through the control's XWindow, as the panel window does."""
+        self.window.getControl(name).setVisible(bool(visible))
 
     def _attach_session(self):
         model = self.frame.getController().getModel()
@@ -205,8 +254,20 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         elif cmd == "insert_norm":
             reference = self.window.getControl("Input").getText().strip()
             self.session.run_command("insert_norm", {"reference": reference} if reference else {})
+        elif cmd == "show_text":
+            # no reference typed: the core reads the selection (spec §7.3), so refuse early
+            # when there is nothing to read rather than sending an empty request
+            reference = self.window.getControl("Input").getText().strip()
+            if not reference and not self.session.adapter.read_selection()["text"]:
+                self.set_status("Scrivi un riferimento o seleziona un testo")
+                return
+            self.session.run_command("show_text", {"reference": reference} if reference else {})
+        elif cmd == "list_citations":
+            self.session.run_command("list_citations", {"scope": "document"})
         elif cmd == "cancel":
             self.session.cancel()
+        elif cmd == "clear":
+            self.session.clear_transcript()
         elif cmd == "settings":
             created = paths.write_template_if_missing()
             self.session.note(f"File di configurazione: {paths.config_path()}"
@@ -214,9 +275,9 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                               + f"\nLog del core: {paths.config_path().parent / 'core-stderr.log'}"
                               "\nModifica il file con un editor di testo e riavvia LibreOffice.")
 
-    def itemStateChanged(self, event):          # XItemListener: problem selected
+    def itemStateChanged(self, event):          # XItemListener: citation selected
         if self.session is not None:
-            self.session.goto_problem(self.window.getControl("Problems").getSelectedItemPos())
+            self.session.select_citation(self.window.getControl("Citations").getSelectedItemPos())
 
     # --- View protocol (session → controls) ---------------------------------------------
     def append(self, text):
@@ -236,5 +297,16 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName(name).Enabled = not busy
         self.model.getByName("Cancel").Enabled = bool(busy)
 
-    def set_problems(self, labels):
-        self.model.getByName("Problems").StringItemList = tuple(labels)
+    def set_citations(self, labels):
+        self.model.getByName("Citations").StringItemList = tuple(labels)
+        self.model.getByName("CitationsLabel").Label = f"Citazioni ({len(labels)})"
+
+    def set_progress(self, done, total):
+        """Show the bar at done/total; ``total`` None (or zero) hides it again."""
+        if not total:
+            self._set_visible("Progress", False)
+            return
+        m = self.model.getByName("Progress")
+        m.ProgressValueMax = total
+        m.ProgressValue = max(0, min(done, total))
+        self._set_visible("Progress", True)

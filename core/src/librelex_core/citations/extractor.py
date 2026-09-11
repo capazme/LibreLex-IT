@@ -20,6 +20,9 @@ class Citation:
     canonical: str | None
     court: str | None = None
     verifiable: bool = False
+    number: str | None = None
+    year: str | None = None
+    section: str | None = None
 
 
 def extract_all(paragraphs: list[Paragraph]) -> list[Citation]:
@@ -46,6 +49,9 @@ def extract_all(paragraphs: list[Paragraph]) -> list[Citation]:
                     j.canonical(),
                     court=j.court,
                     verifiable=j.verifiable_v1,
+                    number=j.number,
+                    year=j.year,
+                    section=j.section,
                 )
             )
         items.sort(key=lambda c: c.start)

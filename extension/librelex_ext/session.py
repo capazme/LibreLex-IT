@@ -12,7 +12,13 @@ from typing import Any, Protocol
 
 from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__
 from librelex_ext.bridge import BridgeError
-from librelex_ext.render import render_error, render_insert_summary, render_verify_summary
+from librelex_ext.render import (
+    render_error,
+    render_insert_summary,
+    render_list_summary,
+    render_show_text,
+    render_verify_summary,
+)
 
 
 class View(Protocol):
@@ -20,7 +26,8 @@ class View(Protocol):
     def set_transcript(self, text: str) -> None: ...
     def set_status(self, text: str) -> None: ...
     def set_busy(self, busy: bool) -> None: ...
-    def set_problems(self, labels: list[str]) -> None: ...
+    def set_citations(self, labels: list[str]) -> None: ...
+    def set_progress(self, done: int, total: int | None) -> None: ...
 
 
 class NullView:
@@ -28,7 +35,8 @@ class NullView:
     def set_transcript(self, text: str) -> None: ...
     def set_status(self, text: str) -> None: ...
     def set_busy(self, busy: bool) -> None: ...
-    def set_problems(self, labels: list[str]) -> None: ...
+    def set_citations(self, labels: list[str]) -> None: ...
+    def set_progress(self, done: int, total: int | None) -> None: ...
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
@@ -72,7 +80,8 @@ class Session:
         self.request_id: str | None = None
         self._n = 0
         self.transcript: list[str] = []
-        self.problems: list[tuple[str, str]] = []
+        self.citations: list[tuple[str, str, str]] = []
+        self.texts: dict[str, str] = {}
         self.view: View = NullView()
         self._buffer: list[dict] = []
         self.ui_post: Callable[[dict], None] = self._buffer.append
@@ -81,7 +90,7 @@ class Session:
     def bind(self, view: View, ui_post: Callable[[dict], None]) -> None:
         self.view, self.ui_post = view, ui_post
         view.set_transcript("\n".join(self.transcript))
-        view.set_problems([label for label, _ in self.problems])
+        view.set_citations([label for label, _, _ in self.citations])
         view.set_busy(self.state in ("starting", "busy"))
         buffered, self._buffer = self._buffer, []
         for ev in buffered:
@@ -126,12 +135,22 @@ class Session:
             if self._send({"type": "cancel", "id": self.request_id, "doc_id": self.doc_id}):
                 self.view.set_status("Annullamento...")
 
-    def goto_problem(self, index: int) -> None:
-        if 0 <= index < len(self.problems):
-            try:
-                self.adapter.goto(self.problems[index][1])
-            except Exception as e:  # navigation is best effort
-                self.view.set_status(f"Posizione non raggiungibile: {e}")
+    def select_citation(self, index: int) -> None:
+        if not (0 <= index < len(self.citations)):
+            return
+        _label, paragraph_id, canonical = self.citations[index]
+        try:
+            self.adapter.goto(paragraph_id)
+        except Exception as e:  # navigation is best effort
+            self.view.set_status(f"Posizione non raggiungibile: {e}")
+        # Cache first: a text we already downloaded needs no core, so it is shown even
+        # while another request is running; only an actual fetch has to wait.
+        if canonical in self.texts:
+            self._append(self.texts[canonical])
+        elif self.state not in ("ready", "stopped"):
+            self.view.set_status("Testo disponibile a fine richiesta: riprova tra poco")
+        else:
+            self.run_command("show_text", {"reference": canonical})
 
     def note(self, text: str) -> None:
         """Write a view-agnostic message to the transcript (startup banner, settings info)
@@ -140,6 +159,11 @@ class Session:
         it survives the panel being closed and reopened.
         """
         self._append(text)
+
+    def clear_transcript(self) -> None:
+        """Empty the answers pane and the replay buffer a reopened panel is rebuilt from."""
+        self.transcript.clear()
+        self.view.set_transcript("")
 
     def shutdown(self) -> None:
         if self.bridge is not None:
@@ -159,6 +183,7 @@ class Session:
             self.bridge = None
             self.state, self.pending, self.request_id = "stopped", None, None
             self.view.set_busy(False)
+            self.view.set_progress(0, None)
             self.view.set_status("Core non attivo")
             if was_active:
                 log = os.path.join(os.path.dirname(self.config_path), "core-stderr.log")
@@ -198,7 +223,9 @@ class Session:
         self.view.set_status(msg.get("text", ""))
 
     def _on_progress(self, msg: dict) -> None:
-        self.view.set_status(f"Verificate {msg.get('done', 0)} di {msg.get('total', 0)}")
+        done, total = msg.get("done", 0), msg.get("total", 0)
+        self.view.set_status(f"Verificate {done} di {total}")
+        self.view.set_progress(done, total)
 
     def _on_delta(self, msg: dict) -> None:
         self._append(msg.get("text", ""))
@@ -231,15 +258,23 @@ class Session:
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
         self.view.set_busy(False)
+        self.view.set_progress(0, None)
         self.view.set_status("Pronto")
         summary = msg.get("summary") or {}
         if msg.get("cancelled"):
             self._append(msg.get("text") or "Annullato.")
-        elif "per_verdetto" in summary:
+        elif "elenco" in summary or "per_verdetto" in summary:
             text, items = render_verify_summary(summary)
-            self.problems = items
-            self.view.set_problems([label for label, _ in items])
+            self._set_citations(items)
             self._append(text)
+        elif "citazioni" in summary:
+            text, items = render_list_summary(summary)
+            self._set_citations(items)
+            self._append(text)
+        elif "testo" in summary and "riferimento" in summary:
+            rendered = render_show_text(summary)
+            self.texts[summary["riferimento"]] = rendered
+            self._append(rendered)
         elif "riferimento" in summary:
             self._append(render_insert_summary(summary))
         else:
@@ -250,6 +285,7 @@ class Session:
             self.state, self.request_id = "ready", None
             self.view.set_busy(False)
             self.view.set_status("Pronto")
+        self.view.set_progress(0, None)
         self._append(render_error(msg.get("code", "?"), msg.get("message", "")))
 
     # --- helpers -------------------------------------------------------------
@@ -284,3 +320,7 @@ class Session:
     def _append(self, text: str) -> None:
         self.transcript.append(text)
         self.view.append(text)
+
+    def _set_citations(self, items: list[tuple[str, str, str]]) -> None:
+        self.citations = items
+        self.view.set_citations([label for label, _, _ in items])

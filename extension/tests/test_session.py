@@ -106,7 +106,8 @@ class FakeBridge:
 class FakeView:
     def __init__(self):
         self.lines, self.status, self.busy = [], "", None
-        self.problems, self.transcript = None, None
+        self.citations, self.transcript = None, None
+        self.progress = None
 
     def append(self, text):
         self.lines.append(text)
@@ -120,8 +121,11 @@ class FakeView:
     def set_busy(self, busy):
         self.busy = busy
 
-    def set_problems(self, labels):
-        self.problems = labels
+    def set_citations(self, labels):
+        self.citations = labels
+
+    def set_progress(self, done, total):
+        self.progress = (done, total)
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -265,12 +269,16 @@ def test_final_renders_summary_and_frees_the_session():
                     "problemi": [{"citazione": "Cass. n. 9/2024", "verdetto": "inesistente",
                                   "nota": "",
                                   "occorrenze": [{"paragraph_id": "p:4", "start": 0, "end": 1}]}],
+                    "elenco": [{"citazione": "Cass. n. 9/2024", "tipo": "sentenza",
+                                "verdetto": "inesistente", "nota": "",
+                                "occorrenze": [{"paragraph_id": "p:4", "start": 0, "end": 1}]}],
                     "da_controllare_a_mano": [], "non_interpretabili": [], "non_verificabili": [],
                     "da_riprovare": [], "commenti_inseriti": 1}}})
     assert s.state == "ready" and view.busy is False and view.status == "Pronto"
-    assert view.problems == ["Cass. n. 9/2024 · inesistente"]
-    s.goto_problem(0)
-    assert adapter.calls[-1] == ("goto", "p:4")
+    assert view.citations == ["✗ Cass. n. 9/2024"]
+    s.texts["Cass. n. 9/2024"] = "cached text"       # already fetched: navigation only
+    s.select_citation(0)
+    assert adapter.calls[-1] == ("goto", "p:4") and view.lines[-1] == "cached text"
     s.run_command("insert_norm", {})                       # core already running: sent directly
     assert bridges[0].sent[-1]["id"] == "r2" and s.state == "busy"
 
@@ -392,3 +400,105 @@ def test_note_updates_transcript_and_view_so_it_survives_rebind():
     view2 = FakeView()
     s.bind(view2, s.handle_event)                            # panel closed and reopened
     assert view2.transcript == "LibreLex-IT pronto."
+
+
+def _ready(s):
+    s.run_command("list_citations", {"scope": "document"})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+
+
+def test_list_citations_fills_the_list_and_click_fetches_then_caches_text():
+    s, adapter, view, bridges = make()
+    _ready(s)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Trovate 1 citazioni (1 occorrenze).",
+        "cancelled": False, "usage": None,
+        "summary": {"scope": "document", "citazioni_totali": 2, "citazioni_uniche": 2,
+                    "citazioni": [{"citazione": "art. 2043 c.c.", "tipo": "norma", "corte": None,
+                                   "verificabile": True,
+                                   "occorrenze": [{"paragraph_id": "p:4", "start": 0, "end": 1}]},
+                                  {"citazione": "art. 1218 c.c.", "tipo": "norma", "corte": None,
+                                   "verificabile": True,
+                                   "occorrenze": [{"paragraph_id": "p:7", "start": 0, "end": 1}]}],
+                    "non_interpretabili": []}}})
+    assert view.citations == ["art. 2043 c.c.", "art. 1218 c.c."] and s.state == "ready"
+    s.select_citation(0)
+    assert adapter.calls[-1] == ("goto", "p:4")
+    assert bridges[0].sent[-1]["name"] == "show_text"
+    assert bridges[0].sent[-1]["args"] == {"reference": "art. 2043 c.c."}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Testo di art. 2043 c.c.",
+        "cancelled": False, "usage": None,
+        "summary": {"tipo": "norma", "riferimento": "art. 2043 c.c.",
+                    "titolo": "art. 2043 c.c. (Risarcimento)", "testo": "Qualunque fatto",
+                    "massima": None, "fonte": "Normattiva", "url": "https://x",
+                    "troncato": False}}})
+    assert view.lines[-1].startswith("— art. 2043 c.c. (Risarcimento)")
+    assert "art. 2043 c.c." in s.texts
+    n = len(bridges[0].sent)
+    s.select_citation(0)                                # cached: no new request
+    assert len(bridges[0].sent) == n and view.lines[-1] == s.texts["art. 2043 c.c."]
+    s.run_command("verify_citations", {})
+    n = len(bridges[0].sent)
+    s.select_citation(0)                                # busy but cached: shown anyway
+    assert adapter.calls[-1] == ("goto", "p:4") and view.lines[-1] == s.texts["art. 2043 c.c."]
+    assert len(bridges[0].sent) == n                    # no request while the core is busy
+    view.status = ""
+    s.select_citation(1)                                # busy and not cached: navigate only
+    assert adapter.calls[-1] == ("goto", "p:7") and "fine richiesta" in view.status
+    assert len(bridges[0].sent) == n
+
+
+def test_show_text_button_flow_and_unavailable_error():
+    s, adapter, view, bridges = make()
+    _ready(s)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "x", "cancelled": False, "usage": None,
+        "summary": {"scope": "document", "citazioni_totali": 0, "citazioni_uniche": 0,
+                    "citazioni": [], "non_interpretabili": []}}})
+    s.run_command("show_text", {"reference": "TAR Lazio n. 1/2023"})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r2", "code": "text_unavailable",
+        "message": "testo non disponibile per TAR Lazio n. 1/2023"}})
+    assert s.state == "ready" and view.lines[-1].startswith("Errore (text_unavailable)")
+
+
+def test_progress_drives_the_bar_and_the_end_of_a_request_hides_it():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert view.progress is None
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r1", "done": 3, "total": 9}})
+    assert view.progress == (3, 9) and view.status == "Verificate 3 di 9"
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.", "cancelled": False,
+        "usage": None, "summary": {}}})
+    assert view.progress == (0, None)
+
+
+def test_an_error_and_a_dead_core_also_hide_the_bar():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r1", "done": 1, "total": 4}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
+    assert view.progress == (0, None)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r2", "done": 2, "total": 4}})
+    s.handle_event({"kind": "exit", "code": 1})
+    assert view.progress == (0, None)
+
+
+def test_clear_transcript_empties_the_replay_buffer_and_the_view():
+    s, adapter, view, bridges = make()
+    s.note("prima riga")
+    s.note("seconda riga")
+    assert s.transcript == ["prima riga", "seconda riga"]
+    s.clear_transcript()
+    assert s.transcript == [] and view.transcript == ""

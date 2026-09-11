@@ -29,12 +29,14 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
 
     class RecView:
         def __init__(self):
-            self.lines, self.status, self.problems = [], [], None
+            self.lines, self.status, self.citations = [], [], None
+            self.progress = None
         def append(self, t): self.lines.append(t)
         def set_transcript(self, t): pass
         def set_status(self, t): self.status.append(t)
         def set_busy(self, b): pass
-        def set_problems(self, labels): self.problems = labels
+        def set_citations(self, labels): self.citations = labels
+        def set_progress(self, done, total): self.progress = (done, total)
 
     def pump(session, events, until_state="ready", timeout=180):
         import time
@@ -76,8 +78,14 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
         s.run_command("verify_citations", {{"scope": "document"}})
         out["state_after_verify"] = pump(s, events)
         out["lines_after_verify"] = list(view.lines)
-        out["problems"] = view.problems
+        out["citations_after_verify"] = view.citations
         out["annotations"] = annotations(doc)
+        s.run_command("show_text", {{"reference": "art. 2043 c.c."}})
+        out["state_after_show"] = pump(s, events)
+        out["shown"] = view.lines[-1]
+        s.run_command("list_citations", {{"scope": "document"}})
+        out["state_after_list"] = pump(s, events)
+        out["citations"] = view.citations
         s.shutdown()
         doc.close(True)
     ''', timeout=300, env={"LIBRELEX_CONFIG": str(cfg)})
@@ -90,6 +98,16 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
     assert out["redlines"] and all(a == "LibreLex" for _, a in out["redlines"])
     assert any(b.startswith("LibreLex.norma.") for b in out["bookmarks"])
     assert out["state_after_verify"] == "ready", out["lines_after_verify"]
-    assert out["problems"] == ["Cass. n. 99999/2024 · inesistente"]
+    # the inserted heading "Art. 2043 c.c." is a second occurrence of the same canonical
+    # reference, hence "×2"; the unique citations stay two
+    assert out["citations_after_verify"] == ["✓ art. 2043 c.c. ×2", "✗ Cass. n. 99999/2024"]
     assert [c["anchor"] for c in out["annotations"]] == ["Cass. n. 99999/2024"]
     assert out["annotations"][0]["author"] == "LibreLex · verifica"
+    # Mostra testo on a typed reference: the norm text arrives from the fake cite_law
+    assert out["state_after_show"] == "ready", out["shown"]
+    assert out["shown"].startswith("— art. 2043 c.c.") and "Qualunque fatto doloso" in out["shown"]
+    # Elenca citazioni: extraction only, no tool call, no verdict markers. The inserted
+    # article adds no new canonical citation, only a second occurrence of art. 2043 c.c.
+    # (its heading), which is why the first label carries "×2".
+    assert out["state_after_list"] == "ready", out["lines_after_verify"]
+    assert out["citations"] == ["art. 2043 c.c. ×2", "Cass. n. 99999/2024"]

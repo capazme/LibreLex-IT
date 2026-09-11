@@ -114,3 +114,21 @@ async def test_footnotes_can_be_excluded():
     async with LegalToolsClient(server) as tools:
         await run_verify(doc, tools, "document", emit, "r", include_footnotes=False)
     assert "Cass. n. 777/2023" not in calls["verifica"][0]
+
+
+async def test_summary_elenco_covers_every_canonical_citation():
+    doc = FakeDocument(
+        ["art. 2043 c.c., Cass. n. 99999/2024 e Corte cost. n. 1/2020; poi art. 2043 c.c."])
+    server, _ = make_fake_legal_server(verdicts={"Cass. n. 99999/2024": ("inesistente", "no")})
+
+    async def emit(m):
+        pass
+
+    async with LegalToolsClient(server) as tools:
+        summary = await run_verify(doc, tools, "document", emit, "r1")
+    elenco = summary["elenco"]
+    assert [e["citazione"] for e in elenco] == [
+        "art. 2043 c.c.", "Cass. n. 99999/2024", "Corte cost. n. 1/2020"]
+    assert elenco[0]["verdetto"] == "verificata" and len(elenco[0]["occorrenze"]) == 2
+    assert elenco[1]["verdetto"] == "inesistente" and elenco[1]["nota"] == "no"
+    assert elenco[2]["verdetto"] == "da controllare a mano" and elenco[2]["tipo"] == "sentenza"
