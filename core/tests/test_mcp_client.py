@@ -34,11 +34,44 @@ async def test_connect_and_call(fake_legal):
     assert calls["cite"] == ["art. 2043 c.c."]
 
 
-async def test_rejects_old_server():
+async def test_old_version_without_contract_is_rejected():
+    """Tool listing succeeds here (the fake server always answers it), so this exercises
+    the contract-absence path (reason="contract"), not the version-floor fallback below."""
     server, _ = make_fake_legal_server(version="2.13.1", json_contract=False)
-    with pytest.raises(IncompatibleServer, match="2.14.0"):
+    with pytest.raises(IncompatibleServer, match="2.14.0") as e:
         async with LegalToolsClient(server):
             pass
+    assert e.value.reason == "contract"
+
+
+async def test_version_floor_rejects_an_old_server_when_tool_listing_fails(monkeypatch):
+    """The one path with no schema to inspect: `list_tools()` itself fails (old servers,
+    transport quirks), so compatibility falls back to comparing `serverInfo.version`."""
+    from fastmcp import Client
+
+    async def boom(self: Client) -> None:
+        raise RuntimeError("transport does not support tool listing")
+
+    monkeypatch.setattr(Client, "list_tools", boom)
+    server, _ = make_fake_legal_server(version="2.13.1")
+    client = LegalToolsClient(server)
+    with pytest.raises(IncompatibleServer, match="2.14.0") as e:
+        async with client:
+            pass
+    assert client.contract_checked is False
+    assert e.value.reason == "version"
+
+
+async def test_version_floor_accepts_a_new_server_when_tool_listing_fails(monkeypatch):
+    from fastmcp import Client
+
+    async def boom(self: Client) -> None:
+        raise RuntimeError("transport does not support tool listing")
+
+    monkeypatch.setattr(Client, "list_tools", boom)
+    server, _ = make_fake_legal_server(version="2.14.0")
+    async with LegalToolsClient(server) as client:
+        assert client.contract_checked is False and client.server_version == "2.14.0"
 
 
 async def test_unknown_tool_is_tool_error(fake_legal):
