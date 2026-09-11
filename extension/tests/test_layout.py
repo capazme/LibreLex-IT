@@ -23,4 +23,14 @@ def test_required_controls_and_copy():
     assert set(ACTIONS) <= set(by) and set(BUSY_DISABLED) <= set(by)
     assert by["VerifyDocument"].props["Label"] == "Verifica citazioni"
     assert by["InsertNorm"].props["Label"] == "Inserisci norma"
+    assert by["ShowText"].props["Label"] == "Mostra testo"
+    assert by["ListCitations"].props["Label"] == "Elenca citazioni"
     assert by["Cancel"].props["Label"] == "Annulla"
+    assert (by["CitationsLabel"].props["Label"]
+            == "Citazioni (clic: vai al paragrafo e mostra il testo)")
+    assert by["Citations"].kind == "ListBox" and by["Citations"].h == 60
+
+
+def test_citation_actions_are_wired_and_disabled_while_busy():
+    assert ACTIONS["ShowText"] == "show_text" and ACTIONS["ListCitations"] == "list_citations"
+    assert "ShowText" in BUSY_DISABLED and "ListCitations" in BUSY_DISABLED

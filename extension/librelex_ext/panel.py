@@ -138,7 +138,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             ctrl = self.window.getControl(name)
             ctrl.setActionCommand(command)
             ctrl.addActionListener(self)
-        self.window.getControl("Problems").addItemListener(self)
+        self.window.getControl("Citations").addItemListener(self)
 
     def _attach_session(self):
         model = self.frame.getController().getModel()
@@ -205,6 +205,16 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         elif cmd == "insert_norm":
             reference = self.window.getControl("Input").getText().strip()
             self.session.run_command("insert_norm", {"reference": reference} if reference else {})
+        elif cmd == "show_text":
+            # no reference typed: the core reads the selection (spec §7.3), so refuse early
+            # when there is nothing to read rather than sending an empty request
+            reference = self.window.getControl("Input").getText().strip()
+            if not reference and not self.session.adapter.read_selection()["text"]:
+                self.set_status("Scrivi un riferimento o seleziona un testo")
+                return
+            self.session.run_command("show_text", {"reference": reference} if reference else {})
+        elif cmd == "list_citations":
+            self.session.run_command("list_citations", {"scope": "document"})
         elif cmd == "cancel":
             self.session.cancel()
         elif cmd == "settings":
@@ -214,9 +224,9 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                               + f"\nLog del core: {paths.config_path().parent / 'core-stderr.log'}"
                               "\nModifica il file con un editor di testo e riavvia LibreOffice.")
 
-    def itemStateChanged(self, event):          # XItemListener: problem selected
+    def itemStateChanged(self, event):          # XItemListener: citation selected
         if self.session is not None:
-            self.session.goto_problem(self.window.getControl("Problems").getSelectedItemPos())
+            self.session.select_citation(self.window.getControl("Citations").getSelectedItemPos())
 
     # --- View protocol (session → controls) ---------------------------------------------
     def append(self, text):
@@ -236,5 +246,5 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName(name).Enabled = not busy
         self.model.getByName("Cancel").Enabled = bool(busy)
 
-    def set_problems(self, labels):
-        self.model.getByName("Problems").StringItemList = tuple(labels)
+    def set_citations(self, labels):
+        self.model.getByName("Citations").StringItemList = tuple(labels)

@@ -3,7 +3,8 @@
 AI copilot for LibreOffice Writer, for Italian legal drafting, grounded on
 official sources through [mcp-legal-it](https://github.com/capazme/mcp-legal-it).
 
-Status: M1 complete (verify citations, insert norm from the sidebar; no LLM yet).
+Status: M1 complete (verify citations, list citations, show the text of a reference and
+insert a norm from the sidebar; no LLM yet).
 Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 
 ## Install (macOS, LibreOffice 26.2+)
@@ -13,6 +14,18 @@ Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 3. Quit and restart LibreOffice. In Writer: View > Sidebar > LibreLex > Copilota legale.
 4. First click creates `~/Library/Application Support/LibreLex/config.toml` (0600). Edit `[mcp_legal_it] command`
    if you run mcp-legal-it from a local checkout; LibreOffice must be restarted after changes.
+
+## Usage
+
+- **Verifica citazioni** (or *Verifica selezione*): checks every citation of the document
+  (or of the selection) against the official sources and comments the problematic ones in
+  the document; the panel list shows each reference with its verdict (✓ verified,
+  ✗ problem, ? not verified, · to be checked by hand).
+- **Elenca citazioni**: lists the references of the document without consulting any source
+  (no network); clicking an entry jumps to its first occurrence and shows its text in the
+  panel.
+- **Mostra testo**: shows in the panel the text of the reference typed in the input box, or
+  of the one selected in the document; nothing is written into the document.
 
 The first action runs `uv run` on the bundled core: network access is needed once to build its environment.
 Logs of the core process: `~/Library/Application Support/LibreLex/core-stderr.log` (no document text).
