@@ -13,9 +13,9 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import unohelper  # noqa: E402
-from librelex_ext.panel import PanelFactory  # noqa: E402
 
 from librelex_ext import IMPLEMENTATION_NAME  # noqa: E402
+from librelex_ext.panel import PanelFactory  # noqa: E402
 
 g_ImplementationHelper = unohelper.ImplementationHelper()
 g_ImplementationHelper.addImplementation(

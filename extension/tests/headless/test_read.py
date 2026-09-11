@@ -71,3 +71,17 @@ def test_selection_and_goto(soffice):
     assert out["fn_sel"]["text"] == ""
     assert out["fn_sel2"] == {"text": "Cfr.",
                               "anchor": {"paragraph_id": "fn:1/p:0", "start": 0, "end": 4}}
+
+
+def test_panel_module_imports_inside_libreoffice(soffice):
+    out = run_probe(soffice, "panel_import", '''
+    def probe(ctx, out):
+        from librelex_ext import panel, registry
+        out["urls"] = [panel.PANEL_URL, panel.XDL_URL]
+        out["factory"] = type(panel.PanelFactory(ctx)).__name__
+        registry.ensure_terminate_listener(ctx)
+        out["pkg"] = str(panel.package_dir(ctx))
+    ''')
+    assert out["urls"] == ["private:resource/toolpanel/LibreLexPanelFactory/Panel",
+                           "vnd.sun.star.extension://org.librelex.extension/dialogs/panel.xdl"]
+    assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
