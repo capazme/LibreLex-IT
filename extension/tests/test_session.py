@@ -81,8 +81,9 @@ class FakeAdapter:
 
 
 class FakeBridge:
-    def __init__(self, fail_start=False):
+    def __init__(self, fail_start=False, fail_send=False):
         self.sent, self.started, self.stopped, self.fail_start = [], False, False, fail_start
+        self.fail_send = fail_send
         self.alive = False
 
     def start(self):
@@ -91,6 +92,8 @@ class FakeBridge:
         self.started = self.alive = True
 
     def send(self, msg):
+        if self.fail_send:
+            raise BridgeError("core non raggiungibile: [Errno 32] Broken pipe")
         self.sent.append(msg)
 
     def is_alive(self):
@@ -121,12 +124,12 @@ class FakeView:
         self.problems = labels
 
 
-def make(fail_start=False, adapter=None):
+def make(fail_start=False, adapter=None, fail_send=False):
     adapter, view = adapter or FakeAdapter(), FakeView()
     bridges = []
 
     def factory(on_event):
-        b = FakeBridge(fail_start)
+        b = FakeBridge(fail_start, fail_send)
         bridges.append(b)
         return b
 
@@ -314,6 +317,53 @@ def test_protocol_mismatch_and_start_failure_are_reported():
     s2, _, view2, _ = make(fail_start=True)
     s2.run_command("insert_norm", {})
     assert s2.state == "stopped" and "impossibile avviare uv" in view2.lines[-1]
+
+
+def test_a_dead_pipe_on_hello_is_shown_in_the_panel_instead_of_raising():
+    """Regression (whole-branch review I2): BridgeError escaped into the UNO listener.
+
+    Typical trigger: a first run where ``uv run --frozen`` cannot build the environment, the
+    child dies at once and the very first write hits EPIPE. The user must see why, and the
+    buttons must be re-enabled without waiting for the ``exit`` event to be drained.
+    """
+    s, adapter, view, bridges = make(fail_send=True)
+    s.run_command("verify_citations", {"scope": "document"})
+    assert s.state == "stopped" and s.bridge is None and s.pending is None
+    assert view.busy is False and view.status == "Core non attivo"
+    assert "Core non raggiungibile" in view.lines[-1] and bridges[0].stopped
+    lines = list(view.lines)
+    s.handle_event({"kind": "exit", "code": 1})     # the reader thread reports the exit later
+    assert view.lines == lines                       # already reported: no duplicate message
+    s.run_command("insert_norm", {})                 # still restarts lazily on the next action
+    assert len(bridges) == 2
+
+
+def test_a_dead_pipe_on_a_command_is_shown_in_the_panel_instead_of_raising():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.", "cancelled": False,
+        "usage": None, "summary": {}}})
+    assert s.state == "ready"
+    bridges[0].fail_send = True                      # the core dies between two requests
+    s.run_command("insert_norm", {})
+    assert s.state == "stopped" and s.request_id is None and view.busy is False
+    assert view.status == "Core non attivo" and "Core non raggiungibile" in view.lines[-1]
+
+
+def test_a_dead_pipe_on_cancel_is_shown_in_the_panel_instead_of_raising():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert s.state == "busy"
+    bridges[0].fail_send = True
+    s.cancel()
+    assert s.state == "stopped" and view.busy is False
+    assert view.status == "Core non attivo"          # not "Annullamento..."
+    assert "Core non raggiungibile" in view.lines[-1]
 
 
 def test_events_are_buffered_while_unbound_and_replayed_on_bind():

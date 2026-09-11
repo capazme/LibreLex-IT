@@ -115,16 +115,16 @@ class Session:
             self.pending = (name, args)
             self.view.set_busy(True)
             self.view.set_status("Avvio del core...")
-            self.bridge.send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
-                              "extension_version": __version__, "lo_version": self.lo_version,
-                              "has_markdown_filter": self.has_markdown_filter})
+            self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
+                        "extension_version": __version__, "lo_version": self.lo_version,
+                        "has_markdown_filter": self.has_markdown_filter})
             return
         self._send_command(name, args)
 
     def cancel(self) -> None:
         if self.state == "busy" and self.request_id and self.bridge is not None:
-            self.bridge.send({"type": "cancel", "id": self.request_id, "doc_id": self.doc_id})
-            self.view.set_status("Annullamento...")
+            if self._send({"type": "cancel", "id": self.request_id, "doc_id": self.doc_id}):
+                self.view.set_status("Annullamento...")
 
     def goto_problem(self, index: int) -> None:
         if 0 <= index < len(self.problems):
@@ -253,14 +253,33 @@ class Session:
         self._append(render_error(msg.get("code", "?"), msg.get("message", "")))
 
     # --- helpers -------------------------------------------------------------
+    def _send(self, msg: dict) -> bool:
+        """Write to the core, reporting a dead pipe in the panel instead of raising.
+
+        Every caller runs inside a UNO listener (a button click or an AsyncCallback), where an
+        escaping ``BridgeError`` is swallowed by pyuno: the user would see nothing and the
+        buttons would stay disabled until the ``exit`` event happened to be drained. The
+        typical trigger is a first run where ``uv run --frozen`` cannot build the environment,
+        so the child dies and this very first write hits EPIPE.
+        """
+        try:
+            self.bridge.send(msg)
+            return True
+        except BridgeError as e:
+            self.shutdown()          # drops the bridge; the next command restarts it
+            self.view.set_busy(False)
+            self.view.set_status("Core non attivo")
+            self._append(f"Core non raggiungibile: {e}. Riprova: verrà riavviato.")
+            return False
+
     def _send_command(self, name: str, args: dict) -> None:
         self._n += 1
         self.request_id = f"r{self._n}"
         self.state = "busy"
         self.view.set_busy(True)
         self.view.set_status("Invio della richiesta...")
-        self.bridge.send({"type": "command", "id": self.request_id, "doc_id": self.doc_id,
-                          "name": name, "args": args})
+        self._send({"type": "command", "id": self.request_id, "doc_id": self.doc_id,
+                    "name": name, "args": args})
 
     def _append(self, text: str) -> None:
         self.transcript.append(text)

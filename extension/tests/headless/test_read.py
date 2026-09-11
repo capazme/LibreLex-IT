@@ -90,12 +90,12 @@ def test_panel_module_imports_inside_libreoffice(soffice):
     assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
 
 
-def test_missing_uv_is_a_graceful_bridge_error_and_banner_survives_reopen(soffice):
-    """Regression test for review findings 1 and 2 on task 9.
+def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
+    """Regression test for review findings 1 and 2 on task 9 and for whole-branch I2/m2.
 
     Uses a bare-bones stand-in for Panel.window/model (getControl/getByName only) so the
-    real Panel._attach_session/Session code path runs against a real Writer document and
-    frame, without needing the XDL container window.
+    real Panel._attach_session/registry.session_for/Session code path runs against a real
+    Writer document and frame, without needing the XDL container window.
     """
     config_path = Path(tempfile.mkdtemp(prefix="librelex-cfg-")) / "config.toml"
     out = run_probe(soffice, "panel_uv_and_banner", '''
@@ -104,21 +104,6 @@ def test_missing_uv_is_a_graceful_bridge_error_and_banner_survives_reopen(soffic
         from librelex_ext import panel
 
         paths_mod.find_uv = lambda *a, **k: None  # deterministically "uv not found"
-        # registry.session_for's document-disposal listener is a separate, pre-existing
-        # issue (not one of the two findings this test covers). Keep the real "one session
-        # per RuntimeUID" behaviour this test needs (reopening the panel must reuse the
-        # session) but skip the broken model.addEventListener(...) call.
-        _fake_sessions = {}
-
-        def fake_session_for(model, factory):
-            doc_id = model.RuntimeUID
-            session = _fake_sessions.get(doc_id)
-            if session is None:
-                session = factory()
-                _fake_sessions[doc_id] = session
-            return session
-
-        panel.registry.session_for = fake_session_for
 
         class FakeCtrl:
             def __init__(self):
@@ -169,6 +154,26 @@ def test_missing_uv_is_a_graceful_bridge_error_and_banner_survives_reopen(soffic
         p2.window, p2.model = FakeWindow(), FakeModel()
         p2._attach_session()
         out["transcript_after_reopen"] = p2.window.getControl("Transcript").getText()
+        out["same_session"] = p1.session is p2.session
+
+        def boom(*a, **k):                  # e.g. a config.toml the extension cannot digest
+            raise ValueError("config.toml illeggibile")
+
+        paths_mod.bridge_spec = boom
+        p2.session.run_command("insert_norm", {})   # must not raise out of run_command either
+        out["transcript_3"] = p2.window.getControl("Transcript").getText()
+        out["state_3"] = p2.session.state
+
+        # whole-branch m1: an event already queued when the panel is disposed must still
+        # reach the session; a dropped `final` would leave it busy forever.
+        p2.session.state, p2.session.request_id = "busy", "r9"
+        p2.queue.put({"kind": "message", "msg": {
+            "type": "final", "request_id": "r9", "text": "Fatto.", "cancelled": False,
+            "usage": None, "summary": {}}})
+        p2.dispose()
+        out["queue_empty_after_dispose"] = p2.queue.empty()
+        out["state_after_dispose"] = p1.session.state
+        out["transcript_4"] = p1.session.transcript[-1]
 
         p1.session.shutdown()
         doc.close(False)
@@ -181,3 +186,11 @@ def test_missing_uv_is_a_graceful_bridge_error_and_banner_survives_reopen(soffic
     # closing and reopening the panel, because both went through Session.transcript
     assert out["transcript_after_reopen"] == out["transcript_2"]
     assert out["transcript_after_reopen"].count("LibreLex-IT pronto") == 1
+    assert out["same_session"] is True          # the real registry.session_for, not a fake
+    # whole-branch I2/m2: a non-UvNotFound failure of bridge_spec also becomes a BridgeError
+    assert out["state_3"] == "stopped"
+    assert "Impossibile avviare il core: config.toml illeggibile" in out["transcript_3"]
+    # whole-branch m1: dispose() drains the queue into the session instead of dropping it
+    assert out["queue_empty_after_dispose"] is True
+    assert out["state_after_dispose"] == "ready"
+    assert out["transcript_4"] == "Fatto."

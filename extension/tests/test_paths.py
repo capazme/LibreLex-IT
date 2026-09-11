@@ -87,12 +87,25 @@ def test_bridge_spec_is_a_fixed_argv_with_private_env(tmp_path, monkeypatch):
     monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "config.toml"))
     spec = paths.bridge_spec(tmp_path / "nopkg", {"extension": {"uv": str(fake)}})
     core = paths.repo_core_dir()
-    assert spec.argv == [str(fake), "run", "--frozen", "--project", str(core), "librelex-core"]
+    assert spec.argv == [str(fake), "run", "--frozen", "--no-dev", "--project", str(core),
+                         "librelex-core"]   # --no-dev: no pytest/ruff on the user's first run
     assert spec.env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "core-env")
     assert spec.env["PYTHONUNBUFFERED"] == "1"
     assert spec.env["PATH"].split(os.pathsep)[0] == str(tmp_path)
     assert spec.stderr_path == tmp_path / "core-stderr.log"
     assert spec.cwd == str(core)
+
+
+def test_bridge_spec_tolerates_a_malformed_extension_entry(tmp_path, monkeypatch):
+    """A hand-edited `extension = "x"` must not raise AttributeError into a UNO listener."""
+    fake = tmp_path / "uv"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert paths.bridge_spec(tmp_path, {"extension": "x"}).argv[0] == str(fake)
+    assert paths.bridge_spec(tmp_path, {"extension": ["x"]}).argv[0] == str(fake)
+    assert paths.bridge_spec(tmp_path, {"extension": {"uv": None}}).argv[0] == str(fake)
 
 
 def test_bridge_spec_without_uv_raises_a_readable_error(tmp_path, monkeypatch):

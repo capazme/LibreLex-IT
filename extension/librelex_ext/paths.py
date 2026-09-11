@@ -138,7 +138,9 @@ def core_dir(package_dir: Path) -> Path:
 
 def bridge_spec(package_dir: Path, config: dict) -> BridgeSpec:
     """Fixed argv + environment for the core process (spec §5.2, §8.4)."""
-    uv = find_uv(str(config.get("extension", {}).get("uv", "") or ""))
+    section = config.get("extension")               # a hand-edited config.toml may hold anything
+    configured = section.get("uv", "") if isinstance(section, dict) else ""
+    uv = find_uv(str(configured or ""))
     if uv is None:
         raise UvNotFound(
             "uv non trovato: installa uv (https://docs.astral.sh/uv/) oppure indica il percorso "
@@ -149,5 +151,7 @@ def bridge_spec(package_dir: Path, config: dict) -> BridgeSpec:
     env["PATH"] = os.pathsep.join([str(Path(uv).parent), env.get("PATH", "")])
     env["UV_PROJECT_ENVIRONMENT"] = str(cfg_dir / "core-env")  # keep the .oxt directory pristine
     env["PYTHONUNBUFFERED"] = "1"
-    argv = [uv, "run", "--frozen", "--project", str(core), "librelex-core"]
+    # --no-dev: the core's [dependency-groups] dev (pytest, ruff, ...) is 72 extra packages
+    # the user would download on first use and never run.
+    argv = [uv, "run", "--frozen", "--no-dev", "--project", str(core), "librelex-core"]
     return BridgeSpec(argv=argv, env=env, stderr_path=cfg_dir / "core-stderr.log", cwd=str(core))

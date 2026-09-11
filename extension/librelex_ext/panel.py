@@ -107,8 +107,14 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     # --- XComponent -------------------------------------------------------------
     def dispose(self):
         if self.session is not None:
-            self.session.unbind()
-            self.session = None
+            session, self.session = self.session, None
+            # Unbind first (our controls may already be half-disposed), then drain: events
+            # queued before the panel went away must still reach the session, otherwise a
+            # queued `final` would leave it busy until the user presses Annulla or the panel
+            # is rebound. They land on the session's NullView, transcript and state, which is
+            # exactly what a reopened panel replays.
+            session.unbind()
+            self._drain(session)
 
     def addEventListener(self, listener):
         pass
@@ -145,8 +151,11 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             def bridge_factory(on_event):
                 try:
                     spec = paths.bridge_spec(package_dir(ctx), config)
-                except paths.UvNotFound as e:
-                    raise BridgeError(str(e)) from e
+                except Exception as e:
+                    # UvNotFound carries a ready-made Italian message; anything else (a
+                    # malformed config.toml, an unreadable path) must still reach the panel
+                    # as a BridgeError rather than escape into the UNO listener.
+                    raise BridgeError(str(e) or type(e).__name__) from e
                 return Bridge(spec, on_event)
 
             return Session(adapter, bridge_factory, doc_id=model.RuntimeUID,
@@ -170,14 +179,16 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         self.async_cb.addCallback(self, None)
 
     def notify(self, data):                      # XCallback, UI thread
-        if self.session is None:
-            return
+        if self.session is not None:
+            self._drain(self.session)
+
+    def _drain(self, session):
         while True:
             try:
                 ev = self.queue.get_nowait()
             except queue.Empty:
                 return
-            self.session.handle_event(ev)
+            session.handle_event(ev)
 
     # --- user actions -----------------------------------------------------------------
     def actionPerformed(self, event):           # XActionListener, UI thread

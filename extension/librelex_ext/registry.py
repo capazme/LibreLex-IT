@@ -3,21 +3,39 @@
 from __future__ import annotations
 
 import unohelper
+from com.sun.star.document import XEventListener
 from com.sun.star.frame import XTerminateListener
-from com.sun.star.lang import XEventListener
 
 _sessions: dict[str, object] = {}
 _terminate_registered = False
 
 
 class _ModelListener(unohelper.Base, XEventListener):
+    """``com.sun.star.document.XEventListener``, *not* the ``lang`` one.
+
+    On a ``com.sun.star.text.TextDocument`` pyuno resolves ``addEventListener`` to
+    ``XEventBroadcaster::addEventListener``, whose parameter is the document listener;
+    passing a ``lang.XEventListener`` raises ``CannotConvertException``. The document is
+    unloaded before it is disposed, so ``OnUnload`` is what actually fires on close.
+    """
+
     def __init__(self, doc_id: str):
         self.doc_id = doc_id
 
+    def notifyEvent(self, event):
+        if event.EventName == "OnUnload":
+            self._shutdown()
+
     def disposing(self, event):
-        session = _sessions.pop(self.doc_id, None)
+        self._shutdown()
+
+    def _shutdown(self):
+        session = _sessions.pop(self.doc_id, None)      # idempotent: OnUnload then disposing
         if session is not None:
-            session.shutdown()
+            try:
+                session.shutdown()
+            except Exception:
+                pass
 
 
 class _TerminateListener(unohelper.Base, XTerminateListener):
@@ -38,7 +56,12 @@ def session_for(model, factory):
     if session is None:
         session = factory()
         _sessions[doc_id] = session
-        model.addEventListener(_ModelListener(doc_id))
+        try:
+            model.addEventListener(_ModelListener(doc_id))
+        except Exception:
+            # Losing the per-document teardown costs one idle core process until LibreOffice
+            # terminates (the XTerminateListener still reaps it); never break the panel for it.
+            pass
     return session
 
 
