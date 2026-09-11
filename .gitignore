@@ -10,6 +10,7 @@ __pycache__/
 build/
 dist/
 *.oxt
+core-env/
 
 # Local config / secrets (never commit)
 .env

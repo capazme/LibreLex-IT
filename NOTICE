@@ -7,6 +7,8 @@ This product includes software developed at The Apache Software Foundation
 Third-party code and data:
 - Norm citation extractor ported from VisuaLexAPI (MIT, Copyright 2024-2026 Guglielmo Puzio).
 - Judgment citation patterns adapted from mcp-legal-it (Apache-2.0, same author).
-- Sidebar skeleton files in extension/ derived from LibreThinker
-  (https://github.com/mihailthebuilder/librethinker-extension), Mozilla Public License 2.0;
-  those files keep their MPL header and remain under MPL-2.0.
+- Sidebar skeleton derived from LibreThinker
+  (https://github.com/mihailthebuilder/librethinker-extension), Mozilla Public License 2.0:
+  extension/Sidebar.xcu, extension/Factories.xcu, extension/librelex_ext/panel.py,
+  spike/oxt/Sidebar.xcu, spike/oxt/Factory.xcu, spike/oxt/librelex_spike.py.
+  Those files keep their MPL header and remain under MPL-2.0; modifications are published here.

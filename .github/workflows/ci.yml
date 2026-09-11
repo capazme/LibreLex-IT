@@ -19,3 +19,48 @@ jobs:
       - run: uv sync --python ${{ matrix.python }}
       - run: uv run ruff check .
       - run: uv run pytest -q
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.13
+      - run: uv sync --python 3.13
+        working-directory: core
+      - run: uv sync --python 3.13
+        working-directory: extension
+      - run: uv run ruff check .
+        working-directory: extension
+      - run: uv run pytest -q -m "not headless"
+        working-directory: extension
+      - run: python3 scripts/build_oxt.py --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxt
+          path: dist/
+  headless:
+    # Best effort until a LibreOffice 26.x Linux package is pinned: verify the URL with
+    # `curl -sI` before changing LO_VERSION; the job never blocks the others.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      LO_VERSION: "26.8.0.3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.13
+      - run: uv sync --python 3.13
+        working-directory: core
+      - run: uv sync --python 3.13
+        working-directory: extension
+      - name: Install LibreOffice
+        run: |
+          set -e
+          URL="https://downloadarchive.documentfoundation.org/libreoffice/old/${LO_VERSION}/deb/x86_64/LibreOffice_${LO_VERSION}_Linux_x86-64_deb.tar.gz"
+          curl -fsSL "$URL" -o lo.tar.gz
+          tar xzf lo.tar.gz
+          sudo dpkg -i LibreOffice_*/DEBS/*.deb
+          ls /opt | grep -i libreoffice
+          echo "SOFFICE=$(ls -d /opt/libreoffice*/program/soffice | head -n1)" >> "$GITHUB_ENV"
+      - run: uv run pytest -q -m headless
+        working-directory: extension
