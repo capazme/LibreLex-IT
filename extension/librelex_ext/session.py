@@ -205,10 +205,16 @@ class Session:
     def _on_consent_request(self, msg: dict) -> None:
         # M1 has no LLM turn; refuse defensively and say so (spec §8.2 arrives with M2).
         self._append("Richiesta di consenso non supportata in questa versione: rifiutata.")
-        self.bridge.send({"type": "consent_result", "id": msg["request_id"],
-                          "call_id": msg["call_id"], "decision": "deny"})
+        if self.bridge is not None:
+            self.bridge.send({"type": "consent_result", "id": msg["request_id"],
+                              "call_id": msg["call_id"], "decision": "deny"})
 
     def _on_doc_call(self, msg: dict) -> None:
+        if self.bridge is None:
+            # shutdown() already ran (e.g. the document closed mid-request); the reader
+            # thread had already queued this event before the pipe was torn down. There is
+            # no bridge left to answer on, so drop it.
+            return
         reply = {"type": "doc_result", "id": msg["request_id"], "call_id": msg["call_id"]}
         try:
             reply.update(ok=True, result=dispatch_doc_call(self.adapter, msg["action"],

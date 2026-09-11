@@ -156,6 +156,35 @@ def test_doc_call_is_answered_with_matching_ids_and_errors_become_ok_false():
     assert res["ok"] is False and "azione sconosciuta" in res["error"] and res["call_id"] == "c8"
 
 
+def test_doc_call_after_shutdown_is_dropped_without_error():
+    s, adapter, view, bridges = make()
+    s.run_command("insert_norm", {"reference": "art. 2043 c.c."})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.shutdown()
+    sent_before = list(bridges[0].sent)
+    # A doc_call the reader thread had already queued arrives on the UI thread after
+    # shutdown() nulled self.bridge; it must be dropped, not raise AttributeError.
+    s.handle_event({"kind": "message", "msg": {
+        "type": "doc_call", "request_id": "r1", "call_id": "c9", "action": "goto",
+        "args": {"paragraph_id": "p:0"}}})
+    assert bridges[0].sent == sent_before
+    assert adapter.calls == []
+
+
+def test_consent_request_after_shutdown_is_dropped_without_error():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.shutdown()
+    sent_before = list(bridges[0].sent)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "consent_request", "request_id": "r1", "call_id": "c9"}})
+    assert bridges[0].sent == sent_before
+    assert "rifiutata" in view.lines[-1]
+
+
 def test_final_renders_summary_and_frees_the_session():
     s, adapter, view, bridges = make()
     s.run_command("verify_citations", {})
