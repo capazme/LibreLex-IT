@@ -139,3 +139,17 @@ def test_has_json_contract_helper():
     assert has_json_contract(ok[:1]) is False
     no_formato = T(name="cite_law", inputSchema={"properties": {"reference": {}}})
     assert has_json_contract([no_formato, ok[0]]) is False
+
+
+async def test_tool_specs_are_allowlisted_sorted_and_cached():
+    server, _ = make_fake_legal_server()
+    async with LegalToolsClient(server) as client:
+        specs = await client.tool_specs()
+        assert [s.name for s in specs] == sorted(s.name for s in specs)
+        names = {s.name for s in specs}
+        assert {"cite_law", "verifica_citazioni", "leggi_sentenza",
+                "leggi_pronuncia_costituzionale"} <= names
+        assert names <= ALLOWLIST
+        cite_law_spec = next(s for s in specs if s.name == "cite_law")
+        assert "formato" in cite_law_spec.input_schema["properties"]
+        assert await client.tool_specs() is specs
