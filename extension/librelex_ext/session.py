@@ -1,0 +1,257 @@
+# Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
+"""Per-document session: core lifecycle, request state and doc_call dispatch (spec §4.3, §5.2).
+
+Everything here runs on the UI thread except ``post_event`` (reader thread), which only
+forwards to the callback the panel registered. No UNO imports.
+"""
+from __future__ import annotations
+
+import os
+from collections.abc import Callable
+from typing import Any, Protocol
+
+from librelex_ext import PROTOCOL_VERSION, __version__
+from librelex_ext.bridge import BridgeError
+from librelex_ext.render import render_error, render_insert_summary, render_verify_summary
+
+
+class View(Protocol):
+    def append(self, text: str) -> None: ...
+    def set_transcript(self, text: str) -> None: ...
+    def set_status(self, text: str) -> None: ...
+    def set_busy(self, busy: bool) -> None: ...
+    def set_problems(self, labels: list[str]) -> None: ...
+
+
+class NullView:
+    def append(self, text: str) -> None: ...
+    def set_transcript(self, text: str) -> None: ...
+    def set_status(self, text: str) -> None: ...
+    def set_busy(self, busy: bool) -> None: ...
+    def set_problems(self, labels: list[str]) -> None: ...
+
+
+class DocumentActionError(Exception):
+    """A document action failed; reported to the core as doc_result ok=false."""
+
+
+def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
+    """Map a wire doc_call onto the adapter and wrap the result as the core expects."""
+    if action == "get_document_info":
+        return adapter.get_document_info()
+    if action == "read_selection":
+        return adapter.read_selection()
+    if action == "read_paragraphs":
+        from_ = args.get("from_", args.get("from"))
+        return {"paragraphs": adapter.read_paragraphs(from_, args.get("to"))}
+    if action == "find_text":
+        return {"occurrences": adapter.find_text(args["query"], args.get("paragraph_id"))}
+    if action == "insert_markdown":
+        return adapter.insert_markdown(args["where"], args["markdown"], args["undo_label"],
+                                       args.get("bookmark"), args.get("author"))
+    if action == "replace_selection":
+        return adapter.replace_selection(args["markdown"], args["undo_label"])
+    if action == "add_comment":
+        return {"anchored": adapter.add_comment(
+            args["paragraph_id"], args["start"], args["end"], args["expected_text"],
+            args["author"], args["text"])}
+    if action == "remove_comments":
+        return {"count": adapter.remove_comments(args["author"])}
+    if action == "goto":
+        adapter.goto(args["paragraph_id"])
+        return {}
+    raise DocumentActionError(f"azione sconosciuta: {action}")
+
+
+class Session:
+    def __init__(self, adapter: Any, bridge_factory: Callable[[Callable[[dict], None]], Any],
+                 doc_id: str, lo_version: str, has_markdown_filter: bool, config_path: str):
+        self.adapter = adapter
+        self.bridge_factory = bridge_factory
+        self.doc_id, self.lo_version = doc_id, lo_version
+        self.has_markdown_filter, self.config_path = has_markdown_filter, config_path
+        self.bridge: Any = None
+        self.state = "stopped"
+        self.pending: tuple[str, dict] | None = None
+        self.request_id: str | None = None
+        self._n = 0
+        self.transcript: list[str] = []
+        self.problems: list[tuple[str, str]] = []
+        self.view: View = NullView()
+        self._buffer: list[dict] = []
+        self.ui_post: Callable[[dict], None] = self._buffer.append
+
+    # --- panel binding -------------------------------------------------------
+    def bind(self, view: View, ui_post: Callable[[dict], None]) -> None:
+        self.view, self.ui_post = view, ui_post
+        view.set_transcript("\n".join(self.transcript))
+        view.set_problems([label for label, _ in self.problems])
+        view.set_busy(self.state in ("starting", "busy"))
+        buffered, self._buffer = self._buffer, []
+        for ev in buffered:
+            ui_post(ev)
+
+    def unbind(self) -> None:
+        self.view = NullView()
+        self.ui_post = self._buffer.append
+
+    def post_event(self, ev: dict) -> None:
+        """Called from the bridge reader thread: hand the event to the UI thread."""
+        self.ui_post(ev)
+
+    # --- user actions (UI thread) -------------------------------------------
+    def run_command(self, name: str, args: dict) -> None:
+        if self.state == "busy":
+            self.view.set_status("Richiesta in corso: attendi o premi Annulla")
+            return
+        if self.state == "starting":
+            self.pending = (name, args)
+            return
+        if self.state == "stopped":
+            try:
+                self.bridge = self.bridge_factory(self.post_event)
+                self.bridge.start()
+            except BridgeError as e:
+                self.bridge = None
+                self._append(f"Impossibile avviare il core: {e}")
+                return
+            self.state = "starting"
+            self.pending = (name, args)
+            self.view.set_busy(True)
+            self.view.set_status("Avvio del core...")
+            self.bridge.send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
+                              "extension_version": __version__, "lo_version": self.lo_version,
+                              "has_markdown_filter": self.has_markdown_filter})
+            return
+        self._send_command(name, args)
+
+    def cancel(self) -> None:
+        if self.state == "busy" and self.request_id and self.bridge is not None:
+            self.bridge.send({"type": "cancel", "id": self.request_id, "doc_id": self.doc_id})
+            self.view.set_status("Annullamento...")
+
+    def goto_problem(self, index: int) -> None:
+        if 0 <= index < len(self.problems):
+            try:
+                self.adapter.goto(self.problems[index][1])
+            except Exception as e:  # navigation is best effort
+                self.view.set_status(f"Posizione non raggiungibile: {e}")
+
+    def shutdown(self) -> None:
+        if self.bridge is not None:
+            try:
+                self.bridge.stop()
+            finally:
+                self.bridge = None
+        self.state = "stopped"
+        self.pending = None
+        self.request_id = None
+
+    # --- events from the core (UI thread) -----------------------------------
+    def handle_event(self, ev: dict) -> None:
+        kind = ev.get("kind")
+        if kind == "exit":
+            was_active = self.state in ("starting", "busy")
+            self.bridge = None
+            self.state, self.pending, self.request_id = "stopped", None, None
+            self.view.set_busy(False)
+            self.view.set_status("Core non attivo")
+            if was_active:
+                log = os.path.join(os.path.dirname(self.config_path), "core-stderr.log")
+                self._append(f"Il core si è chiuso inaspettatamente (codice {ev.get('code')}). "
+                             f"Dettagli in {log}. Riprova: verrà riavviato.")
+            return
+        if kind == "garbage":
+            return
+        if kind != "message":
+            return
+        msg = ev["msg"]
+        handler = getattr(self, f"_on_{msg.get('type', '')}", None)
+        if handler is not None:
+            handler(msg)
+
+    def _on_hello_ok(self, msg: dict) -> None:
+        for w in msg.get("warnings") or []:
+            self._append(f"Avviso del core: {w}")
+        if msg.get("protocol") != PROTOCOL_VERSION:
+            self._append(
+                f"Core incompatibile: protocollo {msg.get('protocol')}, richiesto "
+                f"{PROTOCOL_VERSION} (core {msg.get('core_version')}). Aggiorna l'estensione."
+            )
+            self.shutdown()
+            self.view.set_busy(False)
+            return
+        self.state = "ready"
+        self.view.set_status("Pronto")
+        if self.pending is not None:
+            name, args = self.pending
+            self.pending = None
+            self._send_command(name, args)
+        else:
+            self.view.set_busy(False)
+
+    def _on_status(self, msg: dict) -> None:
+        self.view.set_status(msg.get("text", ""))
+
+    def _on_progress(self, msg: dict) -> None:
+        self.view.set_status(f"Verificate {msg.get('done', 0)} di {msg.get('total', 0)}")
+
+    def _on_delta(self, msg: dict) -> None:
+        self._append(msg.get("text", ""))
+
+    def _on_log(self, msg: dict) -> None:
+        return
+
+    def _on_consent_request(self, msg: dict) -> None:
+        # M1 has no LLM turn; refuse defensively and say so (spec §8.2 arrives with M2).
+        self._append("Richiesta di consenso non supportata in questa versione: rifiutata.")
+        self.bridge.send({"type": "consent_result", "id": msg["request_id"],
+                          "call_id": msg["call_id"], "decision": "deny"})
+
+    def _on_doc_call(self, msg: dict) -> None:
+        reply = {"type": "doc_result", "id": msg["request_id"], "call_id": msg["call_id"]}
+        try:
+            reply.update(ok=True, result=dispatch_doc_call(self.adapter, msg["action"],
+                                                           msg.get("args") or {}))
+        except Exception as e:
+            reply.update(ok=False, error=f"{type(e).__name__}: {e}"
+                         if not isinstance(e, DocumentActionError) else str(e))
+        self.bridge.send(reply)
+
+    def _on_final(self, msg: dict) -> None:
+        self.state, self.request_id = "ready", None
+        self.view.set_busy(False)
+        self.view.set_status("Pronto")
+        summary = msg.get("summary") or {}
+        if msg.get("cancelled"):
+            self._append(msg.get("text") or "Annullato.")
+        elif "per_verdetto" in summary:
+            text, items = render_verify_summary(summary)
+            self.problems = items
+            self.view.set_problems([label for label, _ in items])
+            self._append(text)
+        elif "riferimento" in summary:
+            self._append(render_insert_summary(summary))
+        else:
+            self._append(msg.get("text") or "Completato.")
+
+    def _on_error(self, msg: dict) -> None:
+        if self.state == "busy" and msg.get("request_id") in (self.request_id, None):
+            self.state, self.request_id = "ready", None
+            self.view.set_busy(False)
+            self.view.set_status("Pronto")
+        self._append(render_error(msg.get("code", "?"), msg.get("message", "")))
+
+    # --- helpers -------------------------------------------------------------
+    def _send_command(self, name: str, args: dict) -> None:
+        self._n += 1
+        self.request_id = f"r{self._n}"
+        self.state = "busy"
+        self.view.set_busy(True)
+        self.view.set_status("Invio della richiesta...")
+        self.bridge.send({"type": "command", "id": self.request_id, "doc_id": self.doc_id,
+                          "name": name, "args": args})
+
+    def _append(self, text: str) -> None:
+        self.transcript.append(text)
+        self.view.append(text)
