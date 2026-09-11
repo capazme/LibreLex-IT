@@ -27,6 +27,7 @@ class View(Protocol):
     def set_status(self, text: str) -> None: ...
     def set_busy(self, busy: bool) -> None: ...
     def set_citations(self, labels: list[str]) -> None: ...
+    def set_progress(self, done: int, total: int | None) -> None: ...
 
 
 class NullView:
@@ -35,6 +36,7 @@ class NullView:
     def set_status(self, text: str) -> None: ...
     def set_busy(self, busy: bool) -> None: ...
     def set_citations(self, labels: list[str]) -> None: ...
+    def set_progress(self, done: int, total: int | None) -> None: ...
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
@@ -156,6 +158,11 @@ class Session:
         """
         self._append(text)
 
+    def clear_transcript(self) -> None:
+        """Empty the answers pane and the replay buffer a reopened panel is rebuilt from."""
+        self.transcript.clear()
+        self.view.set_transcript("")
+
     def shutdown(self) -> None:
         if self.bridge is not None:
             try:
@@ -174,6 +181,7 @@ class Session:
             self.bridge = None
             self.state, self.pending, self.request_id = "stopped", None, None
             self.view.set_busy(False)
+            self.view.set_progress(0, None)
             self.view.set_status("Core non attivo")
             if was_active:
                 log = os.path.join(os.path.dirname(self.config_path), "core-stderr.log")
@@ -213,7 +221,9 @@ class Session:
         self.view.set_status(msg.get("text", ""))
 
     def _on_progress(self, msg: dict) -> None:
-        self.view.set_status(f"Verificate {msg.get('done', 0)} di {msg.get('total', 0)}")
+        done, total = msg.get("done", 0), msg.get("total", 0)
+        self.view.set_status(f"Verificate {done} di {total}")
+        self.view.set_progress(done, total)
 
     def _on_delta(self, msg: dict) -> None:
         self._append(msg.get("text", ""))
@@ -246,6 +256,7 @@ class Session:
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
         self.view.set_busy(False)
+        self.view.set_progress(0, None)
         self.view.set_status("Pronto")
         summary = msg.get("summary") or {}
         if msg.get("cancelled"):
@@ -272,6 +283,7 @@ class Session:
             self.state, self.request_id = "ready", None
             self.view.set_busy(False)
             self.view.set_status("Pronto")
+        self.view.set_progress(0, None)
         self._append(render_error(msg.get("code", "?"), msg.get("message", "")))
 
     # --- helpers -------------------------------------------------------------

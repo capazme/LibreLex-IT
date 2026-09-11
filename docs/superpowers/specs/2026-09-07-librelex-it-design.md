@@ -210,6 +210,14 @@ LibreLex-IT/
   Redigi da modello, Rivedi selezione), status line, cancel button, usage/cost
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
+- Layout (M1): the controls are grouped in labelled sections (Documento,
+  Riferimento, Citazioni, Risposte) over a two-column button grid, with a
+  progress bar above the status line, a `Svuota` button on the answers,
+  tooltips on every button and a control table computed from the panel width
+  (`layout.build(width)`, minimum 170 dialog units, re-applied on
+  `getHeightForWidth` through `XUnitConversion`); the buttons of later
+  milestones (Invia, Ricerca, Redigi da modello, Rivedi selezione) are not
+  created until their milestone.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
 - Streaming: the bridge reader thread pushes events onto a `queue.Queue` and

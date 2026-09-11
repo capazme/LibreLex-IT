@@ -30,11 +30,13 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
     class RecView:
         def __init__(self):
             self.lines, self.status, self.citations = [], [], None
+            self.progress = None
         def append(self, t): self.lines.append(t)
         def set_transcript(self, t): pass
         def set_status(self, t): self.status.append(t)
         def set_busy(self, b): pass
         def set_citations(self, labels): self.citations = labels
+        def set_progress(self, done, total): self.progress = (done, total)
 
     def pump(session, events, until_state="ready", timeout=180):
         import time

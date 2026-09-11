@@ -107,6 +107,7 @@ class FakeView:
     def __init__(self):
         self.lines, self.status, self.busy = [], "", None
         self.citations, self.transcript = None, None
+        self.progress = None
 
     def append(self, text):
         self.lines.append(text)
@@ -122,6 +123,9 @@ class FakeView:
 
     def set_citations(self, labels):
         self.citations = labels
+
+    def set_progress(self, done, total):
+        self.progress = (done, total)
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -449,3 +453,43 @@ def test_show_text_button_flow_and_unavailable_error():
         "type": "error", "request_id": "r2", "code": "text_unavailable",
         "message": "testo non disponibile per TAR Lazio n. 1/2023"}})
     assert s.state == "ready" and view.lines[-1].startswith("Errore (text_unavailable)")
+
+
+def test_progress_drives_the_bar_and_the_end_of_a_request_hides_it():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert view.progress is None
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r1", "done": 3, "total": 9}})
+    assert view.progress == (3, 9) and view.status == "Verificate 3 di 9"
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.", "cancelled": False,
+        "usage": None, "summary": {}}})
+    assert view.progress == (0, None)
+
+
+def test_an_error_and_a_dead_core_also_hide_the_bar():
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r1", "done": 1, "total": 4}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
+    assert view.progress == (0, None)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "progress", "request_id": "r2", "done": 2, "total": 4}})
+    s.handle_event({"kind": "exit", "code": 1})
+    assert view.progress == (0, None)
+
+
+def test_clear_transcript_empties_the_replay_buffer_and_the_view():
+    s, adapter, view, bridges = make()
+    s.note("prima riga")
+    s.note("seconda riga")
+    assert s.transcript == ["prima riga", "seconda riga"]
+    s.clear_transcript()
+    assert s.transcript == [] and view.transcript == ""
