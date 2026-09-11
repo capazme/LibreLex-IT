@@ -203,8 +203,10 @@ LibreLex-IT/
 - Registered as a sidebar deck "LibreLex" with one panel via `Sidebar.xcu` +
   `Factories.xcu`; the panel is a UNO `XUIElement` built from an XDL dialog
   (LibreThinker skeleton).
-- Controls: read-only multi-line transcript, single-line input, "Invia",
-  quick-action buttons (Verifica citazioni, Inserisci norma, Ricerca,
+- Controls: read-only multi-line transcript, a citation list (one entry per
+  reference found; selecting an entry jumps to its paragraph and shows its text,
+  §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
+  Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,
   Redigi da modello, Rivedi selezione), status line, cancel button, usage/cost
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
@@ -464,6 +466,34 @@ Both run without any LLM and therefore without an API key.
 5. Brocardi annotations are never inserted (copyright); norm text is public
    domain (art. 5 l.d.a.).
 
+### 7.3 Citation overview and "Mostra testo" (added 2026-09-11)
+
+Lawyers asked to see, at a glance, what the many citations of a document refer
+to, without inserting anything. Three deterministic pieces, no LLM:
+
+1. **`list_citations`** (scope document or selection): extraction only, no
+   network. Returns one entry per canonical reference (`citazione`, `tipo`
+   norma/sentenza, `corte`, `verificabile`, `occorrenze` with anchors) plus the
+   `non_interpretabili` list. The panel fills its citation list from it.
+2. **`show_text`** (a reference typed in the panel, selected in the document, or
+   chosen from the list): norms through `cite_law` (article text and rubrica,
+   Normattiva); Cassazione through `leggi_sentenza(numero, anno, sezione)`
+   (massima when the source marks one, then the text, Italgiure); Corte
+   costituzionale through `leggi_pronuncia_costituzionale`. TAR, Consiglio di
+   Stato and CGUE need a search first and answer "testo non disponibile in
+   questa versione" (error code `text_unavailable`). Text is truncated to
+   6000 characters for the panel (`troncato: true`); nothing is written into
+   the document. The session caches texts per canonical reference.
+3. **`verify_citations`** also returns `elenco`: every canonical citation with
+   its verdict (`da controllare a mano` for courts not verified in v1), so the
+   list shows the whole picture with a marker per verdict (✓ verificata,
+   ✗ problem, ? non verificata, · non verificabile / da controllare a mano);
+   comments in the document stay limited to problems (Appendix C).
+
+Selecting a list entry calls `goto` on its first occurrence and shows the
+cached text or runs `show_text` for it. `list_citations` works even when
+mcp-legal-it is unreachable (no tool call); the other two need the server.
+
 ## 8. Security and data
 
 Threat model in one line: the document holds client and third-party data
@@ -562,8 +592,11 @@ The sidebar itself is covered by a manual smoke checklist.
 
 - The core is developed without LibreOffice: a dev CLI speaks the protocol
   with an in-memory fake document.
-- The extension is installed with `scripts/dev_install.sh` (build +
-  `unopkg add --force`) and requires a LibreOffice restart on every change,
+- The extension is installed with `scripts/dev_install.sh` (build + in-process
+  registration by a headless LibreOffice running `scripts/lo_install.py`, the same
+  path as Tools > Extension Manager; `unopkg add` is avoided because its helper
+  soffice never answers over the pipe on this macOS setup, 2026-09-11) and requires
+  a LibreOffice restart on every change,
   which is why it stays minimal. APSO for an in-app Python console during
   development only.
 - LibreOffice's bundled Python binary and unopkg's out-of-process helper
@@ -626,7 +659,8 @@ core reads `serverInfo.version` at handshake.
 | M3 · Drafting | Draft profile, multi-turn data collection, section-by-section insertion with calculators | Draft a decreto ingiuntivo from the template with computed amounts |
 | M4 · Review & calcs | Review profile, selection actions, context-menu entries | Rewrite a paragraph and insert an interest table as tracked changes |
 
-M1 + M2 constitute the v1 copilot for internal use. v2 backlog: automated
+M1 was extended on 2026-09-11 with the citation overview and "Mostra testo" of
+§7.3 (M1.5) before starting M2. M1 + M2 constitute the v1 copilot for internal use. v2 backlog: automated
 verification of Consulta/TAR/CGUE, OS keyring, pseudonymisation via
 `privacy-filter-it`, "Aggiorna citazioni" on bookmarks, PyPI core,
 LibreOffice `update.xml`, Windows polish, footnote insertion, Brocardi in
