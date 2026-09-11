@@ -10,17 +10,15 @@ t:<t>/c:<cell>/p:<i> table-cell paragraphs.
 """
 from __future__ import annotations
 
-import os  # noqa: F401  (used by the writing half, Tasks 7-8)
-import re  # noqa: F401  (used by the writing half, Tasks 7-8)
-import tempfile  # noqa: F401  (used by the writing half, Tasks 7-8)
-from contextlib import contextmanager  # noqa: F401  (used by the writing half, Tasks 7-8)
-from datetime import datetime  # noqa: F401  (used by the writing half, Tasks 7-8)
+import os
+import re
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime  # noqa: F401  (used by the comment actions, Task 8)
 
-import uno  # noqa: F401  (used by the writing half, Tasks 7-8)
+import uno
 from com.sun.star.beans import PropertyValue
-from com.sun.star.text.ControlCharacter import (  # noqa: F401  (writing half, Tasks 7-8)
-    PARAGRAPH_BREAK,
-)
+from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 
 from librelex_ext import DocumentActionError
 
@@ -252,3 +250,187 @@ class DocumentAdapter:
     def goto(self, paragraph_id: str) -> None:
         entry = self._entry(paragraph_id)
         self._view_cursor().gotoRange(entry.para.getStart(), False)
+
+    # --- context managers ----------------------------------------------------
+    def _profile_access(self, update: bool):
+        return _config_access(self.ctx, PROFILE_NODE, update=update)
+
+    @contextmanager
+    def _identity(self, author):
+        """Temporarily sign tracked changes as `author` (spec §5.4 item 3); None = user identity."""
+        if not author:
+            yield
+            return
+        acc = self._profile_access(update=True)
+        original = (acc.getPropertyValue("givenname"), acc.getPropertyValue("sn"))
+        acc.setPropertyValue("givenname", author)
+        acc.setPropertyValue("sn", "")
+        acc.commitChanges()
+        try:
+            yield
+        finally:
+            acc.setPropertyValue("givenname", original[0])
+            acc.setPropertyValue("sn", original[1])
+            acc.commitChanges()
+
+    @contextmanager
+    def _undo(self, label: str):
+        um = self.doc.getUndoManager()
+        um.enterUndoContext(label)
+        try:
+            yield
+        finally:
+            um.leaveUndoContext()
+
+    @contextmanager
+    def _recording(self, on: bool):
+        before = self.doc.RecordChanges
+        self.doc.RecordChanges = on
+        try:
+            yield
+        finally:
+            self.doc.RecordChanges = before
+
+    # --- writing actions -----------------------------------------------------
+    def _target(self, where: str):
+        """(collapsed cursor, container XText) for `cursor` | `end` | `after:<id>`."""
+        if where == "cursor":
+            vc = self._view_cursor()
+            container = vc.getText()
+            return container.createTextCursorByRange(vc.getStart()), container
+        if where == "end":
+            container = self.doc.getText()
+            cur = container.createTextCursor()
+            cur.gotoEnd(False)
+            return cur, container
+        if where.startswith("after:"):
+            e = self._entry(where[len("after:"):])
+            return e.container.createTextCursorByRange(e.para.getEnd()), e.container
+        raise DocumentActionError(f"destinazione sconosciuta: {where}")
+
+    @staticmethod
+    def _prepare_empty_paragraph(cur, container) -> None:
+        """Leave `cur` at the start of an empty paragraph (spec §5.4 item 1).
+
+        Observed on 26.8: inserted into an empty paragraph the Markdown filter *keeps* the
+        style of its own first paragraph (`Heading 1`, `Quotations`) and overwrites the empty
+        one, so no style is lost; mid-paragraph the first Markdown paragraph would instead
+        merge into the cursor paragraph and inherit its style. This settles the open point of
+        spec §5.4 item 6. The filter also always leaves one trailing empty paragraph, which
+        `_insert_block` removes with recording off.
+        """
+        if not cur.isStartOfParagraph():
+            container.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+        if not cur.isEndOfParagraph():           # remainder text: push it to the next paragraph
+            container.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+            cur.goLeft(1, False)
+
+    @staticmethod
+    def _para_index(container, cur) -> int:
+        paras = _paragraphs_of(container)
+        best = 0
+        for i, p in enumerate(paras):
+            if container.compareRegionStarts(p.getStart(), cur.getStart()) >= 0:
+                best = i
+        return best
+
+    @staticmethod
+    def _insert_markdown_file(cur, markdown: str) -> None:
+        if not markdown.endswith("\n"):
+            markdown += "\n"        # the filter then always adds one trailing empty paragraph
+        tmpdir = tempfile.mkdtemp(prefix="librelex-")          # 0700 (spec §8.4)
+        path = os.path.join(tmpdir, "insert.md")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(markdown)
+            cur.insertDocumentFromURL(uno.systemPathToFileUrl(path),
+                                      (prop("FilterName", "Markdown"),))
+        finally:
+            try:
+                os.unlink(path)
+            finally:
+                os.rmdir(tmpdir)
+
+    @staticmethod
+    def _remove_empty_paragraph(container, para) -> None:
+        """Delete `para` (empty) by removing the paragraph break that precedes it."""
+        c = container.createTextCursorByRange(para.getStart())
+        c.goLeft(1, True)
+        c.setString("")
+
+    @staticmethod
+    def _fix_first_style(para, markdown: str) -> None:
+        """Re-apply the heading/quote style of the first Markdown paragraph.
+
+        A no-op on 26.8 (see `_prepare_empty_paragraph`): kept as the guard for the merge
+        case, where the style of the first inserted paragraph is the one thing that is lost.
+        """
+        first = next((ln for ln in markdown.splitlines() if ln.strip()), "")
+        m = re.match(r"^(#{1,6})\s+", first)
+        if m:
+            want = f"Heading {len(m.group(1))}"
+        elif first.startswith(">"):
+            want = "Quotations"
+        else:
+            return
+        if para.ParaStyleName != want:
+            para.ParaStyleName = want
+
+    def _unique_bookmark(self, name: str) -> str:
+        marks = self.doc.getBookmarks()
+        if not marks.hasByName(name):
+            return name
+        k = 2
+        while marks.hasByName(f"{name}_{k}"):
+            k += 1
+        return f"{name}_{k}"
+
+    def _add_bookmark(self, container, first, last, name: str) -> None:
+        bm = self.doc.createInstance("com.sun.star.text.Bookmark")
+        bm.setName(self._unique_bookmark(name))
+        c = container.createTextCursorByRange(first.getStart())
+        c.gotoRange(last.getEnd(), True)
+        container.insertTextContent(c, bm, True)
+
+    def _insert_block(self, cur, container, markdown, bookmark, author) -> tuple[int, int]:
+        """Shared by insert_markdown and replace_selection; caller holds the undo context."""
+        with self._identity(author):
+            with self._recording(True):
+                self._prepare_empty_paragraph(cur, container)
+                i0 = self._para_index(container, cur)
+                n0 = len(_paragraphs_of(container))
+                self._insert_markdown_file(cur, markdown)
+            with self._recording(False):          # cleanup must not become Delete/Format redlines
+                paras = _paragraphs_of(container)
+                last = i0 + (len(paras) - n0)
+                if last > i0 and paras[last].getString() == "":
+                    self._remove_empty_paragraph(container, paras[last])
+                    last -= 1
+                    paras = _paragraphs_of(container)
+                self._fix_first_style(paras[i0], markdown)
+                if bookmark:
+                    self._add_bookmark(container, paras[i0], paras[last], bookmark)
+        return i0, last
+
+    def insert_markdown(self, where: str, markdown: str, undo_label: str,
+                        bookmark=None, author=None) -> dict:
+        cur, container = self._target(where)
+        prefix = self._prefix_for(container, cur)
+        with self._undo(undo_label):
+            i0, last = self._insert_block(cur, container, markdown, bookmark, author)
+        return {"from_id": f"{prefix}{i0}", "to_id": f"{prefix}{last}"}
+
+    def replace_selection(self, markdown: str, undo_label: str) -> dict:
+        rng = self._first_selection_range()
+        if rng is None or not rng.getString():
+            raise DocumentActionError("nessuna selezione da sostituire")
+        container = rng.getText()
+        prefix = self._prefix_for(container, rng)
+        with self._undo(undo_label):
+            with self._identity("LibreLex"), self._recording(True):
+                cur = container.createTextCursorByRange(rng)
+                cur.setString("")     # tracked deletion (spec §5.3: deletion + insertion)
+                cur.collapseToEnd()
+            i0, last = self._insert_block(cur, container, markdown, None, "LibreLex")
+        return {"from_id": f"{prefix}{i0}", "to_id": f"{prefix}{last}"}
