@@ -14,7 +14,7 @@ from com.sun.star.ui import LayoutSize, XSidebarPanel, XToolPanel, XUIElement, X
 from com.sun.star.ui.UIElementType import TOOLPANEL
 
 from librelex_ext import EXTENSION_ID, layout, paths, registry
-from librelex_ext.bridge import Bridge
+from librelex_ext.bridge import Bridge, BridgeError
 from librelex_ext.document import DocumentAdapter, has_markdown_filter, lo_version
 from librelex_ext.session import Session
 
@@ -143,7 +143,11 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             config = paths.read_config()
 
             def bridge_factory(on_event):
-                return Bridge(paths.bridge_spec(package_dir(ctx), config), on_event)
+                try:
+                    spec = paths.bridge_spec(package_dir(ctx), config)
+                except paths.UvNotFound as e:
+                    raise BridgeError(str(e)) from e
+                return Bridge(spec, on_event)
 
             return Session(adapter, bridge_factory, doc_id=model.RuntimeUID,
                            lo_version=lo_version(ctx), has_markdown_filter=has_markdown_filter(ctx),
@@ -153,11 +157,12 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         self.session.bind(self, self._post)
         if not self.session.transcript:
             created = paths.write_template_if_missing()
-            self.append(f"LibreLex-IT pronto. Configurazione: {paths.config_path()}"
-                        + (" (creata ora con i valori predefiniti)" if created else ""))
+            self.session.note(f"LibreLex-IT pronto. Configurazione: {paths.config_path()}"
+                              + (" (creata ora con i valori predefiniti)" if created else ""))
             if not self.session.has_markdown_filter:
-                self.append("Attenzione: questa versione di LibreOffice non ha il filtro Markdown "
-                            "(serve 26.2 o successiva): l'inserimento di testo non funzionerà.")
+                self.session.note(
+                    "Attenzione: questa versione di LibreOffice non ha il filtro Markdown "
+                    "(serve 26.2 o successiva): l'inserimento di testo non funzionerà.")
 
     # --- bridge events: reader thread → UI thread ----------------------------------
     def _post(self, event):
@@ -193,10 +198,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.session.cancel()
         elif cmd == "settings":
             created = paths.write_template_if_missing()
-            self.append(f"File di configurazione: {paths.config_path()}"
-                        + (" (creato ora)" if created else "")
-                        + f"\nLog del core: {paths.config_path().parent / 'core-stderr.log'}"
-                        "\nModifica il file con un editor di testo e riavvia LibreOffice.")
+            self.session.note(f"File di configurazione: {paths.config_path()}"
+                              + (" (creato ora)" if created else "")
+                              + f"\nLog del core: {paths.config_path().parent / 'core-stderr.log'}"
+                              "\nModifica il file con un editor di testo e riavvia LibreOffice.")
 
     def itemStateChanged(self, event):          # XItemListener: problem selected
         if self.session is not None:

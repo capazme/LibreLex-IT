@@ -133,6 +133,14 @@ class Session:
             except Exception as e:  # navigation is best effort
                 self.view.set_status(f"Posizione non raggiungibile: {e}")
 
+    def note(self, text: str) -> None:
+        """Write a view-agnostic message to the transcript (startup banner, settings info)
+
+        that does not come from the core, keeping ``self.transcript`` and the view in sync so
+        it survives the panel being closed and reopened.
+        """
+        self._append(text)
+
     def shutdown(self) -> None:
         if self.bridge is not None:
             try:

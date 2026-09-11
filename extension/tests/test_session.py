@@ -333,3 +333,12 @@ def test_shutdown_stops_the_bridge():
     s.run_command("insert_norm", {})
     s.shutdown()
     assert bridges[0].stopped and s.state == "stopped"
+
+
+def test_note_updates_transcript_and_view_so_it_survives_rebind():
+    s, adapter, view, bridges = make()
+    s.note("LibreLex-IT pronto.")
+    assert view.lines[-1] == "LibreLex-IT pronto." and s.transcript[-1] == "LibreLex-IT pronto."
+    view2 = FakeView()
+    s.bind(view2, s.handle_event)                            # panel closed and reopened
+    assert view2.transcript == "LibreLex-IT pronto."

@@ -1,4 +1,7 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from tests.headless.conftest import run_probe
@@ -85,3 +88,96 @@ def test_panel_module_imports_inside_libreoffice(soffice):
     assert out["urls"] == ["private:resource/toolpanel/LibreLexPanelFactory/Panel",
                            "vnd.sun.star.extension://org.librelex.extension/dialogs/panel.xdl"]
     assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
+
+
+def test_missing_uv_is_a_graceful_bridge_error_and_banner_survives_reopen(soffice):
+    """Regression test for review findings 1 and 2 on task 9.
+
+    Uses a bare-bones stand-in for Panel.window/model (getControl/getByName only) so the
+    real Panel._attach_session/Session code path runs against a real Writer document and
+    frame, without needing the XDL container window.
+    """
+    config_path = Path(tempfile.mkdtemp(prefix="librelex-cfg-")) / "config.toml"
+    out = run_probe(soffice, "panel_uv_and_banner", '''
+    def probe(ctx, out):
+        import librelex_ext.paths as paths_mod
+        from librelex_ext import panel
+
+        paths_mod.find_uv = lambda *a, **k: None  # deterministically "uv not found"
+        # registry.session_for's document-disposal listener is a separate, pre-existing
+        # issue (not one of the two findings this test covers). Keep the real "one session
+        # per RuntimeUID" behaviour this test needs (reopening the panel must reuse the
+        # session) but skip the broken model.addEventListener(...) call.
+        _fake_sessions = {}
+
+        def fake_session_for(model, factory):
+            doc_id = model.RuntimeUID
+            session = _fake_sessions.get(doc_id)
+            if session is None:
+                session = factory()
+                _fake_sessions[doc_id] = session
+            return session
+
+        panel.registry.session_for = fake_session_for
+
+        class FakeCtrl:
+            def __init__(self):
+                self.text = ""
+
+            def getText(self):
+                return self.text
+
+            def setText(self, value):
+                self.text = value
+
+            def getSelectedItemPos(self):
+                return -1
+
+        class FakeProp:
+            def __init__(self):
+                self.Label = ""
+                self.Enabled = True
+                self.StringItemList = ()
+
+        class FakeWindow:
+            def __init__(self):
+                self._controls = {}
+
+            def getControl(self, name):
+                return self._controls.setdefault(name, FakeCtrl())
+
+        class FakeModel:
+            def __init__(self):
+                self._props = {}
+
+            def getByName(self, name):
+                return self._props.setdefault(name, FakeProp())
+
+        doc = new_doc(ctx)
+        frame = doc.getCurrentController().getFrame()
+
+        p1 = panel.Panel(ctx, frame, None, panel.PANEL_URL)
+        p1.window, p1.model = FakeWindow(), FakeModel()
+        p1._attach_session()
+        out["transcript_1"] = p1.window.getControl("Transcript").getText()
+
+        p1.session.run_command("insert_norm", {})   # no uv: must not raise out of run_command
+        out["transcript_2"] = p1.window.getControl("Transcript").getText()
+        out["state_after_run"] = p1.session.state
+
+        p2 = panel.Panel(ctx, frame, None, panel.PANEL_URL)   # panel closed and reopened
+        p2.window, p2.model = FakeWindow(), FakeModel()
+        p2._attach_session()
+        out["transcript_after_reopen"] = p2.window.getControl("Transcript").getText()
+
+        p1.session.shutdown()
+        doc.close(False)
+    ''', env={"LIBRELEX_CONFIG": str(config_path)})
+    assert "LibreLex-IT pronto" in out["transcript_1"]
+    assert out["state_after_run"] == "stopped"
+    assert "Impossibile avviare il core" in out["transcript_2"]
+    assert "uv non trovato" in out["transcript_2"]
+    # the ready banner (finding 2) and the graceful uv error (finding 1) both survive
+    # closing and reopening the panel, because both went through Session.transcript
+    assert out["transcript_after_reopen"] == out["transcript_2"]
+    assert out["transcript_after_reopen"].count("LibreLex-IT pronto") == 1
