@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Derived from LibreThinker (https://github.com/mihailthebuilder/librethinker-extension), MPL-2.0. -->
+<oor:component-data oor:name="Factories" oor:package="org.openoffice.Office.UI"
+    xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <node oor:name="Registered">
+    <node oor:name="UIElementFactories">
+      <node oor:name="LibreLexPanelFactory" oor:op="replace">
+        <prop oor:name="Type"><value>toolpanel</value></prop>
+        <prop oor:name="Name"><value>LibreLexPanelFactory</value></prop>
+        <prop oor:name="Module"><value/></prop>
+        <prop oor:name="FactoryImplementation"><value>org.librelex.extension.PanelFactory</value></prop>
+      </node>
+    </node>
+  </node>
+</oor:component-data>
