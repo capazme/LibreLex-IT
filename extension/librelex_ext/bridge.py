@@ -38,6 +38,8 @@ class Bridge:
                 self.spec.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=self._stderr, env=self.spec.env, cwd=self.spec.cwd)
         except OSError as e:
+            if self._stderr is not None:
+                self._stderr.close()
             raise BridgeError(f"impossibile avviare {self.spec.argv[0]}: {e}") from e
         self._reader = threading.Thread(target=self._read_loop, name="librelex-bridge", daemon=True)
         self._reader.start()
@@ -81,18 +83,34 @@ class Bridge:
     def _read_loop(self) -> None:
         proc = self._proc
         assert proc is not None and proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                self.on_event({"kind": "garbage", "line": line})
-                continue
-            if not isinstance(msg, dict):
-                self.on_event({"kind": "garbage", "line": line})
-                continue
-            self.on_event({"kind": "message", "msg": msg})
-        code = proc.wait()
+        try:
+            for raw in proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    self.on_event({"kind": "garbage", "line": line})
+                    continue
+                if not isinstance(msg, dict):
+                    self.on_event({"kind": "garbage", "line": line})
+                    continue
+                self.on_event({"kind": "message", "msg": msg})
+        finally:
+            # Defensive close: reached whenever stdout hits EOF (core exited, whether via a
+            # graceful stop() or a crash never followed by stop()), so the pipes never leak past
+            # this thread even if the caller drops its Bridge reference without calling stop().
+            code = proc.wait()
+            with self._lock:
+                if proc.stdin is not None and not proc.stdin.closed:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+            if not proc.stdout.closed:
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
         self.on_event({"kind": "exit", "code": code})
