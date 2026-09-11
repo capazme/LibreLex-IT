@@ -200,10 +200,12 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with one panel via `Sidebar.xcu` +
-  `Factories.xcu`; the panel is a UNO `XUIElement` built from an XDL dialog
-  (LibreThinker skeleton).
-- Controls: read-only multi-line transcript, a citation list (one entry per
+- Registered as a sidebar deck "LibreLex" with three panels (Azioni,
+  Citazioni, Risposte) served by one factory; each panel is collapsible
+  through the sidebar's own title bar and "Risposte" takes the remaining
+  height; each panel is a UNO `XUIElement` built from an XDL dialog
+  (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
+  controls: read-only multi-line transcript, a citation list (one entry per
   reference found; selecting an entry jumps to its paragraph and shows its text,
   §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
   Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,

@@ -12,15 +12,37 @@
       </node>
     </node>
     <node oor:name="PanelList">
-      <node oor:name="LibreLexPanel" oor:op="replace">
-        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">Copilota legale</value></prop>
-        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexPanel</value></prop>
+      <node oor:name="LibreLexActionsPanel" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">Azioni</value></prop>
+        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexActionsPanel</value></prop>
         <prop oor:name="DeckId" oor:type="xs:string"><value>LibreLexDeck</value></prop>
         <prop oor:name="ContextList"><value oor:separator=";">Writer, any, visible ;</value></prop>
         <prop oor:name="ImplementationURL" oor:type="xs:string">
-          <value>private:resource/toolpanel/LibreLexPanelFactory/Panel</value>
+          <value>private:resource/toolpanel/LibreLexPanelFactory/Actions</value>
         </prop>
         <prop oor:name="OrderIndex" oor:type="xs:int"><value>100</value></prop>
+        <prop oor:name="WantsCanvas" oor:type="xs:boolean"><value>false</value></prop>
+      </node>
+      <node oor:name="LibreLexCitationsPanel" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">Citazioni</value></prop>
+        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexCitationsPanel</value></prop>
+        <prop oor:name="DeckId" oor:type="xs:string"><value>LibreLexDeck</value></prop>
+        <prop oor:name="ContextList"><value oor:separator=";">Writer, any, visible ;</value></prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/LibreLexPanelFactory/Citations</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int"><value>200</value></prop>
+        <prop oor:name="WantsCanvas" oor:type="xs:boolean"><value>false</value></prop>
+      </node>
+      <node oor:name="LibreLexAnswersPanel" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string"><value xml:lang="en-US">Risposte</value></prop>
+        <prop oor:name="Id" oor:type="xs:string"><value>LibreLexAnswersPanel</value></prop>
+        <prop oor:name="DeckId" oor:type="xs:string"><value>LibreLexDeck</value></prop>
+        <prop oor:name="ContextList"><value oor:separator=";">Writer, any, visible ;</value></prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/LibreLexPanelFactory/Answers</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int"><value>300</value></prop>
         <prop oor:name="WantsCanvas" oor:type="xs:boolean"><value>false</value></prop>
       </node>
     </node>
