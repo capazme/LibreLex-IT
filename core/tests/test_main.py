@@ -14,11 +14,12 @@ class Harness:
     """Plays the extension: sends lines, answers doc_calls with a FakeDocument."""
 
     def __init__(self, doc: FakeDocument, server_version="2.14.0", verdicts=None,
-                 config: Config | None = None):
+                 config: Config | None = None, json_contract: bool = True):
         self.doc = doc
         self.inbox: asyncio.Queue[str | None] = asyncio.Queue()
         self.outbox: asyncio.Queue[str] = asyncio.Queue()
-        fake, self.calls = make_fake_legal_server(version=server_version, verdicts=verdicts)
+        fake, self.calls = make_fake_legal_server(
+            version=server_version, verdicts=verdicts, json_contract=json_contract)
         self.server = CoreServer(config or Config(), tools_factory=lambda: LegalToolsClient(fake))
         self.received: list = []
         self.hold = False  # when True, doc_calls are left unanswered (keeps a request pending)
@@ -122,7 +123,7 @@ async def test_busy_and_cancel():
 
 
 async def test_incompatible_server_is_reported():
-    h = Harness(FakeDocument(["x"]), server_version="2.13.0")
+    h = Harness(FakeDocument(["x"]), server_version="2.13.0", json_contract=False)
 
     async def scenario(h: Harness):
         await h.send(HELLO)
@@ -216,7 +217,7 @@ async def test_redline_author_user_passes_author_none_and_announces_server():
 
 async def test_list_citations_needs_no_server_and_show_text_reports_unavailable():
     doc = FakeDocument(["art. 2043 c.c. e TAR Lazio n. 100/2023"])
-    h = Harness(doc, server_version="0.0.1")   # incompatible server: list must still work
+    h = Harness(doc, server_version="0.0.1", json_contract=False)   # incompatible: list must work
 
     async def scenario(h: Harness):
         await h.send(HELLO)

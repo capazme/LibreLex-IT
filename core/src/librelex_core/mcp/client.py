@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from fastmcp import Client
@@ -13,6 +14,7 @@ from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 from librelex_core.config import McpConfig
 
 MIN_MCP_LEGAL_IT_VERSION = "2.14.0"
+CONTRACT_TOOLS = ("verifica_citazioni", "cite_law")
 
 ALLOWLIST: frozenset[str] = frozenset({
     # norms
@@ -38,9 +40,14 @@ class ToolError(Exception):
 
 
 class IncompatibleServer(Exception):
-    def __init__(self, found: str, required: str):
-        super().__init__(f"mcp-legal-it {found or '?'} found, {required} or newer required")
-        self.found, self.required = found, required
+    def __init__(self, found: str, required: str, reason: str = "version"):
+        if reason == "contract":
+            msg = (f"mcp-legal-it {found or '?'} senza il contratto JSON (formato=json): "
+                   f"serve la {required} o successiva")
+        else:
+            msg = f"mcp-legal-it {found or '?'} found, {required} or newer required"
+        super().__init__(msg)
+        self.found, self.required, self.reason = found, required, reason
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -48,13 +55,30 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:3]) or (0,)
 
 
-class LegalToolsClient:
-    """Connects to mcp-legal-it over fastmcp and enforces a minimum server version.
+def has_json_contract(tools: Iterable[Any]) -> bool:
+    """True when both contract tools accept the `formato` parameter (spec §10)."""
+    by_name = {getattr(t, "name", ""): t for t in tools}
+    for name in CONTRACT_TOOLS:
+        tool = by_name.get(name)
+        if tool is None:
+            return False
+        schema = getattr(tool, "inputSchema", None) or {}
+        if "formato" not in (schema.get("properties") or {}):
+            return False
+    return True
 
-    ``min_version`` defaults to ``MIN_MCP_LEGAL_IT_VERSION`` but can be relaxed
-    via the ``LIBRELEX_MIN_MCP_VERSION`` environment variable (see
-    ``from_config``), which is needed while the dev CLI's live smoke test
-    still targets an untagged mcp-legal-it checkout.
+
+class LegalToolsClient:
+    """Connects to mcp-legal-it over fastmcp and enforces the JSON contract of spec §10.
+
+    Compatibility is decided primarily by ``list_tools()``: the server must expose
+    ``verifica_citazioni`` and ``cite_law`` with a ``formato`` parameter (see
+    ``has_json_contract``). When the tool listing cannot be obtained, this falls
+    back to comparing ``serverInfo.version`` against ``min_version`` (which
+    defaults to ``MIN_MCP_LEGAL_IT_VERSION`` but can be relaxed via the
+    ``LIBRELEX_MIN_MCP_VERSION`` environment variable, see ``from_config``, needed
+    while the dev CLI's live smoke test still targets an untagged mcp-legal-it
+    checkout).
     """
 
     def __init__(self, transport: Any, *, min_version: str = MIN_MCP_LEGAL_IT_VERSION,
@@ -65,6 +89,7 @@ class LegalToolsClient:
         self._sem = asyncio.Semaphore(max_concurrency)
         self._client: Client | None = None
         self.server_version: str = ""
+        self.contract_checked: bool = False
 
     @classmethod
     def from_config(cls, cfg: McpConfig, timeout_s: float = 60.0) -> LegalToolsClient:
@@ -94,10 +119,21 @@ class LegalToolsClient:
         await self._client.__aenter__()
         info = self._client.initialize_result.serverInfo
         self.server_version = info.version or ""
-        if _version_tuple(self.server_version) < _version_tuple(self.min_version):
+        try:
+            tools = await self._client.list_tools()
+        except Exception:
+            tools = None
+        self.contract_checked = tools is not None
+        if tools is not None:
+            compatible = has_json_contract(tools)
+            reason = "contract"
+        else:                       # no listing: fall back to the version floor
+            compatible = _version_tuple(self.server_version) >= _version_tuple(self.min_version)
+            reason = "version"
+        if not compatible:
             await self._client.__aexit__(None, None, None)
             self._client = None
-            raise IncompatibleServer(self.server_version, self.min_version)
+            raise IncompatibleServer(self.server_version, self.min_version, reason)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:

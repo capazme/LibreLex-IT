@@ -34,11 +34,44 @@ async def test_connect_and_call(fake_legal):
     assert calls["cite"] == ["art. 2043 c.c."]
 
 
-async def test_rejects_old_server():
-    server, _ = make_fake_legal_server(version="2.13.1")
-    with pytest.raises(IncompatibleServer, match="2.14.0"):
+async def test_old_version_without_contract_is_rejected():
+    """Tool listing succeeds here (the fake server always answers it), so this exercises
+    the contract-absence path (reason="contract"), not the version-floor fallback below."""
+    server, _ = make_fake_legal_server(version="2.13.1", json_contract=False)
+    with pytest.raises(IncompatibleServer, match="2.14.0") as e:
         async with LegalToolsClient(server):
             pass
+    assert e.value.reason == "contract"
+
+
+async def test_version_floor_rejects_an_old_server_when_tool_listing_fails(monkeypatch):
+    """The one path with no schema to inspect: `list_tools()` itself fails (old servers,
+    transport quirks), so compatibility falls back to comparing `serverInfo.version`."""
+    from fastmcp import Client
+
+    async def boom(self: Client) -> None:
+        raise RuntimeError("transport does not support tool listing")
+
+    monkeypatch.setattr(Client, "list_tools", boom)
+    server, _ = make_fake_legal_server(version="2.13.1")
+    client = LegalToolsClient(server)
+    with pytest.raises(IncompatibleServer, match="2.14.0") as e:
+        async with client:
+            pass
+    assert client.contract_checked is False
+    assert e.value.reason == "version"
+
+
+async def test_version_floor_accepts_a_new_server_when_tool_listing_fails(monkeypatch):
+    from fastmcp import Client
+
+    async def boom(self: Client) -> None:
+        raise RuntimeError("transport does not support tool listing")
+
+    monkeypatch.setattr(Client, "list_tools", boom)
+    server, _ = make_fake_legal_server(version="2.14.0")
+    async with LegalToolsClient(server) as client:
+        assert client.contract_checked is False and client.server_version == "2.14.0"
 
 
 async def test_unknown_tool_is_tool_error(fake_legal):
@@ -78,3 +111,31 @@ def test_local_transport_silences_the_fastmcp_banner():
     env = client.transport.env
     assert env["FASTMCP_SHOW_CLI_BANNER"] == "false" and env["FASTMCP_LOG_LEVEL"] == "WARNING"
     assert env["LEGAL_PROFILE"] == "full" and env["MCP_TRANSPORT"] == "stdio"
+
+
+async def test_contract_present_beats_an_old_version_number():
+    server, _ = make_fake_legal_server(version="2.12.1")        # unreleased checkout with formato
+    async with LegalToolsClient(server) as client:
+        assert client.server_version == "2.12.1" and client.contract_checked is True
+
+
+async def test_missing_contract_is_refused_even_with_a_new_version():
+    server, _ = make_fake_legal_server(version="2.14.0", json_contract=False)
+    with pytest.raises(IncompatibleServer, match="senza il contratto JSON") as e:
+        async with LegalToolsClient(server):
+            pass
+    assert "2.14.0" in str(e.value) and e.value.reason == "contract"
+
+
+def test_has_json_contract_helper():
+    from types import SimpleNamespace as T
+
+    from librelex_core.mcp.client import has_json_contract
+    ok = [
+        T(name="verifica_citazioni", inputSchema={"properties": {"citazioni": {}, "formato": {}}}),
+        T(name="cite_law", inputSchema={"properties": {"reference": {}, "formato": {}}}),
+    ]
+    assert has_json_contract(ok) is True
+    assert has_json_contract(ok[:1]) is False
+    no_formato = T(name="cite_law", inputSchema={"properties": {"reference": {}}})
+    assert has_json_contract([no_formato, ok[0]]) is False

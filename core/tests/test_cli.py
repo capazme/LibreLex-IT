@@ -14,7 +14,8 @@ def _factory(verdicts=None):
 
 def test_check_mcp(capsys):
     rc = cli.main(["check-mcp"], tools_factory=_factory())
-    assert rc == 0 and "2.14.0" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert rc == 0 and "mcp-legal-it 2.14.0 raggiungibile (contratto JSON: sì)" in out
 
 
 def test_verify_file(tmp_path, capsys):

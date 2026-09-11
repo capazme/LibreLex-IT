@@ -26,18 +26,15 @@ ARTICLE_2043 = {
 def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
                            articles: dict[str, dict] | None = None,
                            version: str = "2.14.0",
-                           fail_first: set[str] | None = None) -> tuple[FastMCP, dict]:
+                           fail_first: set[str] | None = None,
+                           json_contract: bool = True) -> tuple[FastMCP, dict]:
     verdicts = verdicts or {}
     articles = {"art. 2043 c.c.": ARTICLE_2043} if articles is None else articles
     fail_first = set(fail_first or ())
     calls: dict = {"verifica": [], "cite": []}
     server = FastMCP("Legal IT (fake)", version=version)
 
-    @server.tool()
-    async def verifica_citazioni(
-        citazioni: str, archivio: str = "tutti", formato: str = "markdown",
-    ) -> str:
-        """Fake verifier."""
+    def _verifica_rows(citazioni: str) -> tuple[list[dict], list[str]]:
         refs = [r.strip() for r in citazioni.split("\n") if r.strip()]
         calls["verifica"].append(refs)
         rows = []
@@ -48,25 +45,49 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
                 fail_first.discard(r)
                 verdetto, nota = "non verificata", "Italgiure non raggiungibile"
             rows.append({"n": i, "citazione": r, "tipo": tipo, "verdetto": verdetto, "nota": nota})
-        data = {"formato": "json", "citazioni": rows, "troncato": len(refs) > 20, "limite": 20,
-                "avvertenza": "La verifica accerta l'esistenza...", "errore": None}
-        return json.dumps(data, ensure_ascii=False) if formato == "json" else "| tabella |"
+        return rows, refs
 
-    @server.tool()
-    async def cite_law(
-        reference: str, include_annotations: bool = False, formato: str = "markdown",
-    ) -> str:
-        """Fake norm lookup."""
+    def _cite_data(reference: str) -> dict:
         calls["cite"].append(reference)
         art = articles.get(reference)
         if art is None:
-            data = {"formato": "json", "riferimento": reference, "articolo": "", "atto": {},
+            return {"formato": "json", "riferimento": reference, "articolo": "", "atto": {},
                     "url": "", "urn": None, "fonte": "", "testo": "",
                     "errore": f"atto '{reference}' non riconosciuto",
                     "data_consultazione": date.today().isoformat()}
-        else:
-            data = {"formato": "json", **art, "data_consultazione": date.today().isoformat()}
-        return json.dumps(data, ensure_ascii=False) if formato == "json" else "**Fonte**: fake"
+        return {"formato": "json", **art, "data_consultazione": date.today().isoformat()}
+
+    if json_contract:
+        @server.tool()
+        async def verifica_citazioni(
+            citazioni: str, archivio: str = "tutti", formato: str = "markdown",
+        ) -> str:
+            """Fake verifier."""
+            rows, refs = _verifica_rows(citazioni)
+            data = {"formato": "json", "citazioni": rows, "troncato": len(refs) > 20,
+                    "limite": 20, "avvertenza": "La verifica accerta l'esistenza...",
+                    "errore": None}
+            return json.dumps(data, ensure_ascii=False) if formato == "json" else "| tabella |"
+
+        @server.tool()
+        async def cite_law(
+            reference: str, include_annotations: bool = False, formato: str = "markdown",
+        ) -> str:
+            """Fake norm lookup."""
+            data = _cite_data(reference)
+            return json.dumps(data, ensure_ascii=False) if formato == "json" else "**Fonte**: fake"
+    else:
+        @server.tool()
+        async def verifica_citazioni(citazioni: str, archivio: str = "tutti") -> str:
+            """Fake verifier, pre-JSON-contract: always markdown."""
+            _verifica_rows(citazioni)
+            return "| tabella |"
+
+        @server.tool()
+        async def cite_law(reference: str, include_annotations: bool = False) -> str:
+            """Fake norm lookup, pre-JSON-contract: always markdown."""
+            _cite_data(reference)
+            return "**Fonte**: fake"
 
     calls.update({"sentenze": [], "consulta": []})
 
