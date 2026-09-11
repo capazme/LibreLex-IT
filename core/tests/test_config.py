@@ -107,3 +107,21 @@ def test_extension_section_and_private_dir(tmp_path):
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert c.load_config(tmp_path / "missing.toml").extension.uv == ""
+
+
+def test_llm_endpoint_presets_and_custom_rules():
+    ep = c.resolve_llm_endpoint(c.LLMConfig(preset="openrouter", api_key="k"))
+    assert ep.base_url == "https://openrouter.ai/api/v1" and ep.host == "openrouter.ai"
+    assert ep.headers["X-Title"] == "LibreLex-IT" and ep.headers["HTTP-Referer"].startswith("https://github.com/")
+    assert ep.extra_body == {"provider": {"data_collection": "deny"}, "usage": {"include": True}}
+    no_zdr = c.LLMConfig(preset="openrouter", zero_data_retention=False)
+    assert c.resolve_llm_endpoint(no_zdr).extra_body == {"usage": {"include": True}}
+    assert c.resolve_llm_endpoint(c.LLMConfig(preset="cliproxyapi")).base_url == \
+        "http://127.0.0.1:8317/v1"
+    assert c.resolve_llm_endpoint(c.LLMConfig(preset="ollama")).host == "localhost"
+    custom = c.LLMConfig(preset="custom", base_url="https://llm.example.org/v1")
+    assert c.resolve_llm_endpoint(custom).extra_body == {}
+    with pytest.raises(c.ConfigError, match="base_url"):
+        c.resolve_llm_endpoint(c.LLMConfig(preset="custom"))
+    with pytest.raises(c.ConfigError, match="https"):
+        c.resolve_llm_endpoint(c.LLMConfig(preset="custom", base_url="http://llm.example.org/v1"))
