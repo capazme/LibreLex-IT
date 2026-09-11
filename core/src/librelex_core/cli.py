@@ -38,7 +38,8 @@ async def _silent(msg: object) -> None:
 
 async def _check(cfg: Config, factory: ToolsFactory) -> int:
     async with factory(cfg) as tools:
-        print(f"mcp-legal-it {tools.server_version} raggiungibile")
+        contract = "sì" if tools.contract_checked else "non verificato, versione accettata"
+        print(f"mcp-legal-it {tools.server_version} raggiungibile (contratto JSON: {contract})")
     return 0
 
 
