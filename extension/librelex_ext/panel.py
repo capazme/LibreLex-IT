@@ -288,7 +288,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         elif self.kind == "Citations":
             self.set_citations([label for label, _, _ in session.citations])
         else:
-            self.set_busy(session.state in ("starting", "busy"))
+            busy = session.state in ("starting", "busy")
+            self.set_busy(busy)
+            if busy:                        # else the layout default "Pronto" would lie
+                self.set_status("Richiesta in corso...")
 
     # --- user actions -----------------------------------------------------------------
     def actionPerformed(self, event):           # XActionListener, UI thread

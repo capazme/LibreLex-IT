@@ -155,9 +155,12 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
         class FakePanel:
             """One panel of the deck: the six View methods, recording what they receive."""
 
-            def __init__(self):
+            def __init__(self, kind=None):
+                self.kind = kind        # only _replay looks at it
                 self.calls = []
                 self.text = ""
+                self.status = None
+                self.busy = None
 
             def append(self, text):
                 self.calls.append("append")
@@ -169,9 +172,11 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
 
             def set_status(self, text):
                 self.calls.append("set_status")
+                self.status = text
 
             def set_busy(self, busy):
                 self.calls.append("set_busy")
+                self.busy = busy
 
             def set_citations(self, labels):
                 self.calls.append("set_citations")
@@ -226,6 +231,19 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
         out["state_after_notify"] = ps.session.state
         out["transcript_4"] = ps.session.transcript[-1]
 
+        # whole-branch m3: what an Azioni panel shows when it is reopened. A real Panel
+        # needs a sidebar window, so drive the real _replay against a fake panel.
+        ready_actions = FakePanel("Actions")
+        panel.Panel._replay(ready_actions, ps.session)
+        out["replay_ready_status"] = ready_actions.status
+        out["replay_ready_busy"] = ready_actions.busy
+        ps.session.state = "busy"
+        busy_actions = FakePanel("Actions")
+        panel.Panel._replay(busy_actions, ps.session)
+        out["replay_busy_status"] = busy_actions.status
+        out["replay_busy_busy"] = busy_actions.busy
+        ps.session.state = "ready"
+
         ps.session.shutdown()
         doc.close(False)
     ''', env={"LIBRELEX_CONFIG": str(config_path)})
@@ -248,3 +266,7 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
     assert out["queue_empty_after_notify"] is True
     assert out["state_after_notify"] == "ready"
     assert out["transcript_4"] == "Fatto."
+    # whole-branch m3: reopened while a request runs, Azioni says so instead of "Pronto"
+    assert out["replay_ready_busy"] is False and out["replay_ready_status"] is None
+    assert out["replay_busy_busy"] is True
+    assert out["replay_busy_status"] == "Richiesta in corso..."
