@@ -9,7 +9,8 @@ from typing import Any, Literal
 from librelex_core import protocol as p
 from librelex_core.citations.extractor import Citation, extract_all
 from librelex_core.citations.verifier import Verdict, verify
-from librelex_core.document import DocumentClient, Paragraph
+from librelex_core.commands.scope import paragraphs_for_scope
+from librelex_core.document import DocumentClient
 from librelex_core.mcp.client import LegalToolsClient
 
 COMMENT_AUTHOR = "LibreLex · verifica"
@@ -30,30 +31,12 @@ def comment_text(v: Verdict) -> str:
     return f"{head}{tail}\n(LibreLex verifica esistenza e metadati, non il merito.)"
 
 
-async def _paragraphs_for_scope(
-    doc: DocumentClient, scope: str, include_footnotes: bool
-) -> tuple[list[Paragraph], int]:
-    """Return the paragraphs to extract from and the offset to add to citation spans.
-
-    Reads the selection exactly once (spec §7.1): both the extracted text and
-    the anchor offset come from the same `read_selection()` call, so a
-    selection change between reads can never desync text and offset.
-    """
-    if scope == "selection":
-        sel = await doc.read_selection()
-        if not sel.text or sel.anchor is None:
-            return [], 0
-        return [Paragraph(id=sel.anchor.paragraph_id, text=sel.text)], sel.anchor.start
-    paras = await doc.read_paragraphs()
-    return [x for x in paras if include_footnotes or x.kind != "footnote"], 0
-
-
 async def run_verify(
     doc: DocumentClient, tools: LegalToolsClient, scope: Literal["document", "selection"],
     emit: Emit, request_id: str, include_footnotes: bool = True,
 ) -> dict[str, Any]:
     await emit(p.Status(request_id=request_id, text="Leggo il documento"))
-    paragraphs, offset = await _paragraphs_for_scope(doc, scope, include_footnotes)
+    paragraphs, offset = await paragraphs_for_scope(doc, scope, include_footnotes)
 
     citations: list[Citation] = extract_all(paragraphs)
     for c in citations:
@@ -91,6 +74,26 @@ async def run_verify(
     per_verdetto = Counter(v.verdetto for v in report.verdicts.values())
     non_verificabili = [c for c, v in report.verdicts.items() if v.verdetto == "non verificabile"]
     da_riprovare = [c for c, v in report.verdicts.items() if v.verdetto == "non verificata"]
+
+    elenco: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    for c in citations:
+        if not c.canonical:
+            continue
+        entry = seen.get(c.canonical)
+        if entry is None:
+            if c.canonical in report.verdicts:
+                v = report.verdicts[c.canonical]
+                verdetto, nota = v.verdetto, v.nota
+            else:
+                verdetto = "da controllare a mano"
+                nota = "corte non verificata automaticamente in questa versione"
+            entry = {"citazione": c.canonical, "tipo": c.kind, "verdetto": verdetto,
+                     "nota": nota, "occorrenze": []}
+            seen[c.canonical] = entry
+            elenco.append(entry)
+        entry["occorrenze"].append({"paragraph_id": c.paragraph_id, "start": c.start, "end": c.end})
+
     summary = {
         "scope": scope,
         "citazioni_totali": len(citations),
@@ -102,6 +105,7 @@ async def run_verify(
         "non_verificabili": non_verificabili,
         "da_riprovare": da_riprovare,
         "commenti_inseriti": inserted,
+        "elenco": elenco,
     }
     await emit(p.Status(
         request_id=request_id,

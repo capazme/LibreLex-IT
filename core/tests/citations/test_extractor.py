@@ -57,3 +57,12 @@ def test_offsets_are_paragraph_relative():
     cs = extract_all(paras)
     assert paras[0].text[cs[0].start:cs[0].end] == cs[0].display_text
     assert paras[1].text[cs[1].start:cs[1].end] == cs[1].display_text
+
+
+def test_judgment_fields_are_exposed_on_the_unified_citation():
+    from librelex_core.document import Paragraph
+    cits = extract_all([Paragraph(id="p:0", text="Cass. sez. lav. n. 123/2021 e art. 2043 c.c.")])
+    sent = [c for c in cits if c.kind == "sentenza"][0]
+    assert (sent.number, sent.year, sent.section) == ("123", "2021", "lav.")
+    norm = [c for c in cits if c.kind == "norma"][0]
+    assert (norm.number, norm.year, norm.section) == (None, None, None)
