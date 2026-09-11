@@ -87,6 +87,7 @@ def format_norm_markdown(data: dict[str, Any], today: date) -> str:
 async def run_insert_norm(
     doc: DocumentClient, tools: LegalToolsClient, reference: str | None,
     emit: Callable[[Any], Awaitable[None]], request_id: str,
+    author: str | None = "LibreLex",
 ) -> dict[str, Any]:
     if not reference:
         sel = await doc.read_selection()
@@ -107,7 +108,7 @@ async def run_insert_norm(
     # _cite_law_struct); fall back to the url if it is missing.
     bookmark = bookmark_name(data.get("urn") or data["url"])
     inserted = await doc.insert_markdown("cursor", markdown, f"LibreLex: inserisci {canonical}",
-                                         bookmark=bookmark, author="LibreLex")
+                                         bookmark=bookmark, author=author)
     await emit(p.Status(request_id=request_id, text=f"Inserito {canonical} come revisione"))
     return {"riferimento": canonical, "url": data["url"], "bookmark": bookmark,
             "inserted": inserted.model_dump()}

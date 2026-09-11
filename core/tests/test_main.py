@@ -13,12 +13,13 @@ from tests.conftest import make_fake_legal_server
 class Harness:
     """Plays the extension: sends lines, answers doc_calls with a FakeDocument."""
 
-    def __init__(self, doc: FakeDocument, server_version="2.14.0", verdicts=None):
+    def __init__(self, doc: FakeDocument, server_version="2.14.0", verdicts=None,
+                 config: Config | None = None):
         self.doc = doc
         self.inbox: asyncio.Queue[str | None] = asyncio.Queue()
         self.outbox: asyncio.Queue[str] = asyncio.Queue()
         fake, self.calls = make_fake_legal_server(version=server_version, verdicts=verdicts)
-        self.server = CoreServer(Config(), tools_factory=lambda: LegalToolsClient(fake))
+        self.server = CoreServer(config or Config(), tools_factory=lambda: LegalToolsClient(fake))
         self.received: list = []
         self.hold = False  # when True, doc_calls are left unanswered (keeps a request pending)
 
@@ -191,5 +192,23 @@ async def test_malformed_line_is_reported_not_fatal():
         assert h.received[-1].code == "protocol"
         await h.send(HELLO)
         await h.pump(p.HelloOk)
+
+    await h.run(scenario)
+
+
+async def test_redline_author_user_passes_author_none_and_announces_server():
+    from librelex_core.config import DocumentConfig
+    doc = FakeDocument(["x"])
+    h = Harness(doc, config=Config(document=DocumentConfig(redline_author="user")))
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(
+            id="r1", doc_id="d1", name="insert_norm", args={"reference": "art. 2043 c.c."}))
+        await h.pump(p.Final)
+        assert doc.inserts[0]["author"] is None
+        statuses = [m.text for m in h.received if isinstance(m, p.Status)]
+        assert statuses[0] == "mcp-legal-it 2.14.0 collegato"
 
     await h.run(scenario)

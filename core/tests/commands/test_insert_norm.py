@@ -138,3 +138,15 @@ async def test_run_insert_norm_unknown_act_raises():
         with pytest.raises(UnparsedReference, match="non riconosciuto"):
             await run_insert_norm(doc, tools, "art. 2043 c.c.", emit, "r1")
     assert doc.inserts == []
+
+
+async def test_run_insert_norm_author_none_keeps_user_identity():
+    doc = FakeDocument(["x"])
+    server, _ = make_fake_legal_server()
+
+    async def emit(m):
+        pass
+
+    async with LegalToolsClient(server) as tools:
+        await run_insert_norm(doc, tools, "art. 2043 c.c.", emit, "r1", author=None)
+    assert doc.inserts[0]["author"] is None

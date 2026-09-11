@@ -81,8 +81,12 @@ class LegalToolsClient:
             headers = {"Authorization": f"Bearer {cfg.bearer}"} if cfg.bearer else {}
             transport: Any = StreamableHttpTransport(cfg.remote_url, headers=headers)
         else:
-            transport = StdioTransport(cfg.command[0], cfg.command[1:],
-                                       env={"LEGAL_PROFILE": "full", "MCP_TRANSPORT": "stdio"})
+            transport = StdioTransport(cfg.command[0], cfg.command[1:], env={
+                "LEGAL_PROFILE": "full", "MCP_TRANSPORT": "stdio",
+                # The server's CLI banner and "Starting MCP server" log line otherwise reach
+                # the extension's stderr log on every start.
+                "FASTMCP_SHOW_CLI_BANNER": "false", "FASTMCP_LOG_LEVEL": "WARNING",
+            })
         return cls(transport, min_version=min_version, timeout_s=timeout_s)
 
     async def __aenter__(self) -> LegalToolsClient:
