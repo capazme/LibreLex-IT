@@ -78,8 +78,9 @@ class DocSession:
 
 
 def check_ceiling(session: DocSession, ceiling: int) -> None:
+    """Global Constraints: session_token_ceiling, mirrors the wording of the refused-turn Error."""
     if session.total_tokens >= ceiling:
         raise LimitReached(
-            f"Limite di token per questo documento raggiunto "
-            f"({session.total_tokens}/{ceiling}): apri una nuova sessione o alza il limite."
+            f"Raggiunto il limite di token della sessione ({session.total_tokens}): "
+            "chiudi e riapri il documento per continuare"
         )
