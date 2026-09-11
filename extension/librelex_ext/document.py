@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime  # noqa: F401  (used by the comment actions, Task 8)
 
 import uno
@@ -347,9 +347,11 @@ class DocumentAdapter:
             cur.insertDocumentFromURL(uno.systemPathToFileUrl(path),
                                       (prop("FilterName", "Markdown"),))
         finally:
-            try:
+            # Cleanup must never replace the real exception: if os.open/write failed the
+            # file may not exist, and a FileNotFoundError here would mask the cause.
+            with suppress(OSError):
                 os.unlink(path)
-            finally:
+            with suppress(OSError):
                 os.rmdir(tmpdir)
 
     @staticmethod
