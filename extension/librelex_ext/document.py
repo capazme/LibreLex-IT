@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager, suppress
-from datetime import datetime  # noqa: F401  (used by the comment actions, Task 8)
+from datetime import datetime
 
 import uno
 from com.sun.star.beans import PropertyValue
@@ -436,3 +436,106 @@ class DocumentAdapter:
                 cur.collapseToEnd()
             i0, last = self._insert_block(cur, container, markdown, None, "LibreLex")
         return {"from_id": f"{prefix}{i0}", "to_id": f"{prefix}{last}"}
+
+    # --- comments (spec §5.5) --------------------------------------------------
+    @staticmethod
+    def _now_struct():
+        n = datetime.now()
+        dt = uno.createUnoStruct("com.sun.star.util.DateTime")
+        dt.Year, dt.Month, dt.Day = n.year, n.month, n.day
+        dt.Hours, dt.Minutes, dt.Seconds, dt.NanoSeconds = n.hour, n.minute, n.second, 0
+        dt.IsUTC = False
+        return dt
+
+    def _make_annotation(self, author: str, content: str):
+        ann = self.doc.createInstance("com.sun.star.text.textfield.Annotation")
+        ann.Author = author
+        ann.Content = content
+        ann.DateTimeValue = self._now_struct()
+        return ann
+
+    @staticmethod
+    def _dispose_quietly(field) -> None:
+        try:
+            field.dispose()
+        except Exception:
+            pass
+
+    def _search_in_paragraph(self, entry: Entry, needle: str):
+        """Range of `needle` inside entry.para found by Writer itself, or None."""
+        try:
+            sd = self.doc.createSearchDescriptor()
+            sd.SearchString = needle
+            sd.SearchCaseSensitive = True
+            sd.SearchRegularExpression = False
+            found = self.doc.findNext(entry.para.getStart(), sd)
+            if found is None:
+                return None
+            # accept only a hit that starts inside this paragraph
+            if entry.container.compareRegionStarts(found.getStart(), entry.para.getEnd()) < 0:
+                return None
+            if entry.container.compareRegionStarts(entry.para.getStart(), found.getStart()) < 0:
+                return None
+            return found
+        except Exception:
+            return None
+
+    def _range_for(self, entry: Entry, start: int, end: int, expected: str):
+        """Cursor spanning `expected` in entry.para, via offsets first, then Writer's search."""
+        cur = entry.container.createTextCursorByRange(entry.para.getStart())
+        cur.goRight(start, False)
+        cur.goRight(end - start, True)
+        if cur.getString() == expected:
+            return cur
+        found = self._search_in_paragraph(entry, expected)
+        if found is not None:
+            return entry.container.createTextCursorByRange(found)
+        return None
+
+    def add_comment(self, paragraph_id: str, start: int, end: int, expected_text: str,
+                    author: str, text: str) -> str:
+        entry = self._entry(paragraph_id)
+        s = entry.para.getString()
+        anchored = "exact"
+        if not (0 <= start < end <= len(s) and s[start:end] == expected_text):
+            pos = s.find(expected_text) if expected_text else -1
+            if pos != -1:
+                start, end, anchored = pos, pos + len(expected_text), "found"
+            else:
+                anchored = "paragraph_start"
+        with self._undo("LibreLex: commento"), self._recording(False):
+            if anchored != "paragraph_start":
+                cur = self._range_for(entry, start, end, expected_text)
+                if cur is not None:
+                    ann = self._make_annotation(author, text)
+                    try:
+                        entry.container.insertTextContent(cur, ann, True)
+                        anchor = ann.getAnchor()
+                        ok = anchor is not None and anchor.getString() == expected_text
+                    except Exception:
+                        ok = False
+                    if ok:
+                        return anchored
+                    self._dispose_quietly(ann)            # orphan rule (spec §5.5)
+                anchored = "paragraph_start"
+            ann = self._make_annotation(
+                author, "[Posizione esatta non trovata nel paragrafo] " + text)
+            cur = entry.container.createTextCursorByRange(entry.para.getStart())
+            try:
+                entry.container.insertTextContent(cur, ann, False)
+            except Exception as e:
+                self._dispose_quietly(ann)
+                raise DocumentActionError(f"commento rifiutato da Writer: {e}") from e
+        return anchored
+
+    def remove_comments(self, author: str) -> int:
+        targets = []
+        enum = self.doc.getTextFields().createEnumeration()
+        while enum.hasMoreElements():
+            f = enum.nextElement()
+            if f.supportsService(ANNOTATION) and f.Author == author:
+                targets.append(f)
+        with self._undo("LibreLex: rimuovi commenti"), self._recording(False):
+            for f in targets:
+                f.dispose()
+        return len(targets)
