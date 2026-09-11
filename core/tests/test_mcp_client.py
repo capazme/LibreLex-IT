@@ -70,3 +70,11 @@ def test_from_config_min_version_defaults_when_unset(monkeypatch):
     client = LegalToolsClient.from_config(
         McpConfig(mode="local", command=["uvx", "x", "mcp-legal-it"]))
     assert client.min_version == MIN_MCP_LEGAL_IT_VERSION
+
+
+def test_local_transport_silences_the_fastmcp_banner():
+    from librelex_core.config import McpConfig
+    client = LegalToolsClient.from_config(McpConfig())
+    env = client.transport.env
+    assert env["FASTMCP_SHOW_CLI_BANNER"] == "false" and env["FASTMCP_LOG_LEVEL"] == "WARNING"
+    assert env["LEGAL_PROFILE"] == "full" and env["MCP_TRANSPORT"] == "stdio"

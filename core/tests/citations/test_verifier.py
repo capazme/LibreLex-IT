@@ -54,3 +54,15 @@ async def test_verify_splits_verifiable_and_others():
     assert report.unverified_courts == ["Corte cost. n. 1/2000"]
     assert report.unparsed == ["art. 5"]
     assert calls["verifica"] == [["art. 2043 c.c."]]
+
+
+async def test_progress_is_not_repeated_when_nothing_is_retried():
+    server, _ = make_fake_legal_server()
+    seen = []
+
+    async def progress(done, total):
+        seen.append((done, total))
+
+    async with LegalToolsClient(server) as tools:
+        await verify_citations(["art. 2043 c.c.", "art. 1218 c.c."], tools, progress=progress)
+    assert seen == [(2, 2)]

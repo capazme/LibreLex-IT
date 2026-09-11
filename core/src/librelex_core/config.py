@@ -66,12 +66,19 @@ class LoggingConfig(_Section):
     enabled: bool = False
 
 
+class ExtensionConfig(_Section):
+    """Read by the LibreOffice extension (stdlib tomllib), validated here so the file has one
+    schema."""
+    uv: str = ""   # absolute path of the uv binary when it is not on LibreOffice's PATH
+
+
 class Config(_Section):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     mcp_legal_it: McpConfig = Field(default_factory=McpConfig)
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    extension: ExtensionConfig = Field(default_factory=ExtensionConfig)
 
 
 def config_dir() -> Path:
@@ -99,6 +106,10 @@ def ensure_private(path: Path) -> None:
 
 def load_config(path: Path | None = None) -> Config:
     path = path or config_path()
+    try:
+        ensure_private(path)   # directory 0700 / file 0600 on every load (spec §8.1)
+    except OSError:
+        pass                   # read-only or foreign location: loading still works
     data: dict = {}
     if path.exists():
         try:

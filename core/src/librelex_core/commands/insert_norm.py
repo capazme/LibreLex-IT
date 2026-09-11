@@ -15,7 +15,35 @@ from librelex_core.mcp.client import LegalToolsClient
 
 MONTHS = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto",
           "settembre", "ottobre", "novembre", "dicembre"]
-SOURCE_LABELS = {"normattiva": "Normattiva", "eurlex": "EUR-Lex"}
+_HEADING_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?art(?:\.|icolo)?\s*\d+(?:\s*-?\s*(?:bis|ter|quater|quinquies|sexies|"
+    r"septies|octies|novies|decies))?\.?\s*(?:[-–—:(]\s*(?P<rubrica>[^)]+?)\)?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def source_label(fonte: str) -> str:
+    """Human label of the JSON `fonte` field ("normattiva", "normattiva-akn", "eurlex", ...)."""
+    f = (fonte or "").lower()
+    if f.startswith("normattiva"):
+        return "Normattiva"
+    if f.startswith("eur"):
+        return "EUR-Lex"
+    return "fonte ufficiale"
+
+
+def split_heading(testo: str) -> tuple[str | None, str]:
+    """Strip the server's leading heading line(s) ("### Art. 2043", "Art. 2043.") and return
+    (rubrica, remaining text). The rubrica, when the heading carries one, goes into the
+    bold title instead of the blockquote (spec §7.2 item 3)."""
+    lines = testo.splitlines()
+    rubrica: str | None = None
+    while lines and (m := _HEADING_RE.match(lines[0])):
+        rubrica = rubrica or ((m.group("rubrica") or "").strip() or None)
+        lines.pop(0)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return rubrica, "\n".join(lines)
 
 
 class UnparsedReference(Exception):
@@ -46,9 +74,12 @@ def bookmark_name(source: str) -> str:
 def format_norm_markdown(data: dict[str, Any], today: date) -> str:
     heading = data["riferimento"]
     heading = heading[0].upper() + heading[1:]
-    lines = [ln.strip() for ln in data["testo"].splitlines() if ln.strip()]
+    rubrica, body = split_heading(data["testo"])
+    if rubrica:
+        heading = f"{heading} ({rubrica})"
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     quote = "\n".join(f"> {ln}" for ln in lines) if lines else "> (testo non disponibile)"
-    label = SOURCE_LABELS.get(data.get("fonte", ""), "fonte ufficiale")
+    label = source_label(data.get("fonte", ""))
     when = f"{today.day} {MONTHS[today.month - 1]} {today.year}"
     return f"**{heading}**\n\n{quote}\n\n*Testo vigente al {when}, fonte {label}, {data['url']}*\n"
 
@@ -56,6 +87,7 @@ def format_norm_markdown(data: dict[str, Any], today: date) -> str:
 async def run_insert_norm(
     doc: DocumentClient, tools: LegalToolsClient, reference: str | None,
     emit: Callable[[Any], Awaitable[None]], request_id: str,
+    author: str | None = "LibreLex",
 ) -> dict[str, Any]:
     if not reference:
         sel = await doc.read_selection()
@@ -76,7 +108,7 @@ async def run_insert_norm(
     # _cite_law_struct); fall back to the url if it is missing.
     bookmark = bookmark_name(data.get("urn") or data["url"])
     inserted = await doc.insert_markdown("cursor", markdown, f"LibreLex: inserisci {canonical}",
-                                         bookmark=bookmark, author="LibreLex")
+                                         bookmark=bookmark, author=author)
     await emit(p.Status(request_id=request_id, text=f"Inserito {canonical} come revisione"))
     return {"riferimento": canonical, "url": data["url"], "bookmark": bookmark,
             "inserted": inserted.model_dump()}

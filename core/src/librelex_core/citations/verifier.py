@@ -56,12 +56,18 @@ async def verify_citations(
     total = len(refs)
     verdicts: dict[str, Verdict] = {}
     sem = asyncio.Semaphore(concurrency)
+    last_reported = -1
+
+    async def report(done: int) -> None:
+        nonlocal last_reported
+        if progress and done != last_reported:
+            last_reported = done
+            await progress(done, total)
 
     async def run(batch: list[str]) -> None:
         async with sem:
             verdicts.update(await _verify_batch(batch, tools))
-        if progress:
-            await progress(min(len(verdicts), total), total)
+        await report(min(len(verdicts), total))
 
     batches = [refs[i:i + batch_size] for i in range(0, total, batch_size)]
     await asyncio.gather(*(run(b) for b in batches))
@@ -69,8 +75,8 @@ async def verify_citations(
     retry = [r for r in refs if verdicts[r].verdetto == RETRYABLE]
     for i in range(0, len(retry), batch_size):
         verdicts.update(await _verify_batch(retry[i:i + batch_size], tools))
-    if progress and total:
-        await progress(total, total)
+    if total:
+        await report(total)
     return {r: verdicts[r] for r in refs}
 
 

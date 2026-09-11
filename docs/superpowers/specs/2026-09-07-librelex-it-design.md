@@ -724,7 +724,7 @@ Core → extension:
 {"type": "status", "request_id": "r2", "text": "Cerco su Italgiure: responsabilità medica"}
 {"type": "delta", "request_id": "r2", "text": "…"}
 {"type": "doc_call", "request_id": "r2", "call_id": "c7",
- "action": "read_paragraphs", "args": {"from": 0, "to": 40}}
+ "action": "read_paragraphs", "args": {"from_": 0, "to": 40}}
 {"type": "consent_request", "request_id": "r2", "call_id": "k1",
  "summary": {"scope": "paragraphs", "chars": 18400,
              "endpoint_host": "openrouter.ai", "model": "…", "zdr": true}}
@@ -737,7 +737,8 @@ Core → extension:
 ```
 
 Document action payloads follow §5.3; the exact pydantic models in
-`core/src/librelex_core/protocol.py` are the contract.
+`core/src/librelex_core/protocol.py` are the contract. The `read_paragraphs` keys are
+`from_` and `to` (Python parameter names), both always present, `null` when unbounded.
 
 ## Appendix B · mcp-legal-it tool allowlist (26)
 
@@ -798,4 +799,7 @@ session_token_ceiling = 400000
 
 [logging]
 enabled = false
+
+[extension]
+uv = ""                        # absolute path of uv when LibreOffice's PATH does not contain it
 ```

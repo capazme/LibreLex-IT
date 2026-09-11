@@ -22,7 +22,10 @@ _COMMA = r"(?:\s*,?\s*(?:co\.|comma|c\.)\s*(\d+))?"
 _PARA_N = r"(?:\s*,?\s*n\.\s*\d+)?"
 _LETT = r"(?:\s*,?\s*lett\.?\s*[a-z]\)?)?"
 _PREP = r"(?:\s*,)?\s*(?:(?:del|della|dello|dell['’]|di)\s+)?"
-_NUM_YEAR = r"(?:\s+n\.?\s*)?(?:\s*(\d+)\s*/\s*(\d{2,4}))?"
+# "196/2003" or "n. 196 del 2003"; the "del" form requires a four-digit year so that
+# "l. n. 3 del 15 marzo" does not turn the day into a year (M1 follow-up a).
+_NUM_SEP = r"(?:\s*/\s*(?=\d{2,4}\b)|\s+del\s+(?=(?:19|20)\d{2}\b))"
+_NUM_YEAR = rf"(?:\s+n\.?\s*)?(?:\s*(\d+){_NUM_SEP}(\d{{2,4}}))?"
 # "artt. N e M <atto>" / "artt. N, M e P <atto>": at least one "e"/"ed" separator so this
 # never overlaps the single-article _EXPLICIT_RE below (review finding 2).
 _ART_LIST_INNER = (
@@ -42,7 +45,7 @@ _MULTI_ART_RE = re.compile(
     re.IGNORECASE,
 )
 _STANDALONE_ACT_RE = re.compile(
-    r"(?:^|(?<=[\s (\"'’]))(" + ABBREV_PATTERN + r")\s+(?:n\.?\s*)?(\d+)\s*/\s*(\d{2,4})",
+    r"(?:^|(?<=[\s (\"'’]))(" + ABBREV_PATTERN + r")\s+(?:n\.?\s*)?(\d+)" + _NUM_SEP + r"(\d{2,4})",
     re.IGNORECASE,
 )
 _BARE_ART_RE = re.compile(_ART_PREFIX + _ART_NUM + _COMMA, re.IGNORECASE)

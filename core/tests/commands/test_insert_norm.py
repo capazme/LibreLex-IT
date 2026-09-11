@@ -9,6 +9,8 @@ from librelex_core.commands.insert_norm import (
     format_norm_markdown,
     parse_reference,
     run_insert_norm,
+    source_label,
+    split_heading,
 )
 from librelex_core.document import FakeDocument
 from librelex_core.mcp.client import LegalToolsClient
@@ -100,6 +102,31 @@ async def test_run_insert_norm_bookmarks_differ_for_two_articles_of_the_same_act
     assert out_2043["bookmark"] != out_2059["bookmark"]
 
 
+def test_source_label_covers_akn_and_eurlex_variants():
+    assert source_label("normattiva") == "Normattiva"
+    assert source_label("normattiva-akn") == "Normattiva"
+    assert source_label("eurlex") == "EUR-Lex"
+    assert source_label("") == "fonte ufficiale"
+
+
+def test_split_heading_strips_server_headings_and_keeps_rubrica():
+    assert split_heading("### Art. 2043 - Risarcimento per fatto illecito\nQualunque fatto") == (
+        "Risarcimento per fatto illecito", "Qualunque fatto")
+    assert split_heading("Art. 2043.\n\nQualunque fatto") == (None, "Qualunque fatto")
+    assert split_heading("Art. 2043 (Risarcimento per fatto illecito)\nQualunque") == (
+        "Risarcimento per fatto illecito", "Qualunque")
+    assert split_heading("Qualunque fatto") == (None, "Qualunque fatto")
+
+
+def test_format_markdown_uses_rubrica_and_akn_label():
+    data = {**ARTICLE_2043, "fonte": "normattiva-akn",
+            "testo": "### Art. 2043 - Risarcimento per fatto illecito\n" + ARTICLE_2043["testo"]}
+    md = format_norm_markdown(data, date(2026, 9, 7))
+    assert md.startswith(
+        "**Art. 2043 c.c. (Risarcimento per fatto illecito)**\n\n> Qualunque fatto")
+    assert "### Art." not in md and "fonte Normattiva," in md
+
+
 async def test_run_insert_norm_unknown_act_raises():
     doc = FakeDocument(["x"])
     server, _ = make_fake_legal_server(articles={})
@@ -111,3 +138,15 @@ async def test_run_insert_norm_unknown_act_raises():
         with pytest.raises(UnparsedReference, match="non riconosciuto"):
             await run_insert_norm(doc, tools, "art. 2043 c.c.", emit, "r1")
     assert doc.inserts == []
+
+
+async def test_run_insert_norm_author_none_keeps_user_identity():
+    doc = FakeDocument(["x"])
+    server, _ = make_fake_legal_server()
+
+    async def emit(m):
+        pass
+
+    async with LegalToolsClient(server) as tools:
+        await run_insert_norm(doc, tools, "art. 2043 c.c.", emit, "r1", author=None)
+    assert doc.inserts[0]["author"] is None

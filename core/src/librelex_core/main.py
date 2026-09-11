@@ -78,6 +78,7 @@ class CoreServer:
         self._write_lock = asyncio.Lock()
         self._hello_ok = False
         self._protocol_mismatch = False
+        self._announced = False
         self._running: dict[str, _Request] = {}     # doc_id → request
         self._by_request: dict[str, _Request] = {}  # request_id → request
 
@@ -197,6 +198,10 @@ class CoreServer:
                 await self.send(p.Error(request_id=msg.id, code="mcp_unavailable",
                                         message=f"mcp-legal-it non raggiungibile: {e}"))
                 return
+            if not self._announced:
+                self._announced = True
+                await self.send(p.Status(
+                    request_id=msg.id, text=f"mcp-legal-it {tools.server_version} collegato"))
             if msg.name == "verify_citations":
                 scope = "selection" if msg.args.get("scope") == "selection" else "document"
                 summary = await run_verify(doc, tools, scope, emit, msg.id,
@@ -205,7 +210,9 @@ class CoreServer:
                         f"{summary['commenti_inseriti']} segnalazioni inserite.")
                 await self.send(p.Final(request_id=msg.id, text=text, summary=summary))
             else:
-                out = await run_insert_norm(doc, tools, msg.args.get("reference"), emit, msg.id)
+                author = "LibreLex" if self.config.document.redline_author == "librelex" else None
+                out = await run_insert_norm(doc, tools, msg.args.get("reference"), emit, msg.id,
+                                            author=author)
                 await self.send(p.Final(
                     request_id=msg.id, text=f"Inserito {out['riferimento']}.", summary=out))
         except asyncio.CancelledError:

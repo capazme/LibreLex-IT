@@ -65,17 +65,17 @@ def test_huge_text_is_ignored():
 
 
 def test_numbered_act_without_number_and_year_has_no_canonical():
-    # "n. <numero> del <anno>" is not matched by _NUM_YEAR yet (follow-up work), so the act
-    # is recognised but its number/year stay unset. canonical() must not fabricate a bare
-    # act label here: sending it to verifica_citazioni would flag a valid citation as
-    # non-existent (review finding 1).
-    cs = extract_norms("ai sensi dell'art. 5 del d.lgs. n. 231 del 2001")
+    # When the act is recognised but no number/year at all follows it (neither "N/YYYY"
+    # nor "n. N del YYYY"), canonical() must not fabricate a bare act label here: sending
+    # it to verifica_citazioni would flag a valid citation as non-existent (review
+    # finding 1).
+    cs = extract_norms("ai sensi dell'art. 5 del d.lgs. citato")
     assert len(cs) == 1
     assert cs[0].act is not None and cs[0].act.label == "D.Lgs."
     assert cs[0].number is None and cs[0].year is None
     assert cs[0].canonical() is None
 
-    cs2 = extract_norms("l'art. 25 della legge n. 300 del 1970")
+    cs2 = extract_norms("l'art. 25 della legge citata")
     assert len(cs2) == 1
     assert cs2[0].act is not None and cs2[0].act.label == "L."
     assert cs2[0].canonical() is None
@@ -113,3 +113,17 @@ def test_bare_article_does_not_inherit_context_when_an_act_follows_in_clause():
     cs = extract_norms(text)
     bare = next(c for c in cs if c.display_text.strip().startswith(("art. 1414", "l'art. 1414")))
     assert bare.canonical() is None
+
+
+def test_number_del_year_form_is_accepted():
+    text = "ai sensi dell'art. 5 del d.lgs. n. 231 del 2001 e del d.lgs. n. 196 del 2003"
+    cits = extract_norms(text)
+    assert cits[0].canonical() == "art. 5 D.Lgs. 231/2001"
+    assert cits[1].article is None and cits[1].number == "196" and cits[1].year == "2003"
+    for c in cits:
+        assert text[c.start:c.end] == c.display_text
+
+
+def test_del_followed_by_a_day_number_is_not_a_year():
+    cits = extract_norms("art. 2 l. n. 3 del 15 marzo")
+    assert cits[0].number is None and cits[0].year is None and cits[0].canonical() is None

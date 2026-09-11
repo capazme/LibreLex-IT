@@ -95,3 +95,15 @@ def test_ensure_private(tmp_path):
     c.ensure_private(path)
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_extension_section_and_private_dir(tmp_path):
+    path = tmp_path / "cfg" / "config.toml"
+    path.parent.mkdir()
+    path.write_text('[extension]\nuv = "/opt/homebrew/bin/uv"\n', encoding="utf-8")
+    cfg = c.load_config(path)
+    assert cfg.extension.uv == "/opt/homebrew/bin/uv"
+    if os.name == "posix":
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert c.load_config(tmp_path / "missing.toml").extension.uv == ""
