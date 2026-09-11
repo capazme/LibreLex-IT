@@ -21,8 +21,12 @@ def test_session_for_registers_on_a_real_document_and_tears_it_down_on_close(sof
         from librelex_ext import registry
 
         calls = []
+        bound = []
 
         class FakeSession:
+            def bind(self, view, ui_post):
+                bound.append((view, ui_post))
+
             def shutdown(self):
                 calls.append("shutdown")
 
@@ -32,6 +36,11 @@ def test_session_for_registers_on_a_real_document_and_tears_it_down_on_close(sof
         second = registry.session_for(doc, FakeSession)     # one session per RuntimeUID
         out["reused"] = first is second
         out["registered"] = doc_id in registry._sessions
+        panel_set = registry.panel_set_for(ctx, doc, FakeSession)
+        out["panel_set_reused"] = panel_set is registry.panel_set_for(ctx, doc, FakeSession)
+        out["panel_set_session"] = panel_set.session is first
+        out["bound_once"] = len(bound)
+        out["panel_set_registered"] = doc_id in registry._panel_sets
         out["shutdown_before_close"] = len(calls)
         doc.close(True)
         for _ in range(100):                                # OnUnload, then disposing
@@ -40,8 +49,13 @@ def test_session_for_registers_on_a_real_document_and_tears_it_down_on_close(sof
             time.sleep(0.02)
         out["shutdown_after_close"] = len(calls)
         out["still_registered"] = doc_id in registry._sessions
+        out["panel_set_still_registered"] = doc_id in registry._panel_sets
     ''')
     assert out["reused"] is True and out["registered"] is True
+    assert out["panel_set_reused"] is True       # one PanelSet per document, like the session
+    assert out["panel_set_session"] is True and out["bound_once"] == 1
+    assert out["panel_set_registered"] is True
     assert out["shutdown_before_close"] == 0
     assert out["shutdown_after_close"] == 1       # exactly once: OnUnload pops, disposing no-ops
     assert out["still_registered"] is False
+    assert out["panel_set_still_registered"] is False   # dropped together with its session

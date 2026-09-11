@@ -1,10 +1,11 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
-from tests.headless.conftest import run_probe
+from tests.headless.conftest import EXT_DIR, run_probe
 
 pytestmark = pytest.mark.headless
 
@@ -76,18 +77,34 @@ def test_selection_and_goto(soffice):
                               "anchor": {"paragraph_id": "fn:1/p:0", "start": 0, "end": 4}}
 
 
+OOR = "{http://openoffice.org/2001/registry}"
+
+
+def sidebar_panel_urls() -> list[str]:
+    """The resource URLs the sidebar asks the factory for, straight from ``Sidebar.xcu``."""
+    root = ET.parse(EXT_DIR / "Sidebar.xcu").getroot()   # only the root element is oor-prefixed
+    return [prop.find("value").text.strip() for prop in root.iter("prop")
+            if prop.get(f"{OOR}name") == "ImplementationURL"]
+
+
 def test_panel_module_imports_inside_libreoffice(soffice):
-    out = run_probe(soffice, "panel_import", '''
+    """Every registered panel URL must map onto a layout kind the factory can build."""
+    urls = sidebar_panel_urls()
+    out = run_probe(soffice, "panel_import", f'''
     def probe(ctx, out):
-        from librelex_ext import panel, registry
-        out["urls"] = [panel.PANEL_URL, panel.XDL_URL]
+        from librelex_ext import layout, panel, registry, views
+        out["xdl"] = panel.XDL_URL
         out["factory"] = type(panel.PanelFactory(ctx)).__name__
+        out["kinds"] = [views.panel_kind(u) for u in {urls!r}]
+        out["layout_kinds"] = sorted(layout.KINDS)
         registry.ensure_terminate_listener(ctx)
         out["pkg"] = str(panel.package_dir(ctx))
     ''')
-    assert out["urls"] == ["private:resource/toolpanel/LibreLexPanelFactory/Panel",
-                           "vnd.sun.star.extension://org.librelex.extension/dialogs/panel.xdl"]
+    assert len(urls) == 3
+    assert out["xdl"] == "vnd.sun.star.extension://org.librelex.extension/dialogs/panel.xdl"
     assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
+    assert sorted(out["kinds"]) == out["layout_kinds"]
+    assert out["layout_kinds"] == ["Actions", "Answers", "Citations"]
 
 
 def test_minimal_width_follows_the_layout_minimum(soffice):
@@ -105,7 +122,8 @@ def test_minimal_width_follows_the_layout_minimum(soffice):
 
         doc = new_doc(ctx)
         frame = doc.getCurrentController().getFrame()
-        p = panel.Panel(ctx, frame, None, panel.PANEL_URL)
+        url = "private:resource/toolpanel/LibreLexPanelFactory/Actions"
+        p = panel.Panel(ctx, frame, None, url, "Actions")
         p.window = frame.getContainerWindow()
         out["minimal"] = p.getMinimalWidth()
         out["expected"] = p.window.convertSizeToPixel(Size(layout.MIN_WIDTH, 0), APPFONT).Width
@@ -121,104 +139,112 @@ def test_minimal_width_follows_the_layout_minimum(soffice):
 def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
     """Regression test for review findings 1 and 2 on task 9 and for whole-branch I2/m2.
 
-    Uses a bare-bones stand-in for Panel.window/model (getControl/getByName only) so the
-    real Panel._attach_session/registry.session_for/Session code path runs against a real
-    Writer document and frame, without needing the XDL container window.
+    The three panels of the deck share one Session through ``registry.panel_set_for``;
+    stand-ins with the six View methods take the place of the real container windows, so the
+    real ``panel.make_session_factory``/registry/Session code path runs against a real Writer
+    document without needing the XDL container window.
     """
     config_path = Path(tempfile.mkdtemp(prefix="librelex-cfg-")) / "config.toml"
     out = run_probe(soffice, "panel_uv_and_banner", '''
     def probe(ctx, out):
         import librelex_ext.paths as paths_mod
-        from librelex_ext import panel
+        from librelex_ext import panel, registry
 
         paths_mod.find_uv = lambda *a, **k: None  # deterministically "uv not found"
 
-        class FakeCtrl:
+        class FakePanel:
+            """One panel of the deck: the six View methods, recording what they receive."""
+
             def __init__(self):
+                self.calls = []
                 self.text = ""
 
-            def getText(self):
-                return self.text
+            def append(self, text):
+                self.calls.append("append")
+                self.text = (self.text + "\\n" + text) if self.text else text
 
-            def setText(self, value):
-                self.text = value
+            def set_transcript(self, text):
+                self.calls.append("set_transcript")
+                self.text = text
 
-            def getSelectedItemPos(self):
-                return -1
+            def set_status(self, text):
+                self.calls.append("set_status")
 
-        class FakeProp:
-            def __init__(self):
-                self.Label = ""
-                self.Enabled = True
-                self.StringItemList = ()
+            def set_busy(self, busy):
+                self.calls.append("set_busy")
 
-        class FakeWindow:
-            def __init__(self):
-                self._controls = {}
+            def set_citations(self, labels):
+                self.calls.append("set_citations")
 
-            def getControl(self, name):
-                return self._controls.setdefault(name, FakeCtrl())
-
-        class FakeModel:
-            def __init__(self):
-                self._props = {}
-
-            def getByName(self, name):
-                return self._props.setdefault(name, FakeProp())
+            def set_progress(self, done, total):
+                self.calls.append("set_progress")
 
         doc = new_doc(ctx)
-        frame = doc.getCurrentController().getFrame()
+        factory = panel.make_session_factory(ctx, doc)
+        ps = registry.panel_set_for(ctx, doc, factory)
+        out["same_panel_set"] = ps is registry.panel_set_for(ctx, doc, factory)
 
-        p1 = panel.Panel(ctx, frame, None, panel.PANEL_URL)
-        p1.window, p1.model = FakeWindow(), FakeModel()
-        p1._attach_session()
-        out["transcript_1"] = p1.window.getControl("Transcript").getText()
+        # what Panel.getRealInterface does when the Risposte and Azioni panels open
+        answers, actions = FakePanel(), FakePanel()
+        ps.composite.attach("Answers", answers)
+        answers.set_transcript("\\n".join(ps.session.transcript))
+        ps.composite.attach("Actions", actions)
+        actions.set_busy(ps.session.state in ("starting", "busy"))
+        out["transcript_1"] = answers.text
 
-        p1.session.run_command("insert_norm", {})   # no uv: must not raise out of run_command
-        out["transcript_2"] = p1.window.getControl("Transcript").getText()
-        out["state_after_run"] = p1.session.state
+        ps.session.run_command("insert_norm", {})   # no uv: must not raise out of run_command
+        out["transcript_2"] = answers.text
+        out["state_after_run"] = ps.session.state
+        out["actions_calls"] = actions.calls
 
-        p2 = panel.Panel(ctx, frame, None, panel.PANEL_URL)   # panel closed and reopened
-        p2.window, p2.model = FakeWindow(), FakeModel()
-        p2._attach_session()
-        out["transcript_after_reopen"] = p2.window.getControl("Transcript").getText()
-        out["same_session"] = p1.session is p2.session
+        ps.composite.detach("Answers")              # the Risposte panel is closed
+        ps.session.note("mentre il pannello era chiuso")
+        answers2 = FakePanel()                      # ... and opened again
+        ps.composite.attach("Answers", answers2)
+        answers2.set_transcript("\\n".join(ps.session.transcript))
+        out["transcript_after_reopen"] = answers2.text
+        out["same_session"] = ps.session is registry.session_for(doc, factory)
 
         def boom(*a, **k):                  # e.g. a config.toml the extension cannot digest
             raise ValueError("config.toml illeggibile")
 
         paths_mod.bridge_spec = boom
-        p2.session.run_command("insert_norm", {})   # must not raise out of run_command either
-        out["transcript_3"] = p2.window.getControl("Transcript").getText()
-        out["state_3"] = p2.session.state
+        ps.session.run_command("insert_norm", {})   # must not raise out of run_command either
+        out["transcript_3"] = answers2.text
+        out["state_3"] = ps.session.state
 
-        # whole-branch m1: an event already queued when the panel is disposed must still
-        # reach the session; a dropped `final` would leave it busy forever.
-        p2.session.state, p2.session.request_id = "busy", "r9"
-        p2.queue.put({"kind": "message", "msg": {
+        # whole-branch m1: an event queued while every panel is closed must still reach the
+        # session; a dropped `final` would leave it busy forever.
+        ps.composite.detach("Answers")
+        ps.composite.detach("Actions")
+        ps.session.state, ps.session.request_id = "busy", "r9"
+        ps.post({"kind": "message", "msg": {
             "type": "final", "request_id": "r9", "text": "Fatto.", "cancelled": False,
             "usage": None, "summary": {}}})
-        p2.dispose()
-        out["queue_empty_after_dispose"] = p2.queue.empty()
-        out["state_after_dispose"] = p1.session.state
-        out["transcript_4"] = p1.session.transcript[-1]
+        ps.notify(None)
+        out["queue_empty_after_notify"] = ps.queue.empty()
+        out["state_after_notify"] = ps.session.state
+        out["transcript_4"] = ps.session.transcript[-1]
 
-        p1.session.shutdown()
+        ps.session.shutdown()
         doc.close(False)
     ''', env={"LIBRELEX_CONFIG": str(config_path)})
+    assert out["same_panel_set"] is True         # one PanelSet per document
     assert "LibreLex-IT pronto" in out["transcript_1"]
     assert out["state_after_run"] == "stopped"
     assert "Impossibile avviare il core" in out["transcript_2"]
     assert "uv non trovato" in out["transcript_2"]
+    assert "append" not in out["actions_calls"]  # the transcript never reaches Azioni
     # the ready banner (finding 2) and the graceful uv error (finding 1) both survive
     # closing and reopening the panel, because both went through Session.transcript
-    assert out["transcript_after_reopen"] == out["transcript_2"]
+    assert out["transcript_after_reopen"].startswith(out["transcript_2"])
+    assert out["transcript_after_reopen"].endswith("mentre il pannello era chiuso")
     assert out["transcript_after_reopen"].count("LibreLex-IT pronto") == 1
     assert out["same_session"] is True          # the real registry.session_for, not a fake
     # whole-branch I2/m2: a non-UvNotFound failure of bridge_spec also becomes a BridgeError
     assert out["state_3"] == "stopped"
     assert "Impossibile avviare il core: config.toml illeggibile" in out["transcript_3"]
-    # whole-branch m1: dispose() drains the queue into the session instead of dropping it
-    assert out["queue_empty_after_dispose"] is True
-    assert out["state_after_dispose"] == "ready"
+    # whole-branch m1: the PanelSet drains its queue into the session with no panel attached
+    assert out["queue_empty_after_notify"] is True
+    assert out["state_after_notify"] == "ready"
     assert out["transcript_4"] == "Fatto."

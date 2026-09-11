@@ -15,20 +15,25 @@ Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
    targets a private profile). `unopkg add` is deliberately not used: on macOS it registers Python components
    through a helper soffice reached over a named pipe, which never answers on some installs (`NoConnectException`).
    Tools > Extension Manager > Add... on the `.oxt` works too.
-3. Quit and restart LibreOffice. In Writer: View > Sidebar > LibreLex > Copilota legale.
+3. Quit and restart LibreOffice. In Writer: View > Sidebar > LibreLex.
 4. First click creates `~/Library/Application Support/LibreLex/config.toml` (0600). Edit `[mcp_legal_it] command`
    if you run mcp-legal-it from a local checkout; LibreOffice must be restarted after changes.
 
 ## Usage
 
+The LibreLex deck has three panels: **Azioni** (buttons, progress and status), **Citazioni**
+(the references found in the document) and **Risposte** (the answers). Each panel opens and
+closes from its own title bar, like every other sidebar panel, and Risposte takes the height
+the other two leave.
+
 - **Verifica citazioni** (or *Verifica selezione*): checks every citation of the document
   (or of the selection) against the official sources and comments the problematic ones in
-  the document; the panel list shows each reference with its verdict (✓ verified,
+  the document; Citazioni shows each reference with its verdict (✓ verified,
   ✗ problem, ? not verified, · to be checked by hand).
 - **Elenca citazioni**: lists the references of the document without consulting any source
-  (no network); clicking an entry jumps to its first occurrence and shows its text in the
-  panel.
-- **Mostra testo**: shows in the panel the text of the reference typed in the input box, or
+  (no network); clicking an entry in Citazioni jumps to its first occurrence and shows its
+  text in Risposte.
+- **Mostra testo**: shows in Risposte the text of the reference typed in the input box, or
   of the one selected in the document; nothing is written into the document.
 
 The first action runs `uv run` on the bundled core: network access is needed once to build its environment.
