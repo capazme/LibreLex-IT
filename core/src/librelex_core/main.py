@@ -12,10 +12,16 @@ from pydantic import ValidationError
 from librelex_core import PROTOCOL_VERSION, __version__
 from librelex_core import protocol as p
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
+from librelex_core.commands.list_citations import run_list_citations
+from librelex_core.commands.show_text import TextUnavailable, run_show_text
 from librelex_core.commands.verify_document import run_verify
 from librelex_core.config import Config, load_config
 from librelex_core.document import BridgeDocument, DocumentError
 from librelex_core.mcp.client import IncompatibleServer, LegalToolsClient
+
+# Commands that need a live mcp-legal-it connection; list_citations is a local,
+# deterministic pipeline and must keep working even against an incompatible server.
+NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text")
 
 
 class LineTransport(Protocol):
@@ -184,31 +190,45 @@ class CoreServer:
             await self.send(m)
 
         try:
-            if msg.name not in ("verify_citations", "insert_norm"):
+            if msg.name not in ("verify_citations", "insert_norm", "list_citations", "show_text"):
                 await self.send(p.Error(
                     request_id=msg.id, code="not_implemented",
                     message=f"comando {msg.name} non disponibile in questa versione"))
                 return
-            try:
-                tools = await self._get_tools()
-            except IncompatibleServer as e:
-                await self.send(p.Error(request_id=msg.id, code="mcp_incompatible", message=str(e)))
-                return
-            except Exception as e:
-                await self.send(p.Error(request_id=msg.id, code="mcp_unavailable",
-                                        message=f"mcp-legal-it non raggiungibile: {e}"))
-                return
-            if not self._announced:
-                self._announced = True
-                await self.send(p.Status(
-                    request_id=msg.id, text=f"mcp-legal-it {tools.server_version} collegato"))
+            tools: LegalToolsClient | None = None
+            if msg.name in NEEDS_TOOLS:
+                try:
+                    tools = await self._get_tools()
+                except IncompatibleServer as e:
+                    await self.send(
+                        p.Error(request_id=msg.id, code="mcp_incompatible", message=str(e)))
+                    return
+                except Exception as e:
+                    await self.send(p.Error(request_id=msg.id, code="mcp_unavailable",
+                                            message=f"mcp-legal-it non raggiungibile: {e}"))
+                    return
+                if not self._announced:
+                    self._announced = True
+                    await self.send(p.Status(
+                        request_id=msg.id, text=f"mcp-legal-it {tools.server_version} collegato"))
+            scope = "selection" if msg.args.get("scope") == "selection" else "document"
             if msg.name == "verify_citations":
-                scope = "selection" if msg.args.get("scope") == "selection" else "document"
                 summary = await run_verify(doc, tools, scope, emit, msg.id,
                                            include_footnotes=self.config.document.verify_footnotes)
                 text = (f"Verificate {summary['citazioni_uniche']} citazioni, "
                         f"{summary['commenti_inseriti']} segnalazioni inserite.")
                 await self.send(p.Final(request_id=msg.id, text=text, summary=summary))
+            elif msg.name == "list_citations":
+                out = await run_list_citations(
+                    doc, scope, emit, msg.id,
+                    include_footnotes=self.config.document.verify_footnotes)
+                text = (f"Trovate {out['citazioni_uniche']} citazioni "
+                        f"({out['citazioni_totali']} occorrenze).")
+                await self.send(p.Final(request_id=msg.id, summary=out, text=text))
+            elif msg.name == "show_text":
+                out = await run_show_text(doc, tools, msg.args.get("reference"), emit, msg.id)
+                await self.send(p.Final(
+                    request_id=msg.id, text=f"Testo di {out['riferimento']}.", summary=out))
             else:
                 author = "LibreLex" if self.config.document.redline_author == "librelex" else None
                 out = await run_insert_norm(doc, tools, msg.args.get("reference"), emit, msg.id,
@@ -220,6 +240,8 @@ class CoreServer:
         except UnparsedReference as e:
             await self.send(
                 p.Error(request_id=msg.id, code="reference_unparsed", message=str(e)))
+        except TextUnavailable as e:
+            await self.send(p.Error(request_id=msg.id, code="text_unavailable", message=str(e)))
         except DocumentError as e:
             await self.send(p.Error(request_id=msg.id, code="document", message=str(e)))
         except Exception as e:  # never let a request kill the server

@@ -11,6 +11,8 @@ from pathlib import Path
 
 from librelex_core import protocol as p
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
+from librelex_core.commands.list_citations import run_list_citations
+from librelex_core.commands.show_text import TextUnavailable, run_show_text
 from librelex_core.commands.verify_document import run_verify
 from librelex_core.config import Config, ConfigError, load_config
 from librelex_core.document import FakeDocument
@@ -62,6 +64,30 @@ async def _insert(cfg: Config, factory: ToolsFactory, reference: str) -> int:
     return 0
 
 
+async def _list(cfg: Config, path: Path) -> int:
+    blocks = [b.strip() for b in path.read_text(encoding="utf-8").split("\n\n") if b.strip()]
+    doc = FakeDocument(blocks, title=path.name)
+    out = await run_list_citations(doc, "document", _emit, "cli",
+                                   include_footnotes=cfg.document.verify_footnotes)
+    for c in out["citazioni"]:
+        print(f"{c['citazione']}  [{c['tipo']}]  x{len(c['occorrenze'])}")
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+async def _show(cfg: Config, factory: ToolsFactory, reference: str) -> int:
+    # _silent, not _emit: show-text's stdout must start with the title (spec §7.3 item 2).
+    async with factory(cfg) as tools:
+        out = await run_show_text(FakeDocument(["x"]), tools, reference, _silent, "cli")
+    print(out["titolo"])
+    print(f"Fonte: {out['fonte']} {out['url']}".strip())
+    if out["massima"]:
+        print(f"Massima:\n{out['massima']}")
+    print()
+    print(out["testo"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="librelex-dev", description="LibreLex-IT core, dev CLI")
     parser.add_argument("--config", type=Path, default=None, help="config.toml path")
@@ -71,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("file", type=Path)
     i = sub.add_parser("insert-norm", help="print the markdown that would be inserted for a norm")
     i.add_argument("reference")
+    lc = sub.add_parser("list", help="list the citations of a text/markdown file, no server needed")
+    lc.add_argument("file", type=Path)
+    st = sub.add_parser(
+        "show-text", help="print the text of one citation (norm, Cassazione, Consulta)")
+    st.add_argument("reference")
     return parser
 
 
@@ -82,8 +113,12 @@ def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_f
             return asyncio.run(_check(cfg, tools_factory))
         if args.cmd == "verify":
             return asyncio.run(_verify(cfg, tools_factory, args.file))
-        return asyncio.run(_insert(cfg, tools_factory, args.reference))
-    except (ConfigError, IncompatibleServer, UnparsedReference) as e:
+        if args.cmd == "insert-norm":
+            return asyncio.run(_insert(cfg, tools_factory, args.reference))
+        if args.cmd == "list":
+            return asyncio.run(_list(cfg, args.file))
+        return asyncio.run(_show(cfg, tools_factory, args.reference))
+    except (ConfigError, IncompatibleServer, UnparsedReference, TextUnavailable) as e:
         print(f"errore: {e}", file=sys.stderr)
         return 1
     except Exception as e:  # keep the CLI usable when a source is down

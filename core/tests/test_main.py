@@ -212,3 +212,42 @@ async def test_redline_author_user_passes_author_none_and_announces_server():
         assert statuses[0] == "mcp-legal-it 2.14.0 collegato"
 
     await h.run(scenario)
+
+
+async def test_list_citations_needs_no_server_and_show_text_reports_unavailable():
+    doc = FakeDocument(["art. 2043 c.c. e TAR Lazio n. 100/2023"])
+    h = Harness(doc, server_version="0.0.1")   # incompatible server: list must still work
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(
+            id="r1", doc_id="d1", name="list_citations", args={"scope": "document"}))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.text == "Trovate 2 citazioni (2 occorrenze)."
+        assert [c["citazione"] for c in final.summary["citazioni"]] == [
+            "art. 2043 c.c.", "TAR Lazio n. 100/2023"]
+        await h.send(p.Command(
+            id="r2", doc_id="d1", name="show_text", args={"reference": "art. 2043 c.c."}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "mcp_incompatible"
+
+    await h.run(scenario)
+
+    h2 = Harness(FakeDocument(["x"]))
+
+    async def scenario2(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(
+            id="r1", doc_id="d1", name="show_text", args={"reference": "TAR Lazio n. 1/2023"}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "text_unavailable"
+        await h.send(p.Command(
+            id="r2", doc_id="d1", name="show_text", args={"reference": "Cass. n. 12345/2024"}))
+        await h.pump(p.Final)
+        assert h.received[-1].text == "Testo di Cass. n. 12345/2024."
+        assert h.received[-1].summary["tipo"] == "sentenza"
+
+    await h2.run(scenario2)

@@ -68,6 +68,29 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
             data = {"formato": "json", **art, "data_consultazione": date.today().isoformat()}
         return json.dumps(data, ensure_ascii=False) if formato == "json" else "**Fonte**: fake"
 
+    calls.update({"sentenze": [], "consulta": []})
+
+    @server.tool()
+    async def leggi_sentenza(
+        numero: int, anno: int, sezione: str = "", archivio: str = "tutti",
+    ) -> str:
+        """Fake Italgiure reader: 12345/2024 exists, everything else does not."""
+        calls["sentenze"].append((numero, anno, sezione))
+        if (numero, anno) != (12345, 2024):
+            return f"Errore: nessuna sentenza n. {numero}/{anno} trovata su Italgiure"
+        return ("# Cass. civ., Sez. Lavoro, sentenza n. 12345/2024\n\n"
+                "**Data**: 12/03/2024\n\n## Massima\n\nIl datore di lavoro risponde del danno "
+                "da demansionamento anche in assenza di dolo.\n\n## Testo\n\nFATTI DI CAUSA. "
+                + "La ricorrente lamentava... " * 400)
+
+    @server.tool()
+    async def leggi_pronuncia_costituzionale(numero: int, anno: int) -> str:
+        """Fake Consulta reader: 1/2020 exists."""
+        calls["consulta"].append((numero, anno))
+        if (numero, anno) != (1, 2020):
+            return f"Errore: pronuncia n. {numero}/{anno} non trovata"
+        return "# Corte costituzionale, sentenza n. 1/2020\n\nEpigrafe...\n\nRitenuto in fatto..."
+
     return server, calls
 
 

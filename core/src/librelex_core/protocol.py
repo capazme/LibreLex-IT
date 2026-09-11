@@ -36,7 +36,9 @@ class Chat(_Msg):
     context: DocContext = Field(default_factory=DocContext)
 
 
-CommandName = Literal["verify_citations", "insert_norm", "research", "draft", "review"]
+CommandName = Literal[
+    "verify_citations", "insert_norm", "list_citations", "show_text", "research", "draft", "review"
+]
 
 
 class Command(_Msg):
