@@ -9,7 +9,11 @@ Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 ## Install (macOS, LibreOffice 26.2+)
 
 1. Install [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
-2. From a Terminal: `scripts/dev_install.sh` (builds `dist/LibreLex-IT-<version>.oxt` and runs `unopkg add --force`).
+2. Quit LibreOffice, then from a Terminal: `scripts/dev_install.sh` (builds `dist/LibreLex-IT-<version>.oxt` and lets a
+   headless LibreOffice register it in-process through `scripts/lo_install.py`; `--remove` uninstalls, `--profile DIR`
+   targets a private profile). `unopkg add` is deliberately not used: on macOS it registers Python components
+   through a helper soffice reached over a named pipe, which never answers on some installs (`NoConnectException`).
+   Tools > Extension Manager > Add... on the `.oxt` works too.
 3. Quit and restart LibreOffice. In Writer: View > Sidebar > LibreLex > Copilota legale.
 4. First click creates `~/Library/Application Support/LibreLex/config.toml` (0600). Edit `[mcp_legal_it] command`
    if you run mcp-legal-it from a local checkout; LibreOffice must be restarted after changes.
