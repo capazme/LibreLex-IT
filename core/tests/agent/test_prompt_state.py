@@ -15,7 +15,7 @@ from librelex_core.protocol import Usage
 def test_prompt_is_italian_stable_and_marks_data():
     assert "cite_law" in SYSTEM_PROMPT and "leggi_" in SYSTEM_PROMPT and DATA_RULE in SYSTEM_PROMPT
     assert "verificato" in SYSTEM_PROMPT and len(SYSTEM_PROMPT) < 6000
-    assert not any(ch.isdigit() and SYSTEM_PROMPT.count("202") for ch in "")  # no dates in the prompt # noqa: E501
+    assert not any(ch.isdigit() for ch in SYSTEM_PROMPT)  # no dates in the prompt
     assert wrap_data("read_paragraphs", "testo") == "<<<DATI: read_paragraphs>>>\ntesto\n<<<FINE DATI>>>"  # noqa: E501
 
 
