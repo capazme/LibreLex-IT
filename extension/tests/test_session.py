@@ -1,9 +1,46 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
+import importlib
+import sys
+import types
+
 import pytest
 
-from librelex_ext import PROTOCOL_VERSION
+from librelex_ext import PROTOCOL_VERSION, DocumentActionError
 from librelex_ext.bridge import BridgeError
 from librelex_ext.session import Session, dispatch_doc_call
+
+
+def load_document_module():
+    """Import the real (UNO-only) ``librelex_ext.document`` on a machine without UNO.
+
+    Only the three names document.py binds at import time are stubbed; everything the test
+    then touches (``DocumentAdapter._index``/``_entry``, ``DocumentActionError``) is the real
+    code, so the exception class the adapter raises is the one the core will see.
+    """
+    if "librelex_ext.document" not in sys.modules:
+        for name, attrs in (("uno", {}), ("com", {}), ("com.sun", {}), ("com.sun.star", {}),
+                            ("com.sun.star.beans", {"PropertyValue": object}),
+                            ("com.sun.star.text", {}),
+                            ("com.sun.star.text.ControlCharacter", {"PARAGRAPH_BREAK": 0})):
+            module = types.ModuleType(name)
+            module.__dict__.update(attrs)
+            sys.modules.setdefault(name, module)
+    return importlib.import_module("librelex_ext.document")
+
+
+class EmptyBody:
+    """A Writer body text with no paragraphs at all (enough to make any id unknown)."""
+
+    def createEnumeration(self):
+        return self
+
+    def hasMoreElements(self):
+        return False
+
+
+class EmptyModel:
+    def getText(self):
+        return EmptyBody()
 
 
 class FakeAdapter:
@@ -84,8 +121,8 @@ class FakeView:
         self.problems = labels
 
 
-def make(fail_start=False):
-    adapter, view = FakeAdapter(), FakeView()
+def make(fail_start=False, adapter=None):
+    adapter, view = adapter or FakeAdapter(), FakeView()
     bridges = []
 
     def factory(on_event):
@@ -154,6 +191,26 @@ def test_doc_call_is_answered_with_matching_ids_and_errors_become_ok_false():
         "type": "doc_call", "request_id": "r1", "call_id": "c8", "action": "nope", "args": {}}})
     res = bridges[0].sent[-1]
     assert res["ok"] is False and "azione sconosciuta" in res["error"] and res["call_id"] == "c8"
+
+
+def test_doc_call_error_from_the_real_adapter_keeps_its_italian_message():
+    """The adapter's DocumentActionError must reach the core as plain Italian, no class name.
+
+    Regression: document.py used to define its own DocumentActionError, so session's
+    isinstance() check never matched and every document error was prefixed with the Python
+    class name.
+    """
+    document = load_document_module()
+    s, adapter, view, bridges = make(adapter=document.DocumentAdapter(None, EmptyModel()))
+    s.run_command("insert_norm", {"reference": "art. 2043 c.c."})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "doc_call", "request_id": "r1", "call_id": "c1", "action": "goto",
+        "args": {"paragraph_id": "p:99"}}})
+    assert bridges[0].sent[-1] == {"type": "doc_result", "id": "r1", "call_id": "c1",
+                                   "ok": False, "error": "paragrafo non trovato: p:99"}
+    assert document.DocumentActionError is DocumentActionError
 
 
 def test_doc_call_after_shutdown_is_dropped_without_error():

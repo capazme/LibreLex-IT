@@ -10,7 +10,7 @@ import os
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from librelex_ext import PROTOCOL_VERSION, __version__
+from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__
 from librelex_ext.bridge import BridgeError
 from librelex_ext.render import render_error, render_insert_summary, render_verify_summary
 
@@ -29,10 +29,6 @@ class NullView:
     def set_status(self, text: str) -> None: ...
     def set_busy(self, busy: bool) -> None: ...
     def set_problems(self, labels: list[str]) -> None: ...
-
-
-class DocumentActionError(Exception):
-    """A document action failed; reported to the core as doc_result ok=false."""
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:

@@ -1,8 +1,10 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 """Document adapter: the nine document actions of spec §5.3 on one Writer model, over UNO.
 
-Runs on the UI thread. Imports nothing from the package so the headless test macros can
-import it alone. Ids (spec §5.3): p:<i> body paragraphs (tables not counted),
+Runs on the UI thread. The only thing it imports from the package is the shared
+``DocumentActionError`` of ``librelex_ext/__init__.py`` (stdlib only, and already executed
+whenever this module is imported), so the headless test macros still import it alone.
+Ids (spec §5.3): p:<i> body paragraphs (tables not counted),
 fn:<n>/p:<i> footnote paragraphs (n = 1-based footnote number in document order),
 t:<t>/c:<cell>/p:<i> table-cell paragraphs.
 """
@@ -20,14 +22,14 @@ from com.sun.star.text.ControlCharacter import (  # noqa: F401  (writing half, T
     PARAGRAPH_BREAK,
 )
 
+from librelex_ext import DocumentActionError
+
 PARAGRAPH = "com.sun.star.text.Paragraph"
 TABLE = "com.sun.star.text.TextTable"
 ANNOTATION = "com.sun.star.text.TextField.Annotation"
 PROFILE_NODE = "/org.openoffice.UserProfile/Data"
 
-
-class DocumentActionError(Exception):
-    """Reported to the core as doc_result ok=false."""
+__all__ = ["DocumentActionError", "DocumentAdapter", "has_markdown_filter", "lo_version"]
 
 
 def prop(name, value):
