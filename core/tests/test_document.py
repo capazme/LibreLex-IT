@@ -77,3 +77,29 @@ async def test_bridge_error_and_timeout():
     doc.resolve(p.DocResult(id="r", call_id=call_id, ok=False, error="no doc"))
     with pytest.raises(DocumentError, match="no doc"):
         await task
+
+
+async def test_bridge_consent_roundtrip_and_timeout():
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    doc = BridgeDocument(send, request_id="r1", timeout_s=0.05)
+    summary = p.ConsentSummary(scope="paragraphs", chars=1200, endpoint_host="openrouter.ai",
+                               model="m", zdr=True)
+    task = asyncio.create_task(doc.ask_consent(summary))
+    await asyncio.sleep(0)
+    req = sent[-1]
+    assert isinstance(req, p.ConsentRequest) and req.request_id == "r1" and req.summary.chars == 1200  # noqa: E501
+    doc.resolve_consent(p.ConsentResult(id="r1", call_id=req.call_id, decision="once"))
+    assert await task == "once"
+    doc.consent_timeout_s = 0.01
+    with pytest.raises(DocumentError, match="consenso"):
+        await doc.ask_consent(summary)
+
+
+async def test_fake_document_consent_script():
+    doc = FakeDocument(["x"], consent_decisions=["deny", "document"])
+    assert await doc.ask_consent(None) == "deny" and await doc.ask_consent(None) == "document"
+    assert await doc.ask_consent(None) == "document" and len(doc.consent_requests) == 3

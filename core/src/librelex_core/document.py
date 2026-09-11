@@ -82,7 +82,8 @@ class DocumentClient(Protocol):
 
 class FakeDocument:
     def __init__(self, paragraphs: list[str], footnotes: dict[int, str] | None = None,
-                 selection: tuple[int, int, int] | None = None, title: str = "fake.odt"):
+                 selection: tuple[int, int, int] | None = None, title: str = "fake.odt",
+                 consent_decisions: list[str] | None = None):
         self._paragraphs = list(paragraphs)
         self._footnotes = dict(footnotes or {})
         self._selection = selection  # (paragraph index, start, end)
@@ -91,6 +92,8 @@ class FakeDocument:
         self.inserts: list[dict[str, Any]] = []
         self.bookmarks: set[str] = set()
         self.visited: list[str] = []
+        self.consent_decisions: list[str] = list(consent_decisions or ["document"])
+        self.consent_requests: list[Any] = []
 
     def _para_text(self, paragraph_id: str) -> str:
         if paragraph_id.startswith("fn:"):
@@ -177,18 +180,26 @@ class FakeDocument:
     async def goto(self, paragraph_id: str) -> None:
         self.visited.append(paragraph_id)
 
+    async def ask_consent(self, summary: p.ConsentSummary | None) -> str:
+        self.consent_requests.append(summary)
+        if len(self.consent_decisions) > 1:
+            return self.consent_decisions.pop(0)
+        return self.consent_decisions[0]
+
 
 # --- protocol-backed implementation ------------------------------------------
 
 class BridgeDocument:
     """Turns method calls into doc_call messages and waits for the matching doc_result."""
 
-    def __init__(self, send: Callable[[p.DocCall], Awaitable[None]], request_id: str,
-                 timeout_s: float = 120.0):
+    def __init__(self, send: Callable[[p.DocCall | p.ConsentRequest], Awaitable[None]],
+                 request_id: str, timeout_s: float = 120.0, consent_timeout_s: float = 600.0):
         self._send = send
         self.request_id = request_id
         self.timeout_s = timeout_s
+        self.consent_timeout_s = consent_timeout_s
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.pending_consent: dict[str, asyncio.Future[str]] = {}
 
     def resolve(self, result: p.DocResult) -> None:
         fut = self.pending.pop(result.call_id, None)
@@ -198,6 +209,25 @@ class BridgeDocument:
             fut.set_result(result.result or {})
         else:
             fut.set_exception(DocumentError(result.error or "unknown document error"))
+
+    def resolve_consent(self, msg: p.ConsentResult) -> None:
+        fut = self.pending_consent.pop(msg.call_id, None)
+        if fut is None or fut.done():
+            return
+        fut.set_result(msg.decision)
+
+    async def ask_consent(self, summary: p.ConsentSummary) -> str:
+        call_id = uuid.uuid4().hex[:8]
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self.pending_consent[call_id] = fut
+        await self._send(
+            p.ConsentRequest(request_id=self.request_id, call_id=call_id, summary=summary)
+        )
+        try:
+            return await asyncio.wait_for(fut, self.consent_timeout_s)
+        except TimeoutError as e:
+            self.pending_consent.pop(call_id, None)
+            raise DocumentError("timeout in attesa del consenso dell'utente") from e
 
     async def _call(self, action: str, **args: Any) -> dict[str, Any]:
         call_id = uuid.uuid4().hex[:8]
