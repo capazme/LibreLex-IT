@@ -143,10 +143,12 @@ class Session:
             self.adapter.goto(paragraph_id)
         except Exception as e:  # navigation is best effort
             self.view.set_status(f"Posizione non raggiungibile: {e}")
-        if self.state not in ("ready", "stopped"):
-            self.view.set_status("Testo disponibile a fine richiesta: riprova tra poco")
-        elif canonical in self.texts:
+        # Cache first: a text we already downloaded needs no core, so it is shown even
+        # while another request is running; only an actual fetch has to wait.
+        if canonical in self.texts:
             self._append(self.texts[canonical])
+        elif self.state not in ("ready", "stopped"):
+            self.view.set_status("Testo disponibile a fine richiesta: riprova tra poco")
         else:
             self.run_command("show_text", {"reference": canonical})
 

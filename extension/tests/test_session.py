@@ -414,12 +414,15 @@ def test_list_citations_fills_the_list_and_click_fetches_then_caches_text():
     s.handle_event({"kind": "message", "msg": {
         "type": "final", "request_id": "r1", "text": "Trovate 1 citazioni (1 occorrenze).",
         "cancelled": False, "usage": None,
-        "summary": {"scope": "document", "citazioni_totali": 1, "citazioni_uniche": 1,
+        "summary": {"scope": "document", "citazioni_totali": 2, "citazioni_uniche": 2,
                     "citazioni": [{"citazione": "art. 2043 c.c.", "tipo": "norma", "corte": None,
                                    "verificabile": True,
-                                   "occorrenze": [{"paragraph_id": "p:4", "start": 0, "end": 1}]}],
+                                   "occorrenze": [{"paragraph_id": "p:4", "start": 0, "end": 1}]},
+                                  {"citazione": "art. 1218 c.c.", "tipo": "norma", "corte": None,
+                                   "verificabile": True,
+                                   "occorrenze": [{"paragraph_id": "p:7", "start": 0, "end": 1}]}],
                     "non_interpretabili": []}}})
-    assert view.citations == ["art. 2043 c.c."] and s.state == "ready"
+    assert view.citations == ["art. 2043 c.c.", "art. 1218 c.c."] and s.state == "ready"
     s.select_citation(0)
     assert adapter.calls[-1] == ("goto", "p:4")
     assert bridges[0].sent[-1]["name"] == "show_text"
@@ -437,8 +440,14 @@ def test_list_citations_fills_the_list_and_click_fetches_then_caches_text():
     s.select_citation(0)                                # cached: no new request
     assert len(bridges[0].sent) == n and view.lines[-1] == s.texts["art. 2043 c.c."]
     s.run_command("verify_citations", {})
-    s.select_citation(0)                                # busy: navigate only
-    assert adapter.calls[-1] == ("goto", "p:4") and "fine richiesta" in view.status
+    n = len(bridges[0].sent)
+    s.select_citation(0)                                # busy but cached: shown anyway
+    assert adapter.calls[-1] == ("goto", "p:4") and view.lines[-1] == s.texts["art. 2043 c.c."]
+    assert len(bridges[0].sent) == n                    # no request while the core is busy
+    view.status = ""
+    s.select_citation(1)                                # busy and not cached: navigate only
+    assert adapter.calls[-1] == ("goto", "p:7") and "fine richiesta" in view.status
+    assert len(bridges[0].sent) == n
 
 
 def test_show_text_button_flow_and_unavailable_error():

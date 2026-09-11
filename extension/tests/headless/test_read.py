@@ -90,6 +90,34 @@ def test_panel_module_imports_inside_libreoffice(soffice):
     assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
 
 
+def test_minimal_width_follows_the_layout_minimum(soffice):
+    """Whole-branch review, minor 3: a deck narrower than the layout clips its right column.
+
+    Uses the frame's container window, which implements XUnitConversion exactly like the
+    XDL container window does, so the appfont conversion is the real one.
+    """
+    out = run_probe(soffice, "panel_minimal_width", '''
+    def probe(ctx, out):
+        from com.sun.star.awt import Size
+        from com.sun.star.util.MeasureUnit import APPFONT
+
+        from librelex_ext import layout, panel
+
+        doc = new_doc(ctx)
+        frame = doc.getCurrentController().getFrame()
+        p = panel.Panel(ctx, frame, None, panel.PANEL_URL)
+        p.window = frame.getContainerWindow()
+        out["minimal"] = p.getMinimalWidth()
+        out["expected"] = p.window.convertSizeToPixel(Size(layout.MIN_WIDTH, 0), APPFONT).Width
+        p.window = None                   # no peer yet: the fallback must still be sane
+        out["fallback"] = p.getMinimalWidth()
+        doc.close(False)
+    ''')
+    assert out["minimal"] == out["expected"]
+    assert out["minimal"] >= 240          # never narrower than the constant it replaces
+    assert out["fallback"] == 280
+
+
 def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
     """Regression test for review findings 1 and 2 on task 9 and for whole-branch I2/m2.
 

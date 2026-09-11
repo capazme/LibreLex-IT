@@ -122,7 +122,17 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         return LayoutSize(h, -1, h)
 
     def getMinimalWidth(self):
-        return 240
+        """Narrowest deck the panel can live in, in pixels: the layout's own minimum.
+
+        ``layout.build`` clamps at ``MIN_WIDTH`` dialog units and never re-flows below it,
+        so answering less would let the sidebar clip the right-hand button column. Same
+        conversion caveat as ``getHeightForWidth``: without a peer there is no unit
+        conversion, and the fallback is MIN_WIDTH at a typical 8x16 appfont.
+        """
+        try:
+            return self.window.convertSizeToPixel(Size(layout.MIN_WIDTH, 0), APPFONT).Width
+        except Exception:
+            return 280
 
     # --- XComponent -------------------------------------------------------------
     def dispose(self):
