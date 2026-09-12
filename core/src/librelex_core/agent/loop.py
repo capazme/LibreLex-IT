@@ -23,6 +23,7 @@ from librelex_core.agent.internal_tools import run_internal_tool
 from librelex_core.agent.prompt import SYSTEM_PROMPT, wrap_data
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession
+from librelex_core.citations.verifier import RETRYABLE as UNVERIFIED_VERDICT
 from librelex_core.citations.verifier import Verdict
 from librelex_core.config import LimitsConfig
 from librelex_core.document import DocumentClient, DocumentError
@@ -69,6 +70,7 @@ class TurnOutcome:
     stopped: str | None = None
     inserted: list[dict] = field(default_factory=list)
     flagged: list[str] = field(default_factory=list)
+    unverified: list[str] = field(default_factory=list)
     tool_calls: int = 0
 
 
@@ -89,6 +91,13 @@ def _as_json(value: Any) -> str:
     else:
         data = value
     return json.dumps(data, ensure_ascii=False)
+
+
+def _unverified_text(refs: list[str]) -> str:
+    """Wording of the unverified-references signal, shared by the tool result and the Status."""
+    what = ("1 riferimento non verificato" if len(refs) == 1
+            else f"{len(refs)} riferimenti non verificati")
+    return f"{what} (fonte non disponibile): {', '.join(refs)}."
 
 
 def _characters(value: Any) -> int:
@@ -151,18 +160,31 @@ async def run_turn(
         # finding 3), and a comment that cannot be anchored is reported to the model as
         # such instead of looking like a failed insertion.
         outcome.inserted.append(inserted.model_dump())
+        # A reference the source could not verify gets no comment and no Status from
+        # comment_problems: say it explicitly, to the model and to the panel, so the
+        # §6.6 promise does not degrade silently when mcp-legal-it is down (review
+        # finding 2).
+        unverified = [r for r in refs if r in verdicts
+                      and verdicts[r].verdetto == UNVERIFIED_VERDICT]
+        note = ""
+        if unverified:
+            note = " " + _unverified_text(unverified)
+            for ref in unverified:
+                if ref not in outcome.unverified:
+                    outcome.unverified.append(ref)
+            await emit(p.Status(request_id=request_id, text=_unverified_text(unverified)))
         try:
             flagged = await comment_problems(doc, inserted, verdicts)
         except DocumentError as e:
             return (f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}. "
-                    f"ERRORE: commenti di verifica non applicati: {e}")
+                    f"ERRORE: commenti di verifica non applicati: {e}" + note)
         for ref in flagged:
             if ref not in outcome.flagged:
                 outcome.flagged.append(ref)
         content = f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}."
         if flagged:
             content += f" Riferimenti segnalati con un commento: {', '.join(flagged)}."
-        return content
+        return content + note
 
     async def read_tool(name: str, args: dict) -> str:
         """Consent is asked after the read and before the text enters the messages, so on
@@ -266,6 +288,10 @@ async def run_turn(
                     ]
                 turn.messages.append(message)
                 if not result.tool_calls:
+                    if result.finish_reason == "length":
+                        # Truncated by the provider's output cap: the answer is incomplete
+                        # and the panel must say so (review finding 5).
+                        outcome.stopped = "length"
                     break
                 outcome.tool_calls += len(result.tool_calls)
                 await run_tool_calls(result.tool_calls)
@@ -275,6 +301,9 @@ async def run_turn(
         outcome.stopped = "timeout"
     finally:
         # Cancellation passes through here too: the turn is closed, partial text is kept.
+        # A stop between the assistant message and its tool results would leave dangling
+        # tool_calls in the history and make every later turn fail (review finding 1).
+        turn.close_dangling_tool_calls()
         session.end_turn(usage)
     outcome.text = "".join(streamed)
     outcome.usage = usage

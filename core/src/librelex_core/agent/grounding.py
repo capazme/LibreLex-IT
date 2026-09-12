@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from librelex_core.citations.extractor import extract_all
-from librelex_core.citations.verifier import Verdict, verify_citations
+from librelex_core.citations.verifier import RETRYABLE, Verdict, verify_citations
 from librelex_core.commands.verify_document import COMMENT_AUTHOR, PROBLEM_VERDICTS, comment_text
 from librelex_core.document import DocumentClient, InsertedRange, Paragraph
 
@@ -45,7 +45,7 @@ async def verify_unseen(refs: list[str], tools: Any) -> dict[str, Verdict]:
     if not refs:
         return {}
     if tools is None:
-        return {r: Verdict(r, "non verificata", "mcp-legal-it non disponibile") for r in refs}
+        return {r: Verdict(r, RETRYABLE, "mcp-legal-it non disponibile") for r in refs}
     return await verify_citations(refs, tools)
 
 
