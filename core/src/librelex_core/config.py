@@ -88,7 +88,7 @@ class DocumentConfig(_Section):
 
 class LimitsConfig(_Section):
     max_iterations: int = 12
-    turn_timeout_s: int = 180
+    turn_timeout_s: float = 180   # float so tests (and impatient users) can set sub-second turns
     tool_timeout_s: int = 60
     session_token_ceiling: int = 400_000
 
