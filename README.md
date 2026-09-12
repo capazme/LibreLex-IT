@@ -4,8 +4,8 @@ AI copilot for LibreOffice Writer, for Italian legal drafting, grounded on
 official sources through [mcp-legal-it](https://github.com/capazme/mcp-legal-it).
 
 Status: M1 complete (verify citations, list citations, show the text of a reference and
-insert a norm from the sidebar); M2 core in progress (chat and case-law research over a
-configurable model, see "Chat e ricerca").
+insert a norm from the sidebar); M2 complete (chat, Ricerca, in-panel consent and usage line
+in the sidebar, see "Chat e ricerca").
 Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 
 ## Install (macOS, LibreOffice 26.2+)

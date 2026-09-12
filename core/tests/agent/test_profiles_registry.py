@@ -83,6 +83,8 @@ def test_compact_schema_keeps_core_keys_and_drops_the_rest():
         "additionalProperties": False,
         "properties": {
             "q": {"type": "string", "title": "Q", "description": "Testo.", "examples": ["a"]},
+            "ambito": {"type": "string", "title": "Ambito", "default": "tutti",
+                       "enum": ["civile", "penale", "tutti"]},
         },
         "required": ["q"],
         "examples": [{"q": "x"}],
@@ -90,9 +92,13 @@ def test_compact_schema_keeps_core_keys_and_drops_the_rest():
     out = compact_schema(schema)
     assert out == {
         "type": "object",
-        "properties": {"q": {"type": "string", "description": "Testo."}},
+        "properties": {"q": {"type": "string", "description": "Testo."},
+                       # enum and default are what the model needs to call the tool: kept
+                       "ambito": {"type": "string", "enum": ["civile", "penale", "tutti"],
+                                  "default": "tutti"}},
         "required": ["q"],
     }
+    assert out["properties"]["ambito"]["enum"] == ["civile", "penale", "tutti"]
 
 
 def test_compact_schema_truncates_descriptions_at_a_word_boundary():
