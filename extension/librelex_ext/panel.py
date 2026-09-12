@@ -18,6 +18,7 @@ from com.sun.star.util.MeasureUnit import APPFONT
 from librelex_ext import EXTENSION_ID, layout, paths, registry, views
 from librelex_ext.bridge import Bridge, BridgeError
 from librelex_ext.document import DocumentAdapter, has_markdown_filter, lo_version
+from librelex_ext.render import render_consent
 from librelex_ext.session import Session
 
 XDL_URL = f"vnd.sun.star.extension://{EXTENSION_ID}/dialogs/panel.xdl"
@@ -95,7 +96,7 @@ class PanelFactory(unohelper.Base, XUIElementFactory):
 class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             XActionListener, XItemListener, XWindowListener):
     """One panel of the deck. Its ``kind`` decides which controls it builds, which listeners
-    it registers and which of the six View methods actually do something: each one is a no-op
+    it registers and which of the nine View methods actually do something: each one is a no-op
     when its control belongs to another panel, so a misrouted call can never raise inside a
     UNO listener."""
 
@@ -305,6 +306,19 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                 self.set_status("Seleziona prima il testo da verificare")
                 return
             self.session.run_command("verify_citations", {"scope": "selection"})
+        elif cmd == "send":
+            ctrl = self.window.getControl("Input")
+            message = ctrl.getText().strip()
+            busy = self.session.state == "busy"     # chat() would refuse a second request
+            self.session.chat(message)
+            # Clear only what the session took: a blank message, a refused one and a core
+            # that could not even start (state back to "stopped") all keep the typed text.
+            if message and not busy and self.session.state != "stopped":
+                ctrl.setText("")
+        elif cmd == "research":
+            self.session.research(self.window.getControl("Input").getText().strip())
+        elif cmd.startswith("consent_"):        # consent_document/consent_once/consent_deny
+            self.session.answer_consent(cmd[len("consent_"):])
         elif cmd == "insert_norm":
             reference = self.window.getControl("Input").getText().strip()
             self.session.run_command("insert_norm", {"reference": reference} if reference else {})
@@ -346,6 +360,13 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         if self.model.hasByName("Transcript"):
             self.window.getControl("Transcript").setText(text[-MAX_TRANSCRIPT:])
 
+    def append_stream(self, text):
+        """Append a streamed chunk with no separator: the core sends a continuous text."""
+        if not self.model.hasByName("Transcript"):
+            return
+        ctrl = self.window.getControl("Transcript")
+        ctrl.setText((ctrl.getText() + text)[-MAX_TRANSCRIPT:])
+
     def set_status(self, text):
         if self.model.hasByName("Status"):
             self.model.getByName("Status").Label = text
@@ -360,6 +381,24 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     def set_citations(self, labels):
         if self.model.hasByName("Citations"):
             self.model.getByName("Citations").StringItemList = tuple(labels)
+
+    def set_usage(self, text):
+        if self.model.hasByName("Usage"):
+            self.model.getByName("Usage").Label = text
+
+    def set_consent(self, summary):
+        """Show the consent block for ``summary``, or hide it again when it is None.
+
+        The four controls keep their slot in the layout table either way (spec §8.2), so the
+        question appears and disappears without moving the rest of the panel.
+        """
+        if not self.model.hasByName("ConsentText"):
+            return
+        if summary is not None:
+            self.model.getByName("ConsentText").Label = render_consent(summary)
+        self._set_visible("ConsentText", summary is not None)
+        for name in layout.CONSENT_BUTTONS:
+            self._set_visible(name, summary is not None)
 
     def set_progress(self, done, total):
         """Show the bar at done/total; ``total`` None (or zero) hides it again."""

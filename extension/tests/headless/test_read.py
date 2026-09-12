@@ -140,7 +140,7 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
     """Regression test for review findings 1 and 2 on task 9 and for whole-branch I2/m2.
 
     The three panels of the deck share one Session through ``registry.panel_set_for``;
-    stand-ins with the six View methods take the place of the real container windows, so the
+    stand-ins with the nine View methods take the place of the real container windows, so the
     real ``panel.make_session_factory``/registry/Session code path runs against a real Writer
     document without needing the XDL container window.
     """
@@ -153,7 +153,7 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
         paths_mod.find_uv = lambda *a, **k: None  # deterministically "uv not found"
 
         class FakePanel:
-            """One panel of the deck: the six View methods, recording what they receive."""
+            """One panel of the deck: the nine View methods, recording what they receive."""
 
             def __init__(self, kind=None):
                 self.kind = kind        # only _replay looks at it
@@ -161,6 +161,8 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
                 self.text = ""
                 self.status = None
                 self.busy = None
+                self.usage = None
+                self.consent = None
 
             def append(self, text):
                 self.calls.append("append")
@@ -183,6 +185,18 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
 
             def set_progress(self, done, total):
                 self.calls.append("set_progress")
+
+            def append_stream(self, text):
+                self.calls.append("append_stream")
+                self.text += text
+
+            def set_usage(self, text):
+                self.calls.append("set_usage")
+                self.usage = text
+
+            def set_consent(self, summary):
+                self.calls.append("set_consent")
+                self.consent = summary
 
         doc = new_doc(ctx)
         factory = panel.make_session_factory(ctx, doc)

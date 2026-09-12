@@ -26,6 +26,7 @@ SMALL_BUTTON_H = 12
 NOTICE_H = 16        # two lines
 REFERENCE_LABEL_H = 18   # two lines: the example makes it long
 INPUT_H = 14
+CONSENT_TEXT_H = 30     # three lines: model, endpoint, retention and character count
 PROGRESS_H = 8
 STATUS_H = 20        # two lines
 
@@ -37,10 +38,14 @@ HINT_H = 18
 
 HINT = "Clic su una voce: vai al paragrafo e mostra il testo nelle Risposte."
 
+# the consent block (spec §8.2), left to right; the panel maps each name onto a wire decision
+CONSENT_BUTTONS = ("ConsentDocument", "ConsentOnce", "ConsentDeny")
+CONSENT_LABELS = ("Per questo documento", "Solo stavolta", "Annulla")
+
 # section label → its copy (the panel appends the count to "Citazioni")
 SECTIONS: dict[str, str] = {
     "DocumentLabel": "Documento",
-    "ReferenceLabel": "Riferimento (es. art. 2043 c.c., Cass. n. 12345/2024)",
+    "ReferenceLabel": "Messaggio, domanda o riferimento (es. art. 2043 c.c.)",
 }
 
 # control name → HelpText shown on hover (every button has one)
@@ -52,6 +57,12 @@ TOOLTIPS: dict[str, str] = {
     "ShowText": ("Mostra nel pannello il testo del riferimento scritto qui sopra "
                  "o selezionato nel documento"),
     "InsertNorm": "Inserisce il testo vigente dell'articolo al cursore, come revisione",
+    "Send": "Chiedi al modello; il testo del documento viene inviato solo dopo il tuo consenso",
+    "Research": ("Cerca precedenti sulla domanda scritta qui sopra (o sul testo selezionato) "
+                 "e inserisce le massime al cursore come revisione"),
+    "ConsentDocument": "Consente l'invio del testo per tutte le richieste di questo documento",
+    "ConsentOnce": "Consente l'invio del testo solo per questa richiesta",
+    "ConsentDeny": "Nega l'invio e interrompe la richiesta",
     "Cancel": "Interrompe la richiesta in corso",
     "Clear": "Svuota le risposte",
     "Settings": "Percorso del file di configurazione e del log",
@@ -113,8 +124,23 @@ def build(kind: str, width: int) -> list[Control]:
         y += REFERENCE_LABEL_H + GAP
         controls.append(Control("Edit", "Input", MARGIN, y, inner, INPUT_H, {}))
         y += INPUT_H + GAP
+        button("Send", "Invia", MARGIN)
+        button("Research", "Ricerca", right)
+        y += BUTTON_H + GAP
         button("ShowText", "Mostra testo", MARGIN)
         button("InsertNorm", "Inserisci norma", right)
+        y += BUTTON_H + GAP
+
+        # Consent block (spec §8.2): it keeps its slot in the table at all times, so showing
+        # it never moves the controls under it; set_consent only flips the four visibilities.
+        controls.append(Control("FixedText", "ConsentText", MARGIN, y, inner, CONSENT_TEXT_H,
+                                {"Label": "", "MultiLine": True, "TextColor": GRAY,
+                                 "Visible": False}))
+        y += CONSENT_TEXT_H + GAP
+        consent_w = (inner - 2 * GAP) // 3       # three equal buttons in one row
+        for i, (name, label) in enumerate(zip(CONSENT_BUTTONS, CONSENT_LABELS, strict=True)):
+            x = width - MARGIN - consent_w if i == 2 else MARGIN + i * (consent_w + GAP)
+            button(name, label, x, consent_w, Visible=False)
         y += BUTTON_H + GAP
 
         controls.append(Control("ProgressBar", "Progress", MARGIN, y, inner, PROGRESS_H,
@@ -157,8 +183,12 @@ CONTROLS: dict[str, list[Control]] = build_all(WIDTH)
 # button name → action command handled by the panel
 ACTIONS = {"VerifyDocument": "verify_document", "VerifySelection": "verify_selection",
            "InsertNorm": "insert_norm", "ShowText": "show_text",
-           "ListCitations": "list_citations", "Cancel": "cancel", "Clear": "clear",
-           "Settings": "settings"}
+           "ListCitations": "list_citations", "Send": "send", "Research": "research",
+           "Cancel": "cancel", "Clear": "clear", "Settings": "settings",
+           "ConsentDocument": "consent_document", "ConsentOnce": "consent_once",
+           "ConsentDeny": "consent_deny"}
 
-# controls disabled while a request is running
-BUSY_DISABLED = ("VerifyDocument", "VerifySelection", "InsertNorm", "ShowText", "ListCitations")
+# controls disabled while a request is running; the consent buttons are deliberately absent,
+# since answering a consent_request is the one thing the user does while the core is busy
+BUSY_DISABLED = ("VerifyDocument", "VerifySelection", "InsertNorm", "ShowText", "ListCitations",
+                 "Send", "Research")
