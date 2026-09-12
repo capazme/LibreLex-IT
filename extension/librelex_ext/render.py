@@ -93,5 +93,59 @@ def render_insert_summary(summary: dict) -> str:
             f"Fonte: {summary.get('url', '')}")
 
 
-def render_error(code: str, message: str) -> str:
-    return f"Errore ({code}): {message}"
+def render_error(code: str, message: str, config_path: str = "") -> str:
+    text = f"Errore ({code}): {message}"
+    if code == "llm_config":
+        text += (f"\nConfigura la sezione [llm] (preset, api_key, model) in {config_path} "
+                 "e riavvia LibreOffice.")
+    return text
+
+
+def _it_thousands(n: int) -> str:
+    """Italian-style grouping (dot separator), independent of the process locale."""
+    return f"{n:,}".replace(",", ".")
+
+
+def render_usage(usage: dict | None, totals: dict | None) -> str:
+    if usage is None:
+        return ""
+    parts = [f"Turno: {_it_thousands(usage.get('input_tokens', 0))} + "
+             f"{_it_thousands(usage.get('output_tokens', 0))} token"]
+    cost = usage.get("cost_usd")
+    if cost is not None:
+        parts.append(f"costo: ${cost:.2f}")
+    elif totals:
+        total = totals.get("input_tokens", 0) + totals.get("output_tokens", 0)
+        parts.append(f"sessione: {_it_thousands(total)} token")
+    return " · ".join(parts)
+
+
+def render_consent(summary: dict) -> str:
+    conservazione = "senza conservazione dati" if summary.get("zdr") else "con conservazione dati"
+    ambito = "il testo selezionato" if summary.get("scope") == "selection" else "i paragrafi letti"
+    return (f"Inviare al modello {summary.get('model')} su {summary.get('endpoint_host')} "
+            f"({conservazione}) {ambito} ({_it_thousands(summary.get('chars', 0))} caratteri)?")
+
+
+_STOP_NOTES = {
+    "iterations": "[interrotto: limite di iterazioni]",
+    "time": "[interrotto: tempo massimo]",
+    "length": "[risposta troncata dal limite di lunghezza]",
+    "cancelled": "[annullato]",
+}
+
+
+def render_turn_notes(summary: dict) -> list[str]:
+    notes = []
+    stopped = summary.get("stopped")
+    if stopped:
+        notes.append(_STOP_NOTES.get(stopped, f"[interrotto: {stopped}]"))
+    for ins in summary.get("inserted") or []:
+        notes.append(f"Inserito nei paragrafi {ins.get('from_id', '?')}-{ins.get('to_id', '?')}")
+    flagged = summary.get("flagged") or []
+    if flagged:
+        notes.append("Riferimenti segnalati con un commento: " + ", ".join(flagged))
+    unverified = summary.get("unverified") or []
+    if unverified:
+        notes.append("Riferimenti non verificati (fonte non disponibile): " + ", ".join(unverified))
+    return notes

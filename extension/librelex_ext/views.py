@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from librelex_ext.layout import KINDS
 
-ROUTES = {"append": "Answers", "set_transcript": "Answers", "set_status": "Actions",
-          "set_busy": "Actions", "set_progress": "Actions", "set_citations": "Citations"}
+ROUTES = {"append": "Answers", "set_transcript": "Answers", "append_stream": "Answers",
+          "set_status": "Actions", "set_busy": "Actions", "set_progress": "Actions",
+          "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations"}
 
 
 def panel_kind(url: str) -> str:
@@ -50,3 +51,12 @@ class CompositeView:
 
     def set_citations(self, labels: list[str]) -> None:
         self._call("set_citations", labels)
+
+    def append_stream(self, text: str) -> None:
+        self._call("append_stream", text)
+
+    def set_usage(self, text: str) -> None:
+        self._call("set_usage", text)
+
+    def set_consent(self, summary: dict | None) -> None:
+        self._call("set_consent", summary)

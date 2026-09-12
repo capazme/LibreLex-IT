@@ -108,6 +108,7 @@ class FakeView:
         self.lines, self.status, self.busy = [], "", None
         self.citations, self.transcript = None, None
         self.progress = None
+        self.stream, self.usage, self.consent = "", None, None
 
     def append(self, text):
         self.lines.append(text)
@@ -126,6 +127,15 @@ class FakeView:
 
     def set_progress(self, done, total):
         self.progress = (done, total)
+
+    def append_stream(self, text):
+        self.stream += text
+
+    def set_usage(self, text):
+        self.usage = text
+
+    def set_consent(self, summary):
+        self.consent = summary
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -236,17 +246,23 @@ def test_doc_call_after_shutdown_is_dropped_without_error():
     assert adapter.calls == []
 
 
-def test_consent_request_after_shutdown_is_dropped_without_error():
+def test_consent_request_after_shutdown_answers_without_a_bridge_and_without_error():
+    """M2: the M1 auto-deny handler is gone; the panel just shows the request. Answering it
+
+    after the bridge died (document closed mid-request) must not raise, and nothing is sent.
+    """
     s, adapter, view, bridges = make()
     s.run_command("verify_citations", {})
     s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
                                                "protocol": PROTOCOL_VERSION, "warnings": []}})
     s.shutdown()
     sent_before = list(bridges[0].sent)
+    summary = {"scope": "paragraphs", "chars": 10, "endpoint_host": "h", "model": "m", "zdr": True}
     s.handle_event({"kind": "message", "msg": {
-        "type": "consent_request", "request_id": "r1", "call_id": "c9"}})
-    assert bridges[0].sent == sent_before
-    assert "rifiutata" in view.lines[-1]
+        "type": "consent_request", "request_id": "r1", "call_id": "c9", "summary": summary}})
+    assert bridges[0].sent == sent_before and view.consent == summary
+    s.answer_consent("once")
+    assert bridges[0].sent == sent_before and s.pending_consent is None
 
 
 def test_final_renders_summary_and_frees_the_session():
@@ -502,3 +518,63 @@ def test_clear_transcript_empties_the_replay_buffer_and_the_view():
     assert s.transcript == ["prima riga", "seconda riga"]
     s.clear_transcript()
     assert s.transcript == [] and view.transcript == ""
+
+
+def test_chat_sends_context_streams_deltas_and_shows_usage():
+    s, adapter, view, bridges = make()
+    s.chat("   ")
+    assert view.status == "Scrivi un messaggio" and not bridges
+    s.chat("che dice il documento?")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    msg = bridges[0].sent[-1]
+    assert msg["type"] == "chat" and msg["id"] == "r1"
+    assert msg["message"] == "che dice il documento?"
+    assert msg["context"] == {"title": "t", "has_selection": False, "cursor_paragraph": "p:0"}
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "Il documento "}})
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "dice X."}})
+    assert (view.stream == "Il documento dice X." and view.lines == []
+            or view.lines[-1] != "Il documento dice X.")
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Il documento dice X.",
+        "cancelled": False, "usage": {"input_tokens": 100, "output_tokens": 20, "cost_usd": None},
+        "summary": {"tool_calls": 1, "usage_totals": {"input_tokens": 100, "output_tokens": 20}}}})
+    assert view.lines[-1] == "" and "Il documento dice X." not in view.lines      # not duplicated
+    assert s.transcript[-2] == "Il documento dice X." and s.state == "ready"
+    assert view.usage == "Turno: 100 + 20 token · sessione: 120 token"
+
+
+def test_consent_request_is_shown_and_answered_in_the_panel():
+    s, adapter, view, bridges = make()
+    s.chat("leggi")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    summary = {"scope": "paragraphs", "chars": 50, "endpoint_host": "h", "model": "m", "zdr": True}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "consent_request", "request_id": "r1", "call_id": "k1", "summary": summary}})
+    assert view.consent == summary and view.status == "In attesa del consenso"
+    s.answer_consent("once")
+    assert bridges[0].sent[-1] == {
+        "type": "consent_result", "id": "r1", "call_id": "k1", "decision": "once"}
+    assert view.consent is None and s.pending_consent is None
+    s.answer_consent("deny")                                   # nothing pending: ignored
+    assert bridges[0].sent[-1]["decision"] == "once"
+
+
+def test_research_and_llm_config_error_hint():
+    s, adapter, view, bridges = make()
+    s.research("  ")
+    assert bridges[0].sent[0]["type"] == "hello"
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert bridges[0].sent[-1] == {
+        "type": "command", "id": "r1", "doc_id": "d1", "name": "research", "args": {}}
+    s.handle_event({"kind": "message", "msg": {"type": "error", "request_id": "r1",
+                                               "code": "llm_config",
+                                               "message": "llm.model non impostato"}})
+    assert "Configura la sezione [llm]" in view.lines[-1]
+    assert "/cfg/config.toml" in view.lines[-1]
+    s.research("usucapione")
+    assert bridges[0].sent[-1]["args"] == {"question": "usucapione"}
