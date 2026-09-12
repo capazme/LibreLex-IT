@@ -9,7 +9,7 @@ from librelex_core.agent.loop import run_turn
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession
 from librelex_core.config import LimitsConfig
-from librelex_core.document import FakeDocument
+from librelex_core.document import DocumentError, FakeDocument
 from librelex_core.mcp.client import LegalToolsClient
 from tests.conftest import make_fake_legal_server
 from tests.fakes import ScriptedLLM, text_turn, tool_turn
@@ -102,6 +102,43 @@ async def test_insert_markdown_verifies_unseen_references_and_comments_problems(
     assert "Inserito nei paragrafi p:1-p:1" in tool_msgs[1]
     assert "Cass. n. 99999/2024" in tool_msgs[1]
     assert any(isinstance(e, p.Status) and "Verifico 1 riferimenti" in e.text for e in events)
+
+
+async def test_an_invented_article_sharing_the_act_of_a_real_one_is_still_verified():
+    """Spec §6.6 end to end: "artt. 2043 e 999999 c.c." must not slip 999999 through."""
+    server, calls = make_fake_legal_server(verdicts={"art. 999999 c.c.": ("inesistente", "no")})
+    doc = FakeDocument(["Premessa."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("cite_law", {"reference": "art. 2043 c.c."})),
+            tool_turn(("insert_markdown",
+                       {"where": "cursor",
+                        "markdown": "Ai sensi degli artt. 2043 e 999999 c.c. risarcisce."})),
+            text_turn("Inserito.")])
+        outcome, events, session = await _run(llm, doc, tools, "research")
+    assert calls["verifica"] == [["art. 999999 c.c."]]
+    assert outcome.flagged == ["art. 999999 c.c."]
+    assert len(doc.comments) == 1 and doc.comments[0]["paragraph_id"] == "p:1"
+
+
+async def test_a_comment_that_cannot_be_added_still_records_the_insertion():
+    server, _ = make_fake_legal_server(verdicts={"Cass. n. 99999/2024": ("inesistente", "no")})
+
+    class NoComments(FakeDocument):
+        async def add_comment(self, *args, **kwargs):
+            raise DocumentError("ancoraggio non riuscito")
+
+    doc = NoComments(["Premessa."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("insert_markdown",
+                       {"where": "cursor", "markdown": "Vedi Cass. n. 99999/2024."})),
+            text_turn("ok")])
+        outcome, _, session = await _run(llm, doc, tools, "research")
+    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1"}] and outcome.flagged == []
+    tool_msgs = [m["content"] for m in session.messages_for_model("S") if m["role"] == "tool"]
+    assert tool_msgs[0].startswith("Inserito nei paragrafi p:1-p:1.")
+    assert "commenti di verifica non applicati" in tool_msgs[0]
 
 
 async def test_tool_errors_unknown_tools_and_bad_json_go_back_to_the_model():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from librelex_core.citations.extractor import Citation, extract_all
+from librelex_core.citations.extractor import extract_all
 from librelex_core.citations.verifier import Verdict, verify_citations
 from librelex_core.commands.verify_document import COMMENT_AUTHOR, PROBLEM_VERDICTS, comment_text
 from librelex_core.document import DocumentClient, InsertedRange, Paragraph
@@ -23,23 +23,22 @@ class Grounding:
 
     def unseen(self, markdown: str) -> list[str]:
         """Canonical, verifiable references of ``markdown`` never seen in this turn,
-        unique and in order of appearance."""
+        unique and in order of appearance.
+
+        The markdown is extracted as a standalone text, so a bare "art. 5" is resolved
+        only against the acts the model itself wrote earlier in this same insertion
+        ("artt. 2043 e 999999 c.c.", "l'art. 2059 dello stesso codice"): those articles
+        are written by the model and must be verified like any other (spec §6.6). Nothing
+        of the surrounding document is used as context here.
+        """
         paras = [Paragraph(id=f"md:{i}", text=line)
                  for i, line in enumerate(markdown.splitlines())]
         out: list[str] = []
         for c in extract_all(paras):
-            if (c.canonical and c.verifiable and _self_contained(c)
+            if (c.canonical and c.verifiable
                     and c.canonical not in self.seen and c.canonical not in out):
                 out.append(c.canonical)
         return out
-
-
-def _self_contained(c: Citation) -> bool:
-    """True when the reference carries its own act: a bare "art. 5" whose act comes from
-    the surrounding context is a reading of the core, not a reference written by the model,
-    so it is not verified on write (the core never guesses what to verify, spec §6.6)."""
-    own = extract_all([Paragraph(id="ref", text=c.display_text)])
-    return any(x.canonical == c.canonical for x in own)
 
 
 async def verify_unseen(refs: list[str], tools: Any) -> dict[str, Verdict]:

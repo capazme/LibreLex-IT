@@ -127,8 +127,16 @@ async def run_turn(
                                                  undo_label, bookmark=None, author=WRITE_AUTHOR)
         else:
             inserted = await doc.replace_selection(markdown, undo_label)
-        flagged = await comment_problems(doc, inserted, verdicts)
+        # The text is in the document from here on: the write is recorded before anything
+        # else can fail, so undo/redline and the panel always know about it (review
+        # finding 3), and a comment that cannot be anchored is reported to the model as
+        # such instead of looking like a failed insertion.
         outcome.inserted.append(inserted.model_dump())
+        try:
+            flagged = await comment_problems(doc, inserted, verdicts)
+        except DocumentError as e:
+            return (f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}. "
+                    f"ERRORE: commenti di verifica non applicati: {e}")
         for ref in flagged:
             if ref not in outcome.flagged:
                 outcome.flagged.append(ref)
