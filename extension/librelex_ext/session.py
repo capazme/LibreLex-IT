@@ -87,6 +87,10 @@ class Session:
         self.pending: Callable[[str], dict] | None = None
         self.request_id: str | None = None
         self.pending_consent: tuple[str, str] | None = None
+        # what a rebuilt Azioni panel has to be told again (it is created empty): the summary
+        # of the consent the core is still waiting on, and the usage line of the last turn
+        self.consent_summary: dict | None = None
+        self.usage_text: str = ""
         self._n = 0
         self.transcript: list[str] = []
         self.citations: list[tuple[str, str, str]] = []
@@ -103,6 +107,8 @@ class Session:
         view.set_transcript("\n".join(self.transcript))
         view.set_citations([label for label, _, _ in self.citations])
         view.set_busy(self.state in ("starting", "busy"))
+        view.set_consent(self.consent_summary)
+        view.set_usage(self.usage_text)
         buffered, self._buffer = self._buffer, []
         for ev in buffered:
             ui_post(ev)
@@ -203,8 +209,7 @@ class Session:
         if self.pending_consent is None:
             return
         request_id, call_id = self.pending_consent
-        self.pending_consent = None
-        self.view.set_consent(None)
+        self._clear_pending_consent()
         if self.bridge is not None:
             self._send({"type": "consent_result", "id": request_id, "call_id": call_id,
                         "decision": decision})
@@ -284,7 +289,8 @@ class Session:
 
     def _on_consent_request(self, msg: dict) -> None:
         self.pending_consent = (msg["request_id"], msg["call_id"])
-        self.view.set_consent(msg.get("summary"))
+        self.consent_summary = msg.get("summary")
+        self.view.set_consent(self.consent_summary)
         self.view.set_status("In attesa del consenso")
 
     def _on_doc_call(self, msg: dict) -> None:
@@ -311,14 +317,20 @@ class Session:
         was_streamed = self._streamed
         self._flush_stream()
         summary = msg.get("summary") or {}
-        if was_streamed:
-            # A streamed chat turn always replays through this branch, cancelled or not: the
-            # cancellation shows up as a "[annullato]" note (render_turn_notes reads
-            # summary["stopped"]), not as a separate "Annullato." line.
+        if was_streamed or "usage_totals" in summary or "tool_calls" in summary:
+            # A model turn (chat or research) is recognised by the shape of its final, not by
+            # whether anything was streamed: a turn that ends on tool calls only (iteration
+            # limit, timeout while tools run) emits no delta and must still show its notes
+            # ([interrotto: ...], the inserted/flagged/unverified lines) and the usage line.
+            # A streamed turn always replays through here, cancelled or not: the cancellation
+            # shows up as a "[annullato]" note (render_turn_notes reads summary["stopped"]),
+            # not as a separate "Annullato." line.
+            if not was_streamed and (msg.get("text") or "").strip():
+                self._append(msg["text"])       # the prose the turn never streamed
             self._append("")
             for note in render_turn_notes(summary):
                 self._append(note)
-            self.view.set_usage(render_usage(msg.get("usage"), summary.get("usage_totals")))
+            self._set_usage(render_usage(msg.get("usage"), summary.get("usage_totals")))
         elif msg.get("cancelled"):
             self._append(msg.get("text") or "Annullato.")
         elif "elenco" in summary or "per_verdetto" in summary:
@@ -384,8 +396,13 @@ class Session:
 
     def _clear_pending_consent(self) -> None:
         if self.pending_consent is not None:
-            self.pending_consent = None
+            self.pending_consent = self.consent_summary = None
             self.view.set_consent(None)
+
+    def _set_usage(self, text: str) -> None:
+        """Show the usage line and remember it, so a rebuilt panel can replay it."""
+        self.usage_text = text
+        self.view.set_usage(text)
 
     def _append(self, text: str) -> None:
         self.transcript.append(text)

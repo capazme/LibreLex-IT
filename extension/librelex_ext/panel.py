@@ -293,6 +293,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.set_busy(busy)
             if busy:                        # else the layout default "Pronto" would lie
                 self.set_status("Richiesta in corso...")
+            # a panel rebuilt mid-turn (deck switch, collapse/expand) is created empty: the
+            # question the core is still waiting on and the last usage line have to come back
+            self.set_consent(session.consent_summary)
+            self.set_usage(session.usage_text)
 
     # --- user actions -----------------------------------------------------------------
     def actionPerformed(self, event):           # XActionListener, UI thread

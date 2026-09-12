@@ -258,6 +258,23 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
         out["replay_busy_busy"] = busy_actions.busy
         ps.session.state = "ready"
 
+        # fix round 2, finding 7: the pending consent question and the usage line of the
+        # last turn also have to come back, or the user's only way out is Annulla
+        ps.session.handle_event({"kind": "message", "msg": {
+            "type": "final", "request_id": "r9", "text": "", "cancelled": False,
+            "usage": {"input_tokens": 7, "output_tokens": 3, "cost_usd": None},
+            "summary": {"tool_calls": 1,
+                        "usage_totals": {"input_tokens": 7, "output_tokens": 3}}}})
+        ps.session.handle_event({"kind": "message", "msg": {
+            "type": "consent_request", "request_id": "r9", "call_id": "k1",
+            "summary": {"scope": "selection", "chars": 7, "endpoint_host": "h",
+                        "model": "m", "zdr": True}}})
+        rebuilt_actions = FakePanel("Actions")
+        panel.Panel._replay(rebuilt_actions, ps.session)
+        out["replay_consent_chars"] = rebuilt_actions.consent["chars"]
+        out["replay_usage"] = rebuilt_actions.usage
+        ps.session.answer_consent("deny")       # nothing stays pending after the probe
+
         ps.session.shutdown()
         doc.close(False)
     ''', env={"LIBRELEX_CONFIG": str(config_path)})
@@ -284,3 +301,6 @@ def test_bridge_factory_errors_are_graceful_and_banner_survives_reopen(soffice):
     assert out["replay_ready_busy"] is False and out["replay_ready_status"] is None
     assert out["replay_busy_busy"] is True
     assert out["replay_busy_status"] == "Richiesta in corso..."
+    # fix round 2, finding 7: same for the consent block and the usage line
+    assert out["replay_consent_chars"] == 7
+    assert out["replay_usage"] == "Turno: 7 + 3 token · sessione: 10 token"

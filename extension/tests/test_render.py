@@ -149,6 +149,9 @@ def test_render_usage_consent_and_notes():
     }) == [
         "[interrotto: limite di iterazioni]", "Inserito nei paragrafi p:2-p:4",
         "Riferimenti segnalati con un commento: Cass. n. 9/2024"]
+    # the core spells the turn budget "timeout" (agent/loop.py), not "time"
+    assert render_turn_notes({"stopped": "timeout"}) == ["[interrotto: tempo massimo]"]
+    assert render_turn_notes({"stopped": "boh"}) == ["[interrotto: boh]"]
     error_lines = render_error(
         "llm_config", "llm.model non impostato", "/cfg/config.toml"
     ).splitlines()

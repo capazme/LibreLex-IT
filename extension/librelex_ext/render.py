@@ -135,7 +135,7 @@ def render_consent(summary: dict) -> str:
 
 _STOP_NOTES = {
     "iterations": "[interrotto: limite di iterazioni]",
-    "time": "[interrotto: tempo massimo]",
+    "timeout": "[interrotto: tempo massimo]",
     "length": "[risposta troncata dal limite di lunghezza]",
     "cancelled": "[annullato]",
 }
