@@ -287,6 +287,30 @@ async def test_chat_roundtrip_with_deltas_consent_and_usage():
     await h.run(scenario)
 
 
+async def test_cancelled_chat_turn_reports_the_tokens_already_spent():
+    """Denial-of-wallet visibility (spec §8.4): the tokens of a cancelled turn are in the
+    session totals, so its Final must show them (review finding 3)."""
+    llm = ScriptedLLM([tool_turn(("read_paragraphs", {})), text_turn("mai")])
+    h = Harness(FakeDocument(["Primo paragrafo."]), llm=llm)
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        h.hold = True                      # the document read stays pending
+        await h.send(p.Chat(id="c1", doc_id="d1", message="che dice?"))
+        await h.pump(p.DocCall)            # the first model iteration is already paid for
+        await h.send(p.Cancel(id="c1", doc_id="d1"))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.cancelled is True and final.request_id == "c1"
+        assert final.usage.input_tokens == 20 and final.usage.output_tokens == 8
+        assert final.summary["stopped"] == "cancelled"
+        assert final.summary["usage_totals"] == {"input_tokens": 20, "output_tokens": 8,
+                                                 "cost_usd": None}
+
+    await h.run(scenario)
+
+
 async def test_chat_without_llm_config_and_research_dispatch():
     # default llm_factory → real LLMClient with an empty model
     h = Harness(FakeDocument(["x"]))

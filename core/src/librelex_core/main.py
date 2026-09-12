@@ -78,6 +78,13 @@ class StdioTransport:
         await self._writer.drain()  # type: ignore[union-attr]
 
 
+def _usage_since(before: p.Usage, now: p.Usage) -> p.Usage:
+    """Tokens (and cost) a single turn added to the session totals."""
+    cost = None if now.cost_usd is None else now.cost_usd - (before.cost_usd or 0.0)
+    return p.Usage(input_tokens=now.input_tokens - before.input_tokens,
+                   output_tokens=now.output_tokens - before.output_tokens, cost_usd=cost)
+
+
 class _Request:
     def __init__(self, task: asyncio.Task[Any], doc: BridgeDocument):
         self.task, self.doc = task, doc
@@ -103,6 +110,9 @@ class CoreServer:
         self._announced = False
         self._running: dict[str, _Request] = {}     # doc_id → request
         self._by_request: dict[str, _Request] = {}  # request_id → request
+        # request_id → the Final to send if that request is cancelled (model turns report
+        # the tokens they have already spent, spec §8.4)
+        self._cancel_finals: dict[str, p.Final] = {}
 
     # --- output --------------------------------------------------------------
     async def send(self, msg: Any) -> None:
@@ -177,8 +187,20 @@ class CoreServer:
         await self.send(p.Final(
             request_id=request_id, text=outcome.text, usage=outcome.usage,
             summary={"stopped": outcome.stopped, "inserted": outcome.inserted,
-                     "flagged": outcome.flagged, "tool_calls": outcome.tool_calls,
+                     "flagged": outcome.flagged, "unverified": outcome.unverified,
+                     "tool_calls": outcome.tool_calls,
                      "usage_totals": session.usage.model_dump()}))
+
+    def _arm_cancel_final(self, request_id: str, session: DocSession, before: p.Usage) -> None:
+        """Make the Final of a cancelled model turn carry the usage of the interrupted turn.
+
+        ``run_turn`` adds the turn's tokens to the session totals in its ``finally``, so the
+        delta is known even though the outcome is lost with the cancellation (spec §8.4).
+        """
+        self._cancel_finals[request_id] = p.Final(
+            request_id=request_id, text="Annullato.", cancelled=True,
+            usage=_usage_since(before, session.usage),
+            summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump()})
 
     # --- main loop -----------------------------------------------------------
     async def run(self, transport: LineTransport) -> None:
@@ -268,7 +290,8 @@ class CoreServer:
         try:
             await body
         except asyncio.CancelledError:
-            await self.send(p.Final(request_id=request_id, text="Annullato.", cancelled=True))
+            await self.send(self._cancel_finals.get(request_id) or p.Final(
+                request_id=request_id, text="Annullato.", cancelled=True))
         except LLMError as e:
             await self.send(p.Error(request_id=request_id, code=e.code, message=str(e)))
         except LimitReached as e:
@@ -284,10 +307,17 @@ class CoreServer:
         except Exception as e:  # never let a request kill the server
             await self.send(p.Error(
                 request_id=request_id, code="internal", message=f"{type(e).__name__}: {e}"))
+        finally:
+            self._cancel_finals.pop(request_id, None)
 
     async def _chat_body(self, msg: p.Chat, doc: BridgeDocument) -> None:
         session, deps = await self._prepare_turn(msg.id, msg.doc_id, doc, CHAT_PROFILE)
-        outcome = await run_chat(session, msg.message, msg.context, deps, self.send, msg.id)
+        before = session.usage
+        try:
+            outcome = await run_chat(session, msg.message, msg.context, deps, self.send, msg.id)
+        except asyncio.CancelledError:
+            self._arm_cancel_final(msg.id, session, before)
+            raise
         await self._send_turn_final(msg.id, session, outcome)
 
     async def _command_body(self, msg: p.Command, doc: BridgeDocument) -> None:
@@ -301,8 +331,13 @@ class CoreServer:
             return
         if msg.name == "research":
             session, deps = await self._prepare_turn(msg.id, msg.doc_id, doc, RESEARCH_PROFILE)
-            outcome = await run_research(session, msg.args.get("question"), deps,
-                                         self.send, msg.id)
+            before = session.usage
+            try:
+                outcome = await run_research(session, msg.args.get("question"), deps,
+                                             self.send, msg.id)
+            except asyncio.CancelledError:
+                self._arm_cancel_final(msg.id, session, before)
+                raise
             await self._send_turn_final(msg.id, session, outcome)
             return
         tools: LegalToolsClient | None = None
