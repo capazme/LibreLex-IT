@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
 # Derived from LibreThinker (https://github.com/mihailthebuilder/librethinker-extension), MPL-2.0.
 # This file stays under the Mozilla Public License 2.0.
-"""Sidebar panel: XUIElement built on an XDL container window, controls added to the
-container's own model (spec §5.1), bridge events delivered through AsyncCallback."""
-import queue
+"""Sidebar panels: one XUIElement per deck panel (Azioni, Citazioni, Risposte), each built on
+an XDL container window whose own model holds the controls of its kind (spec §5.1). The three
+panels of a document share one Session through the registry's PanelSet, which also delivers
+the bridge events to the UI thread through AsyncCallback."""
 from pathlib import Path
 
 import uno
 import unohelper
-from com.sun.star.awt import Size, XActionListener, XCallback, XItemListener
+from com.sun.star.awt import Size, XActionListener, XItemListener, XWindowListener
 from com.sun.star.lang import XComponent
 from com.sun.star.ui import LayoutSize, XSidebarPanel, XToolPanel, XUIElement, XUIElementFactory
 from com.sun.star.ui.UIElementType import TOOLPANEL
 from com.sun.star.util.MeasureUnit import APPFONT
 
-from librelex_ext import EXTENSION_ID, layout, paths, registry
+from librelex_ext import EXTENSION_ID, layout, paths, registry, views
 from librelex_ext.bridge import Bridge, BridgeError
 from librelex_ext.document import DocumentAdapter, has_markdown_filter, lo_version
 from librelex_ext.session import Session
 
-PANEL_URL = "private:resource/toolpanel/LibreLexPanelFactory/Panel"
 XDL_URL = f"vnd.sun.star.extension://{EXTENSION_ID}/dialogs/panel.xdl"
 MAX_TRANSCRIPT = 40_000
 
@@ -36,11 +36,49 @@ def package_dir(ctx) -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def make_session_factory(ctx, model):
+    """The zero-argument factory the registry calls to create this document's Session.
+
+    The first-run banner is written here, right after the Session: it belongs to the document,
+    not to a panel, so it is emitted once whichever of the three panels opens first and it
+    survives every panel being closed (it lives in ``Session.transcript``).
+    """
+
+    def make_session():
+        adapter = DocumentAdapter(ctx, model)
+        config = paths.read_config()
+
+        def bridge_factory(on_event):
+            try:
+                spec = paths.bridge_spec(package_dir(ctx), config)
+            except Exception as e:
+                # UvNotFound carries a ready-made Italian message; anything else (a
+                # malformed config.toml, an unreadable path) must still reach the panel
+                # as a BridgeError rather than escape into the UNO listener.
+                raise BridgeError(str(e) or type(e).__name__) from e
+            return Bridge(spec, on_event)
+
+        session = Session(adapter, bridge_factory, doc_id=model.RuntimeUID,
+                          lo_version=lo_version(ctx), has_markdown_filter=has_markdown_filter(ctx),
+                          config_path=str(paths.config_path()))
+        created = paths.write_template_if_missing()
+        session.note(f"LibreLex-IT pronto. Configurazione: {paths.config_path()}"
+                     + (" (creata ora con i valori predefiniti)" if created else ""))
+        if not session.has_markdown_filter:
+            session.note(
+                "Attenzione: questa versione di LibreOffice non ha il filtro Markdown "
+                "(serve 26.2 o successiva): l'inserimento di testo non funzionerà.")
+        return session
+
+    return make_session
+
+
 class PanelFactory(unohelper.Base, XUIElementFactory):
     def __init__(self, ctx):
         self.ctx = ctx
 
     def createUIElement(self, url, args):
+        kind = views.panel_kind(url)     # raises: the sidebar only asks for the three URLs
         frame = parent = None
         for a in args:
             if a.Name == "Frame":
@@ -48,25 +86,29 @@ class PanelFactory(unohelper.Base, XUIElementFactory):
             elif a.Name == "ParentWindow":
                 parent = a.Value
         registry.ensure_terminate_listener(self.ctx)
-        panel = Panel(self.ctx, frame, parent, url)
+        panel = Panel(self.ctx, frame, parent, url, kind)
         panel.getRealInterface()
         panel.Window.Visible = True
         return panel
 
 
 class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
-            XActionListener, XItemListener, XCallback):
-    def __init__(self, ctx, frame, parent, url):
+            XActionListener, XItemListener, XWindowListener):
+    """One panel of the deck. Its ``kind`` decides which controls it builds, which listeners
+    it registers and which of the six View methods actually do something: each one is a no-op
+    when its control belongs to another panel, so a misrouted call can never raise inside a
+    UNO listener."""
+
+    def __init__(self, ctx, frame, parent, url, kind):
         self.ctx, self.frame, self.parent, self.url = ctx, frame, parent, url
+        self.kind = kind
         self.window = None
         self.model = None
-        self.queue: queue.Queue = queue.Queue()
-        self.async_cb = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.awt.AsyncCallback", ctx)
+        self.panel_set = None
         self.session = None
         self._height = 0
         self._width_du = layout.WIDTH
-        self._controls = layout.CONTROLS
+        self._controls = layout.CONTROLS[kind]
 
     # --- XUIElement ------------------------------------------------------------
     def getRealInterface(self):
@@ -77,7 +119,11 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model = self.window.getModel()          # never setModel (spec §5.1)
             self._build_controls()
             self._height = self.window.getPosSize().Height
-            self._attach_session()
+            if self.kind == "Answers":
+                # the transcript is the only control that grows with the deck: follow the
+                # height the sidebar gives us (see windowResized)
+                self.window.addWindowListener(self)
+            self._attach_panel_set()
         return self
 
     @property
@@ -105,21 +151,30 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
 
         The container window implements XUnitConversion, the only way to go from the pixels
         the sidebar speaks to the dialog units the control models use. Any failure there
-        (no peer yet, an unsupported unit) falls back to the fixed 190-unit layout and the
-        height the window was created with, which is what the panel did before.
+        (no peer yet, an unsupported unit) falls back to the height the window was created
+        with, which is what the panel did before.
+
+        Azioni and Citazioni are as tall as their controls and no taller; Risposte asks for a
+        minimum and a preferred height with no maximum (``-1``), so the sidebar gives it
+        whatever is left of the deck.
         """
         try:
             du = max(layout.MIN_WIDTH,
                      self.window.convertSizeToLogic(Size(width, 0), APPFONT).Width)
             if du != self._width_du:
                 self._width_du = du
-                self._controls = layout.build(du)
+                self._controls = layout.build(self.kind, du)
                 self._apply_layout(self._controls)
-            h = self.window.convertSizeToPixel(
-                Size(0, layout.total_height(self._controls)), APPFONT).Height
+            if self.kind == "Answers":
+                fixed = layout.SMALL_BUTTON_H + 3 * layout.MARGIN   # Svuota + the two margins
+                return LayoutSize(self._pixels(layout.TRANSCRIPT_MIN_H + fixed), -1,
+                                  self._pixels(layout.TRANSCRIPT_H + fixed))
+            h = self._pixels(layout.total_height(self._controls))
         except Exception:
             h = self._height or 700
-        return LayoutSize(h, -1, h)
+            if self.kind == "Answers":
+                return LayoutSize(h, -1, h)
+        return LayoutSize(h, h, h)
 
     def getMinimalWidth(self):
         """Narrowest deck the panel can live in, in pixels: the layout's own minimum.
@@ -134,17 +189,37 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         except Exception:
             return 280
 
+    # --- XWindowListener (Risposte only) ----------------------------------------
+    def windowResized(self, event):
+        """Stretch the transcript to whatever height the sidebar just gave the panel."""
+        if self.window is None or self.model is None or not self.model.hasByName("Transcript"):
+            return
+        try:
+            du = self.window.convertSizeToLogic(
+                Size(0, self.window.getPosSize().Height), APPFONT).Height
+        except Exception:
+            return                       # no peer: keep the height the layout table gave it
+        top = layout.MARGIN + layout.SMALL_BUTTON_H + layout.GAP
+        self.model.getByName("Transcript").Height = max(layout.TRANSCRIPT_MIN_H,
+                                                        du - top - layout.MARGIN)
+
+    def windowMoved(self, event):
+        pass
+
+    def windowShown(self, event):
+        pass
+
+    def windowHidden(self, event):
+        pass
+
     # --- XComponent -------------------------------------------------------------
     def dispose(self):
-        if self.session is not None:
-            session, self.session = self.session, None
-            # Unbind first (our controls may already be half-disposed), then drain: events
-            # queued before the panel went away must still reach the session, otherwise a
-            # queued `final` would leave it busy until the user presses Annulla or the panel
-            # is rebound. They land on the session's NullView, transcript and state, which is
-            # exactly what a reopened panel replays.
-            session.unbind()
-            self._drain(session)
+        """The panel is gone; the PanelSet is not: it keeps delivering events to the session
+        (a queued `final` still lands on the transcript a reopened panel replays)."""
+        if self.panel_set is not None:
+            self.panel_set.composite.detach(self.kind)
+        self.panel_set = None
+        self.session = None
 
     def addEventListener(self, listener):
         pass
@@ -157,7 +232,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
 
     # --- construction -----------------------------------------------------------
     def _build_controls(self):
-        self._controls = layout.build(self._width_du)
+        self._controls = layout.build(self.kind, self._width_du)
         for c in self._controls:
             m = self.model.createInstance(f"com.sun.star.awt.UnoControl{c.kind}Model")
             m.Name = c.name
@@ -170,74 +245,53 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             if "Visible" in c.props:
                 self._set_visible(c.name, c.props["Visible"])
         for name, command in layout.ACTIONS.items():
+            if not self.model.hasByName(name):
+                continue                 # a button of another panel of the deck
             ctrl = self.window.getControl(name)
             ctrl.setActionCommand(command)
             ctrl.addActionListener(self)
-        self.window.getControl("Citations").addItemListener(self)
+        if self.model.hasByName("Citations"):
+            self.window.getControl("Citations").addItemListener(self)
 
     def _apply_layout(self, controls):
         """Move and resize the existing models after a width change.
 
-        Geometry only: the progress bar's visibility belongs to set_progress.
+        Geometry only: the progress bar's visibility belongs to set_progress, and the
+        transcript's height to windowResized.
         """
         for c in controls:
             m = self.model.getByName(c.name)
-            m.PositionX, m.PositionY, m.Width, m.Height = c.x, c.y, c.w, c.h
+            m.PositionX, m.PositionY, m.Width = c.x, c.y, c.w
+            if c.name != "Transcript":
+                m.Height = c.h
 
     def _set_visible(self, name, visible):
         """Show or hide a control. The model has no `Visible` property (it is spelled
         `EnableVisible`), so go through the control's XWindow, as the panel window does."""
         self.window.getControl(name).setVisible(bool(visible))
 
-    def _attach_session(self):
+    def _pixels(self, du):
+        return self.window.convertSizeToPixel(Size(0, du), APPFONT).Height
+
+    def _attach_panel_set(self):
         model = self.frame.getController().getModel()
-        ctx = self.ctx
+        self.panel_set = registry.panel_set_for(self.ctx, model,
+                                                make_session_factory(self.ctx, model))
+        self.session = self.panel_set.session
+        self.panel_set.composite.attach(self.kind, self)
+        self._replay(self.session)
 
-        def make_session():
-            adapter = DocumentAdapter(ctx, model)
-            config = paths.read_config()
-
-            def bridge_factory(on_event):
-                try:
-                    spec = paths.bridge_spec(package_dir(ctx), config)
-                except Exception as e:
-                    # UvNotFound carries a ready-made Italian message; anything else (a
-                    # malformed config.toml, an unreadable path) must still reach the panel
-                    # as a BridgeError rather than escape into the UNO listener.
-                    raise BridgeError(str(e) or type(e).__name__) from e
-                return Bridge(spec, on_event)
-
-            return Session(adapter, bridge_factory, doc_id=model.RuntimeUID,
-                           lo_version=lo_version(ctx), has_markdown_filter=has_markdown_filter(ctx),
-                           config_path=str(paths.config_path()))
-
-        self.session = registry.session_for(model, make_session)
-        self.session.bind(self, self._post)
-        if not self.session.transcript:
-            created = paths.write_template_if_missing()
-            self.session.note(f"LibreLex-IT pronto. Configurazione: {paths.config_path()}"
-                              + (" (creata ora con i valori predefiniti)" if created else ""))
-            if not self.session.has_markdown_filter:
-                self.session.note(
-                    "Attenzione: questa versione di LibreOffice non ha il filtro Markdown "
-                    "(serve 26.2 o successiva): l'inserimento di testo non funzionerà.")
-
-    # --- bridge events: reader thread → UI thread ----------------------------------
-    def _post(self, event):
-        self.queue.put(event)
-        self.async_cb.addCallback(self, None)
-
-    def notify(self, data):                      # XCallback, UI thread
-        if self.session is not None:
-            self._drain(self.session)
-
-    def _drain(self, session):
-        while True:
-            try:
-                ev = self.queue.get_nowait()
-            except queue.Empty:
-                return
-            session.handle_event(ev)
+    def _replay(self, session):
+        """Show the state the session kept while this panel was closed (spec §5.1)."""
+        if self.kind == "Answers":
+            self.set_transcript("\n".join(session.transcript))
+        elif self.kind == "Citations":
+            self.set_citations([label for label, _, _ in session.citations])
+        else:
+            busy = session.state in ("starting", "busy")
+            self.set_busy(busy)
+            if busy:                        # else the layout default "Pronto" would lie
+                self.set_status("Richiesta in corso...")
 
     # --- user actions -----------------------------------------------------------------
     def actionPerformed(self, event):           # XActionListener, UI thread
@@ -266,7 +320,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.session.run_command("list_citations", {"scope": "document"})
         elif cmd == "cancel":
             self.session.cancel()
-        elif cmd == "clear":
+        elif cmd == "clear":                    # the Svuota button of the Risposte panel
             self.session.clear_transcript()
         elif cmd == "settings":
             created = paths.write_template_if_missing()
@@ -281,28 +335,36 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
 
     # --- View protocol (session → controls) ---------------------------------------------
     def append(self, text):
+        if not self.model.hasByName("Transcript"):
+            return
         ctrl = self.window.getControl("Transcript")
         current = ctrl.getText()
         new = (current + ("\n" if current else "") + text)[-MAX_TRANSCRIPT:]
         ctrl.setText(new)
 
     def set_transcript(self, text):
-        self.window.getControl("Transcript").setText(text[-MAX_TRANSCRIPT:])
+        if self.model.hasByName("Transcript"):
+            self.window.getControl("Transcript").setText(text[-MAX_TRANSCRIPT:])
 
     def set_status(self, text):
-        self.model.getByName("Status").Label = text
+        if self.model.hasByName("Status"):
+            self.model.getByName("Status").Label = text
 
     def set_busy(self, busy):
         for name in layout.BUSY_DISABLED:
-            self.model.getByName(name).Enabled = not busy
-        self.model.getByName("Cancel").Enabled = bool(busy)
+            if self.model.hasByName(name):
+                self.model.getByName(name).Enabled = not busy
+        if self.model.hasByName("Cancel"):
+            self.model.getByName("Cancel").Enabled = bool(busy)
 
     def set_citations(self, labels):
-        self.model.getByName("Citations").StringItemList = tuple(labels)
-        self.model.getByName("CitationsLabel").Label = f"Citazioni ({len(labels)})"
+        if self.model.hasByName("Citations"):
+            self.model.getByName("Citations").StringItemList = tuple(labels)
 
     def set_progress(self, done, total):
         """Show the bar at done/total; ``total`` None (or zero) hides it again."""
+        if not self.model.hasByName("Progress"):
+            return
         if not total:
             self._set_visible("Progress", False)
             return

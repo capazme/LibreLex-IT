@@ -200,10 +200,12 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with one panel via `Sidebar.xcu` +
-  `Factories.xcu`; the panel is a UNO `XUIElement` built from an XDL dialog
-  (LibreThinker skeleton).
-- Controls: read-only multi-line transcript, a citation list (one entry per
+- Registered as a sidebar deck "LibreLex" with three panels (Azioni,
+  Citazioni, Risposte) served by one factory; each panel is collapsible
+  through the sidebar's own title bar and "Risposte" takes the remaining
+  height; each panel is a UNO `XUIElement` built from an XDL dialog
+  (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
+  controls: read-only multi-line transcript, a citation list (one entry per
   reference found; selecting an entry jumps to its paragraph and shows its text,
   §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
   Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,
@@ -211,10 +213,10 @@ LibreLex-IT/
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
 - Layout (M1): the controls are grouped in labelled sections (Documento,
-  Riferimento, Citazioni, Risposte) over a two-column button grid, with a
-  progress bar above the status line, a `Svuota` button on the answers,
-  tooltips on every button and a control table computed from the panel width
-  (`layout.build(width)`, minimum 170 dialog units, re-applied on
+  Riferimento) over a two-column button grid, with a progress bar above the
+  status line, a `Svuota` button on the answers, tooltips on every button
+  and a control table computed from the panel width
+  (`layout.build(kind, width)`, minimum 170 dialog units, re-applied on
   `getHeightForWidth` through `XUnitConversion`); the buttons of later
   milestones (Invia, Ricerca, Redigi da modello, Rivedi selezione) are not
   created until their milestone.
