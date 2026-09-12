@@ -17,6 +17,8 @@ from librelex_ext.render import (
     render_insert_summary,
     render_list_summary,
     render_show_text,
+    render_turn_notes,
+    render_usage,
     render_verify_summary,
 )
 
@@ -28,6 +30,9 @@ class View(Protocol):
     def set_busy(self, busy: bool) -> None: ...
     def set_citations(self, labels: list[str]) -> None: ...
     def set_progress(self, done: int, total: int | None) -> None: ...
+    def append_stream(self, text: str) -> None: ...
+    def set_usage(self, text: str) -> None: ...
+    def set_consent(self, summary: dict | None) -> None: ...
 
 
 class NullView:
@@ -37,6 +42,9 @@ class NullView:
     def set_busy(self, busy: bool) -> None: ...
     def set_citations(self, labels: list[str]) -> None: ...
     def set_progress(self, done: int, total: int | None) -> None: ...
+    def append_stream(self, text: str) -> None: ...
+    def set_usage(self, text: str) -> None: ...
+    def set_consent(self, summary: dict | None) -> None: ...
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
@@ -76,8 +84,13 @@ class Session:
         self.has_markdown_filter, self.config_path = has_markdown_filter, config_path
         self.bridge: Any = None
         self.state = "stopped"
-        self.pending: tuple[str, dict] | None = None
+        self.pending: Callable[[str], dict] | None = None
         self.request_id: str | None = None
+        self.pending_consent: tuple[str, str] | None = None
+        # what a rebuilt Azioni panel has to be told again (it is created empty): the summary
+        # of the consent the core is still waiting on, and the usage line of the last turn
+        self.consent_summary: dict | None = None
+        self.usage_text: str = ""
         self._n = 0
         self.transcript: list[str] = []
         self.citations: list[tuple[str, str, str]] = []
@@ -85,6 +98,8 @@ class Session:
         self.view: View = NullView()
         self._buffer: list[dict] = []
         self.ui_post: Callable[[dict], None] = self._buffer.append
+        self._streamed = False
+        self._stream_buffer = ""
 
     # --- panel binding -------------------------------------------------------
     def bind(self, view: View, ui_post: Callable[[dict], None]) -> None:
@@ -92,6 +107,8 @@ class Session:
         view.set_transcript("\n".join(self.transcript))
         view.set_citations([label for label, _, _ in self.citations])
         view.set_busy(self.state in ("starting", "busy"))
+        view.set_consent(self.consent_summary)
+        view.set_usage(self.usage_text)
         buffered, self._buffer = self._buffer, []
         for ev in buffered:
             ui_post(ev)
@@ -106,11 +123,34 @@ class Session:
 
     # --- user actions (UI thread) -------------------------------------------
     def run_command(self, name: str, args: dict) -> None:
+        self._submit(name, lambda rid: {"type": "command", "id": rid, "doc_id": self.doc_id,
+                                        "name": name, "args": args})
+
+    def chat(self, message: str) -> None:
+        if not message.strip():
+            self.view.set_status("Scrivi un messaggio")
+            return
+        context = self._document_context()
+        self._submit(None, lambda rid: {"type": "chat", "id": rid, "doc_id": self.doc_id,
+                                        "message": message, "context": context})
+
+    def research(self, question: str) -> None:
+        self.run_command("research", {"question": question} if question.strip() else {})
+
+    def _document_context(self) -> dict:
+        try:
+            info = self.adapter.get_document_info()
+        except Exception:
+            return {}
+        return {"title": info.get("title", ""), "has_selection": info.get("has_selection", False),
+                "cursor_paragraph": info.get("cursor_paragraph")}
+
+    def _submit(self, name: str | None, payload_factory: Callable[[str], dict]) -> None:
         if self.state == "busy":
             self.view.set_status("Richiesta in corso: attendi o premi Annulla")
             return
         if self.state == "starting":
-            self.pending = (name, args)
+            self.pending = payload_factory
             return
         if self.state == "stopped":
             try:
@@ -121,14 +161,14 @@ class Session:
                 self._append(f"Impossibile avviare il core: {e}")
                 return
             self.state = "starting"
-            self.pending = (name, args)
+            self.pending = payload_factory
             self.view.set_busy(True)
             self.view.set_status("Avvio del core...")
             self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
                         "extension_version": __version__, "lo_version": self.lo_version,
                         "has_markdown_filter": self.has_markdown_filter})
             return
-        self._send_command(name, args)
+        self._send_payload(payload_factory)
 
     def cancel(self) -> None:
         if self.state == "busy" and self.request_id and self.bridge is not None:
@@ -165,6 +205,15 @@ class Session:
         self.transcript.clear()
         self.view.set_transcript("")
 
+    def answer_consent(self, decision: str) -> None:
+        if self.pending_consent is None:
+            return
+        request_id, call_id = self.pending_consent
+        self._clear_pending_consent()
+        if self.bridge is not None:
+            self._send({"type": "consent_result", "id": request_id, "call_id": call_id,
+                        "decision": decision})
+
     def shutdown(self) -> None:
         if self.bridge is not None:
             try:
@@ -182,6 +231,8 @@ class Session:
             was_active = self.state in ("starting", "busy")
             self.bridge = None
             self.state, self.pending, self.request_id = "stopped", None, None
+            self._flush_stream()
+            self._clear_pending_consent()
             self.view.set_busy(False)
             self.view.set_progress(0, None)
             self.view.set_status("Core non attivo")
@@ -213,9 +264,9 @@ class Session:
         self.state = "ready"
         self.view.set_status("Pronto")
         if self.pending is not None:
-            name, args = self.pending
+            payload_factory = self.pending
             self.pending = None
-            self._send_command(name, args)
+            self._send_payload(payload_factory)
         else:
             self.view.set_busy(False)
 
@@ -228,17 +279,19 @@ class Session:
         self.view.set_progress(done, total)
 
     def _on_delta(self, msg: dict) -> None:
-        self._append(msg.get("text", ""))
+        text = msg.get("text", "")
+        self._streamed = True
+        self._stream_buffer += text
+        self.view.append_stream(text)
 
     def _on_log(self, msg: dict) -> None:
         return
 
     def _on_consent_request(self, msg: dict) -> None:
-        # M1 has no LLM turn; refuse defensively and say so (spec §8.2 arrives with M2).
-        self._append("Richiesta di consenso non supportata in questa versione: rifiutata.")
-        if self.bridge is not None:
-            self.bridge.send({"type": "consent_result", "id": msg["request_id"],
-                              "call_id": msg["call_id"], "decision": "deny"})
+        self.pending_consent = (msg["request_id"], msg["call_id"])
+        self.consent_summary = msg.get("summary")
+        self.view.set_consent(self.consent_summary)
+        self.view.set_status("In attesa del consenso")
 
     def _on_doc_call(self, msg: dict) -> None:
         if self.bridge is None:
@@ -260,8 +313,25 @@ class Session:
         self.view.set_busy(False)
         self.view.set_progress(0, None)
         self.view.set_status("Pronto")
+        self._clear_pending_consent()
+        was_streamed = self._streamed
+        self._flush_stream()
         summary = msg.get("summary") or {}
-        if msg.get("cancelled"):
+        if was_streamed or "usage_totals" in summary or "tool_calls" in summary:
+            # A model turn (chat or research) is recognised by the shape of its final, not by
+            # whether anything was streamed: a turn that ends on tool calls only (iteration
+            # limit, timeout while tools run) emits no delta and must still show its notes
+            # ([interrotto: ...], the inserted/flagged/unverified lines) and the usage line.
+            # A streamed turn always replays through here, cancelled or not: the cancellation
+            # shows up as a "[annullato]" note (render_turn_notes reads summary["stopped"]),
+            # not as a separate "Annullato." line.
+            if not was_streamed and (msg.get("text") or "").strip():
+                self._append(msg["text"])       # the prose the turn never streamed
+            self._append("")
+            for note in render_turn_notes(summary):
+                self._append(note)
+            self._set_usage(render_usage(msg.get("usage"), summary.get("usage_totals")))
+        elif msg.get("cancelled"):
             self._append(msg.get("text") or "Annullato.")
         elif "elenco" in summary or "per_verdetto" in summary:
             text, items = render_verify_summary(summary)
@@ -286,7 +356,9 @@ class Session:
             self.view.set_busy(False)
             self.view.set_status("Pronto")
         self.view.set_progress(0, None)
-        self._append(render_error(msg.get("code", "?"), msg.get("message", "")))
+        self._flush_stream()
+        self._clear_pending_consent()
+        self._append(render_error(msg.get("code", "?"), msg.get("message", ""), self.config_path))
 
     # --- helpers -------------------------------------------------------------
     def _send(self, msg: dict) -> bool:
@@ -308,14 +380,29 @@ class Session:
             self._append(f"Core non raggiungibile: {e}. Riprova: verrà riavviato.")
             return False
 
-    def _send_command(self, name: str, args: dict) -> None:
+    def _send_payload(self, payload_factory: Callable[[str], dict]) -> None:
         self._n += 1
         self.request_id = f"r{self._n}"
         self.state = "busy"
         self.view.set_busy(True)
         self.view.set_status("Invio della richiesta...")
-        self._send({"type": "command", "id": self.request_id, "doc_id": self.doc_id,
-                    "name": name, "args": args})
+        self._send(payload_factory(self.request_id))
+
+    def _flush_stream(self) -> None:
+        if self._streamed:
+            self.transcript.append(self._stream_buffer)
+        self._streamed = False
+        self._stream_buffer = ""
+
+    def _clear_pending_consent(self) -> None:
+        if self.pending_consent is not None:
+            self.pending_consent = self.consent_summary = None
+            self.view.set_consent(None)
+
+    def _set_usage(self, text: str) -> None:
+        """Show the usage line and remember it, so a rebuilt panel can replay it."""
+        self.usage_text = text
+        self.view.set_usage(text)
 
     def _append(self, text: str) -> None:
         self.transcript.append(text)

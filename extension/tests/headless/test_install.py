@@ -86,7 +86,9 @@ def test_oxt_installs_and_registers_in_a_private_profile(soffice, tmp_path):
     _run_headless(soffice, profile, "librelex_check.py", {"LIBRELEX_CHECK_RESULT": str(check)})
     data = json.loads(check.read_text(encoding="utf-8"))
     assert data["factory"] is True
-    assert "LibreLexDeck" in data["decks"] and "LibreLexPanel" in data["panels"]
+    assert "LibreLexDeck" in data["decks"]
+    assert {"LibreLexActionsPanel", "LibreLexCitationsPanel", "LibreLexAnswersPanel"} <= set(
+        data["panels"])
     assert "LibreLexPanelFactory" in data["factories"]
 
     # --remove path: the macro without LIBRELEX_OXT uninstalls

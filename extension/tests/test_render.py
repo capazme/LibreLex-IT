@@ -1,10 +1,13 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 from librelex_ext.render import (
     citation_label,
+    render_consent,
     render_error,
     render_insert_summary,
     render_list_summary,
     render_show_text,
+    render_turn_notes,
+    render_usage,
     render_verify_summary,
 )
 
@@ -124,3 +127,40 @@ def test_insert_summary_and_error():
         "segnalibro LibreLex.norma.x).\nFonte: https://x")
     assert (render_error("busy", "un'altra richiesta è in corso")
             == "Errore (busy): un'altra richiesta è in corso")
+
+
+def test_render_usage_consent_and_notes():
+    assert render_usage(
+        {"input_tokens": 40072, "output_tokens": 403, "cost_usd": None},
+        {"input_tokens": 40072, "output_tokens": 403},
+    ) == "Turno: 40.072 + 403 token · sessione: 40.475 token"
+    assert render_usage(
+        {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.0123}, None
+    ) == "Turno: 10 + 5 token · costo: $0.01"
+    assert render_usage(None, None) == ""
+    assert render_consent({
+        "scope": "paragraphs", "chars": 1234, "endpoint_host": "127.0.0.1",
+        "model": "claude-sonnet-5", "zdr": True,
+    }) == ("Inviare al modello claude-sonnet-5 su 127.0.0.1 (senza conservazione dati) "
+           "i paragrafi letti (1.234 caratteri)?")
+    assert render_turn_notes({
+        "stopped": "iterations", "inserted": [{"from_id": "p:2", "to_id": "p:4"}],
+        "flagged": ["Cass. n. 9/2024"], "unverified": [],
+    }) == [
+        "[interrotto: limite di iterazioni]", "Inserito nei paragrafi p:2-p:4",
+        "Riferimenti segnalati con un commento: Cass. n. 9/2024"]
+    # the core spells the turn budget "timeout" (agent/loop.py), not "time"
+    assert render_turn_notes({"stopped": "timeout"}) == ["[interrotto: tempo massimo]"]
+    assert render_turn_notes({"stopped": "boh"}) == ["[interrotto: boh]"]
+    error_lines = render_error(
+        "llm_config", "llm.model non impostato", "/cfg/config.toml"
+    ).splitlines()
+    assert error_lines[1].startswith("Configura la sezione [llm]")
+
+
+def test_render_usage_shows_session_total_and_cost_together():
+    """Fix round 1, finding 1: sessione and costo are independent, not if/elif."""
+    assert render_usage(
+        {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.0123},
+        {"input_tokens": 1000, "output_tokens": 500},
+    ) == "Turno: 10 + 5 token · sessione: 1.500 token · costo: $0.01"

@@ -1,12 +1,21 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 import json
+from pathlib import Path
 
 import pytest
 
 from librelex_core.agent.internal_tools import INTERNAL_TOOLS, run_internal_tool
 from librelex_core.agent.profiles import CALCULATORS, PROFILES
-from librelex_core.agent.registry import DOCUMENT_TOOLS, ToolRegistry, concise, load_overrides
+from librelex_core.agent.registry import (
+    DOCUMENT_TOOLS,
+    ToolRegistry,
+    compact_schema,
+    concise,
+    load_overrides,
+)
 from librelex_core.mcp.client import ALLOWLIST, ToolSpec
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_profiles_match_spec_6_3():
@@ -64,6 +73,103 @@ def test_document_tools_mirror_the_actions():
     assert ins["properties"]["where"]["type"] == "string"
     rp = DOCUMENT_TOOLS["read_paragraphs"]["function"]["parameters"]["properties"]
     assert set(rp) == {"from_", "to"}
+
+
+def test_compact_schema_keeps_core_keys_and_drops_the_rest():
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "Input",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "q": {"type": "string", "title": "Q", "description": "Testo.", "examples": ["a"]},
+            "ambito": {"type": "string", "title": "Ambito", "default": "tutti",
+                       "enum": ["civile", "penale", "tutti"]},
+        },
+        "required": ["q"],
+        "examples": [{"q": "x"}],
+    }
+    out = compact_schema(schema)
+    assert out == {
+        "type": "object",
+        "properties": {"q": {"type": "string", "description": "Testo."},
+                       # enum and default are what the model needs to call the tool: kept
+                       "ambito": {"type": "string", "enum": ["civile", "penale", "tutti"],
+                                  "default": "tutti"}},
+        "required": ["q"],
+    }
+    assert out["properties"]["ambito"]["enum"] == ["civile", "penale", "tutti"]
+
+
+def test_compact_schema_truncates_descriptions_at_a_word_boundary():
+    schema = {"type": "string", "description": "Valori disponibili: alfa beta gamma delta epsilon"}
+    out = compact_schema(schema, max_desc=20)
+    assert out["description"] == "Valori disponibili:…"
+    assert len(out["description"]) <= 21
+
+
+def test_compact_schema_leaves_short_descriptions_untouched():
+    out = compact_schema({"type": "string", "description": "Breve."}, max_desc=120)
+    assert out["description"] == "Breve."
+
+
+def test_compact_schema_recurses_and_deep_copies():
+    schema = {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "title": "Tags",
+                "items": {"type": "string", "title": "Tag", "description": "x" * 200},
+            },
+        },
+    }
+    out = compact_schema(schema, max_desc=50)
+    assert "title" not in out["properties"]["tags"]
+    item = out["properties"]["tags"]["items"]
+    assert "title" not in item
+    assert len(item["description"]) <= 51
+    out["properties"]["tags"]["items"]["description"] = "mutated"
+    assert schema["properties"]["tags"]["items"]["description"] == "x" * 200
+
+
+def test_registry_compacts_legal_tool_parameter_schemas():
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "sede": {"type": "string", "title": "Sede", "description": "y" * 500},
+        },
+        "additionalProperties": False,
+    }
+    specs = [ToolSpec("cerca_giurisprudenza_amministrativa", "desc", schema)]
+    reg = ToolRegistry(specs, "research")
+    tool = next(t for t in reg.tools
+                if t["function"]["name"] == "cerca_giurisprudenza_amministrativa")
+    params = tool["function"]["parameters"]
+    assert "$schema" not in params and "additionalProperties" not in params
+    assert "title" not in params["properties"]["sede"]
+    assert len(params["properties"]["sede"]["description"]) <= 121
+
+
+def test_research_profile_tools_array_stays_under_30k_chars():
+    data = json.loads((_FIXTURES / "tool_specs_sample.json").read_text(encoding="utf-8"))
+    raw_sede = next(t for t in data
+                     if t["name"] == "cerca_giurisprudenza_amministrativa")
+    assert len(raw_sede["input_schema"]["properties"]["sede"]["description"]) >= 1000
+
+    specs = [ToolSpec(t["name"], t["description"], t["input_schema"]) for t in data]
+    reg = ToolRegistry(specs, "research")
+    encoded = json.dumps(reg.tools, ensure_ascii=False)
+    assert len(encoded) < 30_000
+
+    sede = next(t for t in reg.tools
+                if t["function"]["name"] == "cerca_giurisprudenza_amministrativa"
+                )["function"]["parameters"]["properties"]["sede"]
+    assert sede["description"].endswith("…")
+    assert len(sede["description"]) <= 121
+    assert set(reg.names) == set(PROFILES["research"].legal) | set(PROFILES["research"].document) \
+        | {t["function"]["name"] for t in INTERNAL_TOOLS}
 
 
 def test_internal_tools():

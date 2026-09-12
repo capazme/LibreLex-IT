@@ -108,6 +108,7 @@ class FakeView:
         self.lines, self.status, self.busy = [], "", None
         self.citations, self.transcript = None, None
         self.progress = None
+        self.stream, self.usage, self.consent = "", None, None
 
     def append(self, text):
         self.lines.append(text)
@@ -126,6 +127,15 @@ class FakeView:
 
     def set_progress(self, done, total):
         self.progress = (done, total)
+
+    def append_stream(self, text):
+        self.stream += text
+
+    def set_usage(self, text):
+        self.usage = text
+
+    def set_consent(self, summary):
+        self.consent = summary
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -236,17 +246,23 @@ def test_doc_call_after_shutdown_is_dropped_without_error():
     assert adapter.calls == []
 
 
-def test_consent_request_after_shutdown_is_dropped_without_error():
+def test_consent_request_after_shutdown_answers_without_a_bridge_and_without_error():
+    """M2: the M1 auto-deny handler is gone; the panel just shows the request. Answering it
+
+    after the bridge died (document closed mid-request) must not raise, and nothing is sent.
+    """
     s, adapter, view, bridges = make()
     s.run_command("verify_citations", {})
     s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
                                                "protocol": PROTOCOL_VERSION, "warnings": []}})
     s.shutdown()
     sent_before = list(bridges[0].sent)
+    summary = {"scope": "paragraphs", "chars": 10, "endpoint_host": "h", "model": "m", "zdr": True}
     s.handle_event({"kind": "message", "msg": {
-        "type": "consent_request", "request_id": "r1", "call_id": "c9"}})
-    assert bridges[0].sent == sent_before
-    assert "rifiutata" in view.lines[-1]
+        "type": "consent_request", "request_id": "r1", "call_id": "c9", "summary": summary}})
+    assert bridges[0].sent == sent_before and view.consent == summary
+    s.answer_consent("once")
+    assert bridges[0].sent == sent_before and s.pending_consent is None
 
 
 def test_final_renders_summary_and_frees_the_session():
@@ -502,3 +518,194 @@ def test_clear_transcript_empties_the_replay_buffer_and_the_view():
     assert s.transcript == ["prima riga", "seconda riga"]
     s.clear_transcript()
     assert s.transcript == [] and view.transcript == ""
+
+
+def test_chat_sends_context_streams_deltas_and_shows_usage():
+    s, adapter, view, bridges = make()
+    s.chat("   ")
+    assert view.status == "Scrivi un messaggio" and not bridges
+    s.chat("che dice il documento?")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    msg = bridges[0].sent[-1]
+    assert msg["type"] == "chat" and msg["id"] == "r1"
+    assert msg["message"] == "che dice il documento?"
+    assert msg["context"] == {"title": "t", "has_selection": False, "cursor_paragraph": "p:0"}
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "Il documento "}})
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "dice X."}})
+    assert (view.stream == "Il documento dice X." and view.lines == []
+            or view.lines[-1] != "Il documento dice X.")
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Il documento dice X.",
+        "cancelled": False, "usage": {"input_tokens": 100, "output_tokens": 20, "cost_usd": None},
+        "summary": {"tool_calls": 1, "usage_totals": {"input_tokens": 100, "output_tokens": 20}}}})
+    assert view.lines[-1] == "" and "Il documento dice X." not in view.lines      # not duplicated
+    assert s.transcript[-2] == "Il documento dice X." and s.state == "ready"
+    assert view.usage == "Turno: 100 + 20 token · sessione: 120 token"
+
+
+def test_consent_request_is_shown_and_answered_in_the_panel():
+    s, adapter, view, bridges = make()
+    s.chat("leggi")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    summary = {"scope": "paragraphs", "chars": 50, "endpoint_host": "h", "model": "m", "zdr": True}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "consent_request", "request_id": "r1", "call_id": "k1", "summary": summary}})
+    assert view.consent == summary and view.status == "In attesa del consenso"
+    s.answer_consent("once")
+    assert bridges[0].sent[-1] == {
+        "type": "consent_result", "id": "r1", "call_id": "k1", "decision": "once"}
+    assert view.consent is None and s.pending_consent is None
+    s.answer_consent("deny")                                   # nothing pending: ignored
+    assert bridges[0].sent[-1]["decision"] == "once"
+
+
+def test_research_and_llm_config_error_hint():
+    s, adapter, view, bridges = make()
+    s.research("  ")
+    assert bridges[0].sent[0]["type"] == "hello"
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert bridges[0].sent[-1] == {
+        "type": "command", "id": "r1", "doc_id": "d1", "name": "research", "args": {}}
+    s.handle_event({"kind": "message", "msg": {"type": "error", "request_id": "r1",
+                                               "code": "llm_config",
+                                               "message": "llm.model non impostato"}})
+    assert "Configura la sezione [llm]" in view.lines[-1]
+    assert "/cfg/config.toml" in view.lines[-1]
+    s.research("usucapione")
+    assert bridges[0].sent[-1]["args"] == {"question": "usucapione"}
+
+
+def test_final_cancelled_after_streaming_still_shows_notes_and_usage():
+    """Fix round 1, finding 2: a streamed turn stays on the streamed path even when
+
+    cancelled=True — blank line, notes (including "[annullato]"), then set_usage — instead of
+    falling back to the plain "Annullato." line reserved for a turn with no streamed text.
+    """
+    s, adapter, view, bridges = make()
+    s.chat("leggi")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "parziale"}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "", "cancelled": True,
+        "usage": {"input_tokens": 30, "output_tokens": 10, "cost_usd": None},
+        "summary": {"stopped": "cancelled",
+                    "usage_totals": {"input_tokens": 30, "output_tokens": 10}}}})
+    assert "Annullato." not in view.lines
+    assert "[annullato]" in view.lines
+    assert view.usage == "Turno: 30 + 10 token · sessione: 40 token"
+    assert s.transcript[-2:] == ["", "[annullato]"]
+
+
+def test_final_with_no_streamed_text_still_shows_the_notes_and_the_usage_line():
+    """Fix round 2, finding 1: a chat turn whose assistant message is tool calls only (the
+
+    iteration limit fired) streams nothing, so the old ``was_streamed`` branch printed
+    "Completato." and dropped both the interruption note and the usage line.
+    """
+    s, adapter, view, bridges = make()
+    s.chat("leggi tutto")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "", "cancelled": False,
+        "usage": {"input_tokens": 900, "output_tokens": 0, "cost_usd": None},
+        "summary": {"stopped": "iterations", "tool_calls": 12,
+                    "usage_totals": {"input_tokens": 900, "output_tokens": 0}}}})
+    assert "Completato." not in view.lines
+    assert view.lines[-2:] == ["", "[interrotto: limite di iterazioni]"]
+    assert view.usage == "Turno: 900 + 0 token · sessione: 900 token"
+
+
+def test_research_final_without_deltas_shows_its_text_the_grounding_notes_and_usage():
+    """Fix round 2, finding 1: the Ricerca turn did insert massime, so the notes of the M2
+
+    exit criterion (inserted/flagged/unverified) must reach the panel even with no delta.
+    """
+    s, adapter, view, bridges = make()
+    s.research("usucapione")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Inserite 2 massime.", "cancelled": False,
+        "usage": {"input_tokens": 500, "output_tokens": 80, "cost_usd": None},
+        "summary": {"inserted": [{"from_id": "p:2", "to_id": "p:5"}],
+                    "flagged": ["Cass. n. 9/2024"], "unverified": ["Cass. n. 1/2020"],
+                    "usage_totals": {"input_tokens": 500, "output_tokens": 80}}}})
+    assert view.lines == ["Inserite 2 massime.", "", "Inserito nei paragrafi p:2-p:5",
+                          "Riferimenti segnalati con un commento: Cass. n. 9/2024",
+                          "Riferimenti non verificati (fonte non disponibile): Cass. n. 1/2020"]
+    assert view.usage == "Turno: 500 + 80 token · sessione: 580 token"
+
+
+def _pending_consent(s, view):
+    """Start a chat and get to a pending consent_request."""
+    s.chat("leggi")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    summary = {"scope": "paragraphs", "chars": 50, "endpoint_host": "h", "model": "m", "zdr": True}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "consent_request", "request_id": "r1", "call_id": "k1", "summary": summary}})
+    assert view.consent == summary and s.pending_consent is not None
+    return summary
+
+
+def test_a_pending_consent_is_cleared_by_an_error_an_exit_and_a_cancelled_final():
+    """Fix round 2, finding 6: the block must never survive the end of its turn, whichever
+
+    of the three ways the turn ends (plan, Global Constraints).
+    """
+    s, adapter, view, bridges = make()
+    _pending_consent(s, view)
+    s.handle_event({"kind": "message", "msg": {"type": "error", "request_id": "r1",
+                                               "code": "tool_error", "message": "boom"}})
+    assert view.consent is None and s.pending_consent is None and s.consent_summary is None
+
+    s2, _adapter2, view2, _bridges2 = make()
+    _pending_consent(s2, view2)
+    s2.handle_event({"kind": "exit", "code": 1})
+    assert view2.consent is None and s2.pending_consent is None and s2.consent_summary is None
+
+    s3, _adapter3, view3, bridges3 = make()
+    _pending_consent(s3, view3)
+    s3.cancel()
+    assert bridges3[0].sent[-1] == {"type": "cancel", "id": "r1", "doc_id": "d1"}
+    s3.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Annullato.", "cancelled": True,
+        "usage": None, "summary": {"stopped": "cancelled"}}})
+    assert view3.consent is None and s3.pending_consent is None and s3.consent_summary is None
+
+
+def test_a_rebuilt_panel_gets_back_the_pending_consent_and_the_usage_line():
+    """Fix round 2, finding 7: a panel rebuilt mid-turn (deck switch, collapse/expand) is
+
+    created empty, so bind/_replay have to show the question the core is still waiting on
+    and the usage line of the last turn again.
+    """
+    s, adapter, view, bridges = make()
+    s.chat("prima domanda")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.", "cancelled": False,
+        "usage": {"input_tokens": 10, "output_tokens": 5, "cost_usd": None},
+        "summary": {"tool_calls": 1, "usage_totals": {"input_tokens": 10, "output_tokens": 5}}}})
+    assert s.usage_text == "Turno: 10 + 5 token · sessione: 15 token"
+    s.chat("seconda domanda")
+    summary = {"scope": "selection", "chars": 80, "endpoint_host": "h", "model": "m", "zdr": False}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "consent_request", "request_id": "r2", "call_id": "k2", "summary": summary}})
+    assert s.consent_summary == summary
+
+    fresh = FakeView()                      # the panel was destroyed and built again
+    s.bind(fresh, lambda ev: None)
+    assert fresh.consent == summary
+    assert fresh.usage == "Turno: 10 + 5 token · sessione: 15 token"
+    s.answer_consent("document")
+    assert s.consent_summary is None and fresh.consent is None

@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def test_constants():
-    assert __version__ == "0.2.0" and PROTOCOL_VERSION == 1
+    assert __version__ == "0.4.0" and PROTOCOL_VERSION == 1
     assert EXTENSION_ID == "org.librelex.extension"
 
 

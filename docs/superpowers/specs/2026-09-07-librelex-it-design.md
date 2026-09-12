@@ -200,10 +200,12 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with one panel via `Sidebar.xcu` +
-  `Factories.xcu`; the panel is a UNO `XUIElement` built from an XDL dialog
-  (LibreThinker skeleton).
-- Controls: read-only multi-line transcript, a citation list (one entry per
+- Registered as a sidebar deck "LibreLex" with three panels (Azioni,
+  Citazioni, Risposte) served by one factory; each panel is collapsible
+  through the sidebar's own title bar and "Risposte" takes the remaining
+  height; each panel is a UNO `XUIElement` built from an XDL dialog
+  (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
+  controls: read-only multi-line transcript, a citation list (one entry per
   reference found; selecting an entry jumps to its paragraph and shows its text,
   §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
   Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,
@@ -211,13 +213,19 @@ LibreLex-IT/
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
 - Layout (M1): the controls are grouped in labelled sections (Documento,
-  Riferimento, Citazioni, Risposte) over a two-column button grid, with a
-  progress bar above the status line, a `Svuota` button on the answers,
-  tooltips on every button and a control table computed from the panel width
-  (`layout.build(width)`, minimum 170 dialog units, re-applied on
+  Riferimento) over a two-column button grid, with a progress bar above the
+  status line, a `Svuota` button on the answers, tooltips on every button
+  and a control table computed from the panel width
+  (`layout.build(kind, width)`, minimum 170 dialog units, re-applied on
   `getHeightForWidth` through `XUnitConversion`); the buttons of later
   milestones (Invia, Ricerca, Redigi da modello, Rivedi selezione) are not
   created until their milestone.
+- Consent block (M2): the `consent_request` of §8.2 is answered inside the
+  Azioni panel, by a grey multi-line label over the three choices ("Per questo
+  documento", "Solo stavolta", "Annulla") placed between the button grid and
+  the progress bar, which keeps its slot in the control table at all times
+  (only the visibilities are flipped, so showing it never moves the controls
+  under it) and stays enabled while the core is busy.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
 - Streaming: the bridge reader thread pushes events onto a `queue.Queue` and
@@ -529,6 +537,10 @@ into the document under revision.
   (selection or which paragraphs, character count), to whom (endpoint host,
   model), and whether routing is zero-data-retention. Choices: "per questo
   documento", "solo stavolta", "annulla". Session-scoped, never persisted.
+- The request is answered in the panel, not in a modal dialog: the consent
+  block of the Azioni panel (§5.1) stays reachable while the turn waits, and
+  the core holds that read tool open until the decision arrives, bounded by
+  `[limits] turn_timeout_s`, which interrupts the answer first.
 - The deterministic pipelines never send document text anywhere: only
   citation references reach Normattiva / EUR-Lex / Italgiure.
 - Local endpoints (Ollama) still go through consent, labelled "locale".

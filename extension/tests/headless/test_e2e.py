@@ -31,12 +31,18 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
         def __init__(self):
             self.lines, self.status, self.citations = [], [], None
             self.progress = None
+            self.usage, self.consent = None, None
         def append(self, t): self.lines.append(t)
         def set_transcript(self, t): pass
         def set_status(self, t): self.status.append(t)
         def set_busy(self, b): pass
         def set_citations(self, labels): self.citations = labels
         def set_progress(self, done, total): self.progress = (done, total)
+        # the rest of the View protocol: M1 commands never use it, but bind() replays the
+        # remembered consent/usage on every bind, so the fake has to implement it in full
+        def append_stream(self, t): self.lines.append(t)
+        def set_usage(self, t): self.usage = t
+        def set_consent(self, summary): self.consent = summary
 
     def pump(session, events, until_state="ready", timeout=180):
         import time
