@@ -26,7 +26,7 @@ SMALL_BUTTON_H = 12
 NOTICE_H = 16        # two lines
 REFERENCE_LABEL_H = 18   # two lines: the example makes it long
 INPUT_H = 14
-CONSENT_TEXT_H = 30     # three lines: model, endpoint, retention and character count
+CONSENT_TEXT_H = 40     # four lines: model, endpoint, retention and character count
 PROGRESS_H = 8
 STATUS_H = 20        # two lines
 
@@ -38,7 +38,9 @@ HINT_H = 18
 
 HINT = "Clic su una voce: vai al paragrafo e mostra il testo nelle Risposte."
 
-# the consent block (spec §8.2), left to right; the panel maps each name onto a wire decision
+# the consent block (spec §8.2), in reading order; the panel maps each name onto a wire
+# decision. "Per questo documento" gets a full-width row of its own (see build): §8.2 fixes
+# the wording, and 20 characters do not fit a third of the deck width.
 CONSENT_BUTTONS = ("ConsentDocument", "ConsentOnce", "ConsentDeny")
 CONSENT_LABELS = ("Per questo documento", "Solo stavolta", "Annulla")
 
@@ -137,10 +139,12 @@ def build(kind: str, width: int) -> list[Control]:
                                 {"Label": "", "MultiLine": True, "TextColor": GRAY,
                                  "Visible": False}))
         y += CONSENT_TEXT_H + GAP
-        consent_w = (inner - 2 * GAP) // 3       # three equal buttons in one row
-        for i, (name, label) in enumerate(zip(CONSENT_BUTTONS, CONSENT_LABELS, strict=True)):
-            x = width - MARGIN - consent_w if i == 2 else MARGIN + i * (consent_w + GAP)
-            button(name, label, x, consent_w, Visible=False)
+        # the longest label ("Per questo documento") takes the whole width; the other two
+        # share the standard two-column row below it
+        button(CONSENT_BUTTONS[0], CONSENT_LABELS[0], MARGIN, inner, Visible=False)
+        y += BUTTON_H + GAP
+        button(CONSENT_BUTTONS[1], CONSENT_LABELS[1], MARGIN, Visible=False)
+        button(CONSENT_BUTTONS[2], CONSENT_LABELS[2], right, Visible=False)
         y += BUTTON_H + GAP
 
         controls.append(Control("ProgressBar", "Progress", MARGIN, y, inner, PROGRESS_H,

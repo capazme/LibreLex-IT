@@ -6,6 +6,7 @@ from librelex_ext.layout import (
     BUSY_DISABLED,
     CONSENT_BUTTONS,
     CONTROLS,
+    GAP,
     GRAY,
     KINDS,
     MARGIN,
@@ -64,7 +65,8 @@ def test_copy_and_button_rows():
     assert by["Notice"].props["Label"] == NOTICE
     assert by["Progress"].props["Visible"] is False
     for left, right in (("ListCitations", "VerifyDocument"), ("VerifySelection", "Cancel"),
-                        ("Send", "Research"), ("ShowText", "InsertNorm")):
+                        ("Send", "Research"), ("ShowText", "InsertNorm"),
+                        ("ConsentOnce", "ConsentDeny")):
         assert by[left].y == by[right].y and by[left].w == by[right].w
     answers = {c.name: c for c in build("Answers", WIDTH)}
     assert answers["Transcript"].props["ReadOnly"] is True
@@ -82,20 +84,26 @@ def test_reference_label_asks_for_a_message_a_question_or_a_reference():
 
 
 @pytest.mark.parametrize("width", [MIN_WIDTH, WIDTH, 260])
-def test_consent_block_is_hidden_and_its_three_buttons_share_one_row(width):
+def test_consent_block_is_hidden_and_takes_two_rows(width):
+    """Fix round 2, finding 2: "Per questo documento" (20 characters) does not fit a third of
+
+    the deck, so it owns a full-width row and the other two share the two-column row below.
+    """
     by = {c.name: c for c in build("Actions", width)}
     text = by["ConsentText"]
-    assert text.kind == "FixedText" and text.h == 30
+    assert text.kind == "FixedText" and text.h == 40           # the question is ~110 characters
     assert text.props["MultiLine"] is True and text.props["TextColor"] == GRAY
-    buttons = [by[name] for name in CONSENT_BUTTONS]
-    assert [b.props["Label"] for b in buttons] == ["Per questo documento", "Solo stavolta",
-                                                   "Annulla"]
-    assert len({b.y for b in buttons}) == 1 and len({b.w for b in buttons}) == 1
-    assert text.y + text.h <= buttons[0].y                     # the text sits above the row
-    assert buttons[0].x == MARGIN and buttons[-1].x + buttons[-1].w == width - MARGIN
+    document, once, deny = (by[name] for name in CONSENT_BUTTONS)
+    assert [b.props["Label"] for b in (document, once, deny)] == ["Per questo documento",
+                                                                  "Solo stavolta", "Annulla"]
+    assert document.x == MARGIN and document.x + document.w == width - MARGIN   # full width
+    assert once.y == deny.y == document.y + document.h + GAP     # the shared row below it
+    assert once.w == deny.w == by["Send"].w                    # the standard two-column grid
+    assert once.x == MARGIN and deny.x + deny.w == width - MARGIN
+    assert text.y + text.h <= document.y                       # the text sits above the rows
     for name in ("ConsentText", *CONSENT_BUTTONS):             # hidden until a request lands
         assert by[name].props["Visible"] is False
-    assert by["Status"].y > buttons[0].y                       # consent block above the status
+    assert by["Status"].y > deny.y                             # consent block above the status
 
 
 def test_new_buttons_are_wired_and_only_the_right_ones_are_busy_disabled():
