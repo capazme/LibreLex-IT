@@ -8,19 +8,24 @@ from librelex_core.document import FakeDocument
 from librelex_core.main import CoreServer, MemoryTransport
 from librelex_core.mcp.client import LegalToolsClient
 from tests.conftest import make_fake_legal_server
+from tests.fakes import ScriptedLLM, text_turn, tool_turn
 
 
 class Harness:
     """Plays the extension: sends lines, answers doc_calls with a FakeDocument."""
 
     def __init__(self, doc: FakeDocument, server_version="2.14.0", verdicts=None,
-                 config: Config | None = None, json_contract: bool = True):
+                 config: Config | None = None, json_contract: bool = True, llm=None,
+                 consent_decision: str = "document"):
         self.doc = doc
+        self.llm = llm
+        self.consent_decision = consent_decision
         self.inbox: asyncio.Queue[str | None] = asyncio.Queue()
         self.outbox: asyncio.Queue[str] = asyncio.Queue()
         fake, self.calls = make_fake_legal_server(
             version=server_version, verdicts=verdicts, json_contract=json_contract)
-        self.server = CoreServer(config or Config(), tools_factory=lambda: LegalToolsClient(fake))
+        self.server = CoreServer(config or Config(), tools_factory=lambda: LegalToolsClient(fake),
+                                 llm_factory=(lambda: llm) if llm is not None else None)
         self.received: list = []
         self.hold = False  # when True, doc_calls are left unanswered (keeps a request pending)
 
@@ -35,6 +40,9 @@ class Harness:
             self.received.append(msg)
             if isinstance(msg, p.DocCall) and not self.hold:
                 await self._serve(msg)
+            if isinstance(msg, p.ConsentRequest) and not self.hold:
+                await self.send(p.ConsentResult(id=msg.request_id, call_id=msg.call_id,
+                                                decision=self.consent_decision))
             if isinstance(msg, until):
                 return
 
@@ -142,7 +150,7 @@ async def test_not_implemented_and_unparsed_reference():
     async def scenario(h: Harness):
         await h.send(HELLO)
         await h.pump(p.HelloOk)
-        await h.send(p.Command(id="r1", doc_id="d1", name="research"))
+        await h.send(p.Command(id="r1", doc_id="d1", name="draft"))
         await h.pump(p.Error)
         assert h.received[-1].code == "not_implemented"
         await h.send(p.Command(id="r2", doc_id="d1", name="insert_norm", args={"reference": "boh"}))
@@ -250,5 +258,58 @@ async def test_list_citations_needs_no_server_and_show_text_reports_unavailable(
         await h.pump(p.Final)
         assert h.received[-1].text == "Testo di Cass. n. 12345/2024."
         assert h.received[-1].summary["tipo"] == "sentenza"
+
+    await h2.run(scenario2)
+
+
+async def test_chat_roundtrip_with_deltas_consent_and_usage():
+    doc = FakeDocument(["Primo paragrafo."])
+    llm = ScriptedLLM([tool_turn(("read_paragraphs", {})), text_turn("Il documento dice: primo.")])
+    h = Harness(doc, llm=llm)
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Chat(id="c1", doc_id="d1", message="che dice?"))
+        await h.pump(p.Final)
+        kinds = [type(m).__name__ for m in h.received]
+        assert "ConsentRequest" in kinds and "Delta" in kinds
+        final = h.received[-1]
+        assert final.text == "Il documento dice: primo." and final.usage.input_tokens == 30
+        assert final.summary["tool_calls"] == 1
+        assert final.summary["usage_totals"]["input_tokens"] == 30
+        await h.send(p.Chat(id="c2", doc_id="d1", message="ancora"))
+        h.llm.turns.append(text_turn("sì"))
+        await h.pump(p.Final)
+        # session consent is kept: no second consent_request
+        assert [type(m).__name__ for m in h.received].count("ConsentRequest") == 1
+
+    await h.run(scenario)
+
+
+async def test_chat_without_llm_config_and_research_dispatch():
+    # default llm_factory → real LLMClient with an empty model
+    h = Harness(FakeDocument(["x"]))
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Chat(id="c1", doc_id="d1", message="ciao"))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "llm_config"
+
+    await h.run(scenario)
+
+    llm = ScriptedLLM([text_turn("nessun precedente")])
+    h2 = Harness(FakeDocument(["x"]), llm=llm)
+
+    async def scenario2(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(id="r1", doc_id="d1", name="research",
+                               args={"question": "usucapione"}))
+        await h.pump(p.Final)
+        assert h.received[-1].text == "nessun precedente"
+        assert "Domanda: usucapione" in llm.calls[0][0][1]["content"]
 
     await h2.run(scenario2)

@@ -44,6 +44,25 @@ WRITE_AUTHOR = "LibreLex"
 
 
 @dataclass
+class AgentDeps:
+    """Everything a model turn needs besides the session and the user message.
+
+    Built once per request by the caller (``main.py`` or the dev CLI) and passed down to
+    the commands, so ``run_chat``/``run_research`` only carry what is specific to them.
+    """
+
+    llm: Any
+    tools: LegalToolsClient | None
+    doc: DocumentClient
+    registry: ToolRegistry
+    limits: LimitsConfig
+    consent: Consent
+    endpoint_host: str
+    model: str
+    zdr: bool
+
+
+@dataclass
 class TurnOutcome:
     text: str = ""
     usage: Usage = field(default_factory=Usage)
@@ -260,3 +279,14 @@ async def run_turn(
     outcome.text = "".join(streamed)
     outcome.usage = usage
     return outcome
+
+
+async def run_turn_with(
+    deps: AgentDeps, session: DocSession, user_message: str, profile: str, emit: Emit,
+    request_id: str, undo_label: str,
+) -> TurnOutcome:
+    """``run_turn`` with its dependencies bundled in an ``AgentDeps`` (spec §6.4)."""
+    return await run_turn(
+        session, user_message, profile, deps.llm, deps.tools, deps.doc, deps.registry, emit,
+        request_id, deps.limits, deps.consent, deps.endpoint_host, deps.model, deps.zdr,
+        undo_label)
