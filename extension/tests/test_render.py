@@ -153,3 +153,11 @@ def test_render_usage_consent_and_notes():
         "llm_config", "llm.model non impostato", "/cfg/config.toml"
     ).splitlines()
     assert error_lines[1].startswith("Configura la sezione [llm]")
+
+
+def test_render_usage_shows_session_total_and_cost_together():
+    """Fix round 1, finding 1: sessione and costo are independent, not if/elif."""
+    assert render_usage(
+        {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.0123},
+        {"input_tokens": 1000, "output_tokens": 500},
+    ) == "Turno: 10 + 5 token · sessione: 1.500 token · costo: $0.01"

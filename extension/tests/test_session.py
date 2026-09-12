@@ -578,3 +578,26 @@ def test_research_and_llm_config_error_hint():
     assert "/cfg/config.toml" in view.lines[-1]
     s.research("usucapione")
     assert bridges[0].sent[-1]["args"] == {"question": "usucapione"}
+
+
+def test_final_cancelled_after_streaming_still_shows_notes_and_usage():
+    """Fix round 1, finding 2: a streamed turn stays on the streamed path even when
+
+    cancelled=True — blank line, notes (including "[annullato]"), then set_usage — instead of
+    falling back to the plain "Annullato." line reserved for a turn with no streamed text.
+    """
+    s, adapter, view, bridges = make()
+    s.chat("leggi")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.2.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "parziale"}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "", "cancelled": True,
+        "usage": {"input_tokens": 30, "output_tokens": 10, "cost_usd": None},
+        "summary": {"stopped": "cancelled",
+                    "usage_totals": {"input_tokens": 30, "output_tokens": 10}}}})
+    assert "Annullato." not in view.lines
+    assert "[annullato]" in view.lines
+    assert view.usage == "Turno: 30 + 10 token · sessione: 40 token"
+    assert s.transcript[-2:] == ["", "[annullato]"]

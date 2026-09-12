@@ -107,16 +107,22 @@ def _it_thousands(n: int) -> str:
 
 
 def render_usage(usage: dict | None, totals: dict | None) -> str:
+    """"Turno: <in> + <out> token · sessione: <total> token[ · costo: $<cost>]" (spec §5.1).
+
+    ``sessione`` and ``costo`` are independent: each shows whenever its own data is
+    available, so both can appear on the same line (e.g. a metered preset with running
+    session totals).
+    """
     if usage is None:
         return ""
     parts = [f"Turno: {_it_thousands(usage.get('input_tokens', 0))} + "
              f"{_it_thousands(usage.get('output_tokens', 0))} token"]
+    if totals:
+        total = totals.get("input_tokens", 0) + totals.get("output_tokens", 0)
+        parts.append(f"sessione: {_it_thousands(total)} token")
     cost = usage.get("cost_usd")
     if cost is not None:
         parts.append(f"costo: ${cost:.2f}")
-    elif totals:
-        total = totals.get("input_tokens", 0) + totals.get("output_tokens", 0)
-        parts.append(f"sessione: {_it_thousands(total)} token")
     return " · ".join(parts)
 
 

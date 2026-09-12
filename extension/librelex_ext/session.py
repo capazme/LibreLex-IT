@@ -311,13 +311,16 @@ class Session:
         was_streamed = self._streamed
         self._flush_stream()
         summary = msg.get("summary") or {}
-        if msg.get("cancelled"):
-            self._append(msg.get("text") or "Annullato.")
-        elif was_streamed:
+        if was_streamed:
+            # A streamed chat turn always replays through this branch, cancelled or not: the
+            # cancellation shows up as a "[annullato]" note (render_turn_notes reads
+            # summary["stopped"]), not as a separate "Annullato." line.
             self._append("")
             for note in render_turn_notes(summary):
                 self._append(note)
             self.view.set_usage(render_usage(msg.get("usage"), summary.get("usage_totals")))
+        elif msg.get("cancelled"):
+            self._append(msg.get("text") or "Annullato.")
         elif "elenco" in summary or "per_verdetto" in summary:
             text, items = render_verify_summary(summary)
             self._set_citations(items)
