@@ -5,6 +5,7 @@ command: it filters and orders the three sources deterministically so the array 
 byte-stable across turns (prompt caching, spec §6.1)."""
 from __future__ import annotations
 
+import copy
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -14,6 +15,42 @@ from librelex_core.agent.profiles import PROFILES
 from librelex_core.mcp.client import ToolSpec
 
 _OVERRIDES_PATH = Path(__file__).with_name("tool_overrides.toml")
+
+# Keys of a JSON Schema object worth sending to the model; everything else (``$schema``,
+# ``title``, ``examples``, ``additionalProperties``, pydantic/fastmcp noise, ...) is dropped
+# by `compact_schema` (spec §6.2).
+_SCHEMA_KEYS = ("type", "properties", "required", "enum", "items", "default", "description")
+
+
+def compact_schema(schema: dict, max_desc: int = 120) -> dict:
+    """A deep copy of `schema` keeping only `_SCHEMA_KEYS`, applied recursively to nested
+    `properties`/`items`, with `description` truncated to `max_desc` characters at a word
+    boundary (`…`). Cuts per-turn token cost without changing the schema's shape (spec §6.2:
+    parameter schemas pass through, only bloat and verbosity are removed)."""
+    out: dict = {}
+    for key in _SCHEMA_KEYS:
+        if key not in schema:
+            continue
+        value = schema[key]
+        if key == "description" and isinstance(value, str):
+            out[key] = _truncate(value, max_desc)
+        elif key == "properties" and isinstance(value, dict):
+            out[key] = {name: compact_schema(sub, max_desc) for name, sub in value.items()}
+        elif key == "items" and isinstance(value, dict):
+            out[key] = compact_schema(value, max_desc)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _truncate(text: str, max_desc: int) -> str:
+    if len(text) <= max_desc:
+        return text
+    cut = text[:max_desc]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip() + "…"
+
 
 # The nine document actions of spec §5.3, as OpenAI tool objects. `undo_label`, `bookmark`
 # and `author` (where present) are set by the core, not exposed to the model.
@@ -133,7 +170,7 @@ class ToolRegistry:
             {"type": "function", "function": {
                 "name": n,
                 "description": concise(by_name[n], overrides),
-                "parameters": by_name[n].input_schema,
+                "parameters": compact_schema(by_name[n].input_schema),
             }}
             for n in legal_names
         ]

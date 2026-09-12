@@ -1,0 +1,518 @@
+[
+  {
+    "name": "cite_law",
+    "description": "Recupera il testo ufficiale di una norma di legge da Normattiva o EUR-Lex.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "title": "Riferimento normativo, es",
+          "description": "Riferimento normativo, es. \"art. 13 GDPR\", \"art. 2043 c.c.\", \"art. 6 D.Lgs. 231/2001\", \"art. 117 Costituzione\"."
+        },
+        "include_annotations": {
+          "type": "boolean",
+          "title": "Includi anche le annotazioni Brocardi (r",
+          "description": "Includi anche le annotazioni Brocardi (ratio legis, spiegazione, massime giurisprudenziali). Default False.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reference"
+      ]
+    }
+  },
+  {
+    "name": "cerca_giurisprudenza",
+    "description": "Ricerca full-text nelle sentenze della Cassazione su Italgiure.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Testo da cercare, 2-4 termini chiave, no",
+          "description": "Testo da cercare, 2-4 termini chiave, non frasi lunghe o riferimenti normativi completi."
+        },
+        "archivio": {
+          "type": "string",
+          "title": "\"civile\", \"penale\", o \"tutti\" (default)",
+          "description": "\"civile\", \"penale\", o \"tutti\" (default).",
+          "default": "tutti"
+        },
+        "materia": {
+          "type": "string",
+          "title": "Materia della decisione, se nota",
+          "description": "Materia della decisione, se nota.",
+          "default": ""
+        },
+        "sezione": {
+          "type": "string",
+          "title": "Sezione della Corte (1-6, L=lavoro, T=tr",
+          "description": "Sezione della Corte (1-6, L=lavoro, T=tributaria, SU=sezioni unite).",
+          "default": ""
+        },
+        "anno_da": {
+          "type": "integer",
+          "title": "Anno di inizio (incluso)",
+          "description": "Anno di inizio (incluso).",
+          "default": 0
+        },
+        "anno_a": {
+          "type": "integer",
+          "title": "Anno di fine (incluso)",
+          "description": "Anno di fine (incluso).",
+          "default": 0
+        },
+        "tipo_provvedimento": {
+          "type": "string",
+          "title": "Tipo di provvedimento (es",
+          "description": "Tipo di provvedimento (es. sentenza, ordinanza).",
+          "default": ""
+        },
+        "solo_sezioni_unite": {
+          "type": "boolean",
+          "title": "Se True, filtra solo decisioni delle Sez",
+          "description": "Se True, filtra solo decisioni delle Sezioni Unite.",
+          "default": false
+        },
+        "ordinamento": {
+          "type": "string",
+          "title": "Criterio di ordinamento dei risultati",
+          "description": "Criterio di ordinamento dei risultati.",
+          "default": "rilevanza"
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di risultati (default 5)",
+          "description": "Numero massimo di risultati (default 5).",
+          "default": 5
+        },
+        "pagina": {
+          "type": "integer",
+          "title": "Pagina dei risultati, 0-indexed",
+          "description": "Pagina dei risultati, 0-indexed.",
+          "default": 0
+        },
+        "campo": {
+          "type": "string",
+          "title": "Campo su cui cercare",
+          "description": "Campo su cui cercare.",
+          "default": "tutto"
+        },
+        "modalita": {
+          "type": "string",
+          "title": "Modalità di ricerca",
+          "description": "Modalità di ricerca.",
+          "default": "cerca"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "cerca_giurisprudenza_unificata",
+    "description": "Cerca giurisprudenza su tutte le fonti disponibili in parallelo.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Testo da cercare, es",
+          "description": "Testo da cercare, es. \"responsabilità medica\"."
+        },
+        "fonti": {
+          "type": "string",
+          "title": "Fonti da interrogare: 'tutte' (default) ",
+          "description": "Fonti da interrogare: 'tutte' (default) o lista separata da virgola.",
+          "default": "tutte"
+        },
+        "anno_da": {
+          "type": "string",
+          "title": "Anno inizio ricerca (es",
+          "description": "Anno inizio ricerca (es. \"2020\").",
+          "default": ""
+        },
+        "anno_a": {
+          "type": "string",
+          "title": "Anno fine ricerca (es",
+          "description": "Anno fine ricerca (es. \"2025\").",
+          "default": ""
+        },
+        "tipo_provvedimento": {
+          "type": "string",
+          "title": "Tipo: 'sentenza', 'ordinanza', 'decreto'",
+          "description": "Tipo: 'sentenza', 'ordinanza', 'decreto'.",
+          "default": ""
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Massimo risultati per fonte (default 5)",
+          "description": "Massimo risultati per fonte (default 5).",
+          "default": 5
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "leggi_sentenza",
+    "description": "Legge il testo completo di una specifica sentenza della Cassazione.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "numero": {
+          "type": "integer",
+          "title": "Numero della decisione (es",
+          "description": "Numero della decisione (es. 10787)."
+        },
+        "anno": {
+          "type": "integer",
+          "title": "Anno della decisione (es",
+          "description": "Anno della decisione (es. 2024)."
+        },
+        "sezione": {
+          "type": "string",
+          "title": "Sezione della Corte (opzionale)",
+          "description": "Sezione della Corte (opzionale).",
+          "default": ""
+        },
+        "archivio": {
+          "type": "string",
+          "title": "\"civile\", \"penale\", o \"tutti\" (default)",
+          "description": "\"civile\", \"penale\", o \"tutti\" (default).",
+          "default": "tutti"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "numero",
+        "anno"
+      ]
+    }
+  },
+  {
+    "name": "giurisprudenza_su_norma",
+    "description": "Trova sentenze della Cassazione che citano uno specifico articolo di legge.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "riferimento": {
+          "type": "string",
+          "title": "Riferimento normativo breve, es",
+          "description": "Riferimento normativo breve, es. \"art. 2043 c.c.\". Non aggiungere tema o parole chiave."
+        },
+        "archivio": {
+          "type": "string",
+          "title": "\"civile\", \"penale\", o \"tutti\" (default)",
+          "description": "\"civile\", \"penale\", o \"tutti\" (default).",
+          "default": "tutti"
+        },
+        "solo_sezioni_unite": {
+          "type": "boolean",
+          "title": "Se True, filtra solo decisioni delle Sez",
+          "description": "Se True, filtra solo decisioni delle Sezioni Unite.",
+          "default": false
+        },
+        "anno_da": {
+          "type": "integer",
+          "title": "Anno di inizio (incluso)",
+          "description": "Anno di inizio (incluso).",
+          "default": 0
+        },
+        "anno_a": {
+          "type": "integer",
+          "title": "Anno di fine (incluso)",
+          "description": "Anno di fine (incluso).",
+          "default": 0
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di risultati per pagina",
+          "description": "Numero massimo di risultati per pagina.",
+          "default": 5
+        },
+        "pagina": {
+          "type": "integer",
+          "title": "Pagina dei risultati, 0-indexed",
+          "description": "Pagina dei risultati, 0-indexed.",
+          "default": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "riferimento"
+      ]
+    }
+  },
+  {
+    "name": "orientamento_su_norma",
+    "description": "Mappa descrittiva degli orientamenti della Cassazione su un articolo di legge.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "riferimento": {
+          "type": "string",
+          "title": "Riferimento normativo breve, es",
+          "description": "Riferimento normativo breve, es. \"art. 2043 c.c.\"."
+        },
+        "archivio": {
+          "type": "string",
+          "title": "\"civile\", \"penale\", o \"tutti\" (default)",
+          "description": "\"civile\", \"penale\", o \"tutti\" (default).",
+          "default": "tutti"
+        },
+        "anno_da": {
+          "type": "integer",
+          "title": "Anno minimo delle decisioni successive (",
+          "description": "Anno minimo delle decisioni successive (0 = nessun filtro).",
+          "default": 0
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di decisioni successive a",
+          "description": "Numero massimo di decisioni successive analizzate.",
+          "default": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "riferimento"
+      ]
+    }
+  },
+  {
+    "name": "cerca_giurisprudenza_amministrativa",
+    "description": "Cerca sentenze e provvedimenti di TAR e Consiglio di Stato.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Testo da cercare, es",
+          "description": "Testo da cercare, es. \"appalto pubblico esclusione\"."
+        },
+        "sede": {
+          "type": "string",
+          "title": "Filtra per sede giudiziaria amministrati",
+          "description": "Filtra per sede giudiziaria amministrativa (es. \"consiglio_di_stato\", \"tar_lazio\", \"tar_lombardia\"). Il portale della giustizia amministrativa organizza i provvedimenti per sede e ogni sede ha un proprio archivio, quindi indicare la sede corretta riduce sensibilmente il numero di falsi positivi nella ricerca full-text. Valori disponibili, con il nome ufficiale della sede fra parentesi: \"consiglio_di_stato\" (Consiglio di Stato); \"cgars\" (Consiglio di Giustizia Amministrativa per la Regione Siciliana); \"tar_lazio\" (TAR Lazio, sede di Roma); \"tar_lazio_latina\" (TAR Lazio, sezione staccata di Latina); \"tar_lombardia\" (TAR Lombardia, sede di Milano); \"tar_lombardia_brescia\" (TAR Lombardia, sezione staccata di Brescia); \"tar_campania_napoli\" (TAR Campania, sede di Napoli); \"tar_campania_salerno\" (TAR Campania, sezione staccata di Salerno); \"tar_veneto\" (TAR Veneto, sede di Venezia); \"tar_piemonte\" (TAR Piemonte, sede di Torino); \"tar_emilia_romagna\" (TAR Emilia-Romagna, sede di Bologna); \"tar_emilia_romagna_parma\" (TAR Emilia-Romagna, sezione staccata di Parma); \"tar_toscana\" (TAR Toscana, sede di Firenze); \"tar_puglia_bari\" (TAR Puglia, sede di Bari); \"tar_puglia_lecce\" (TAR Puglia, sezione staccata di Lecce); \"tar_sicilia_palermo\" (TAR Sicilia, sede di Palermo); \"tar_sicilia_catania\" (TAR Sicilia, sezione staccata di Catania); \"tar_calabria_catanzaro\" (TAR Calabria, sede di Catanzaro); \"tar_calabria_reggio\" (TAR Calabria, sezione staccata di Reggio Calabria); \"tar_liguria\" (TAR Liguria, sede di Genova); \"tar_sardegna\" (TAR Sardegna, sede di Cagliari); \"tar_friuli\" (TAR Friuli-Venezia Giulia, sede di Trieste); \"tar_marche\" (TAR Marche, sede di Ancona); \"tar_abruzzo_laquila\" (TAR Abruzzo, sede de L'Aquila); \"tar_abruzzo_pescara\" (TAR Abruzzo, sezione staccata di Pescara); \"tar_umbria\" (TAR Umbria, sede di Perugia); \"tar_molise\" (TAR Molise, sede di Campobasso); \"tar_basilicata\" (TAR Basilicata, sede di Potenza); \"tar_trentino_trento\" (TAR Trentino-Alto Adige, sede di Trento); \"tar_trentino_bolzano\" (TAR Trentino-Alto Adige, sezione autonoma di Bolzano); \"tar_valle_aosta\" (TAR Valle d'Aosta, sede di Aosta). Se il chiamante non conosce la sede esatta, può omettere il parametro: la ricerca allora interroga tutte le sedi in sequenza, con un costo maggiore in termini di tempo di risposta, oppure restringere con `tipo`, `anno` o `numero` per compensare l'assenza del filtro di sede. Sono accettati anche alcuni alias storici (es. \"TARLAZ\" per tar_lazio, \"CDS\" per consiglio_di_stato) mantenuti per compatibilità con client meno recenti, ma l'uso delle chiavi estese elencate sopra è raccomandato per chiarezza.",
+          "default": ""
+        },
+        "tipo": {
+          "type": "string",
+          "title": "Filtra per tipo (sentenza, ordinanza, de",
+          "description": "Filtra per tipo (sentenza, ordinanza, decreto, parere, adunanza_plenaria, adunanza_generale).",
+          "default": ""
+        },
+        "anno": {
+          "type": "string",
+          "title": "Anno del provvedimento (es",
+          "description": "Anno del provvedimento (es. \"2024\").",
+          "default": ""
+        },
+        "numero": {
+          "type": "string",
+          "title": "Numero del provvedimento (es",
+          "description": "Numero del provvedimento (es. \"1234\").",
+          "default": ""
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di risultati (default 10,",
+          "description": "Numero massimo di risultati (default 10, max 50).",
+          "default": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "leggi_provvedimento_amm",
+    "description": "Legge il testo completo di un provvedimento amministrativo (TAR/CdS).",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "sede": {
+          "type": "string",
+          "title": "Codice sede restituito dalla ricerca (es",
+          "description": "Codice sede restituito dalla ricerca (es. \"cds\", \"tar_rm\")."
+        },
+        "nrg": {
+          "type": "string",
+          "title": "Numero registro generale del ricorso",
+          "description": "Numero registro generale del ricorso."
+        },
+        "nome_file": {
+          "type": "string",
+          "title": "Nome file sul sottodominio mdp",
+          "description": "Nome file sul sottodominio mdp."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sede",
+        "nrg",
+        "nome_file"
+      ]
+    }
+  },
+  {
+    "name": "cerca_giurisprudenza_cgue",
+    "description": "Cerca sentenze e decisioni della Corte di Giustizia UE.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Keywords da cercare nei titoli italiani,",
+          "description": "Keywords da cercare nei titoli italiani, virgola-separate."
+        },
+        "corte": {
+          "type": "string",
+          "title": "Filtra per corte (corte_di_giustizia, tr",
+          "description": "Filtra per corte (corte_di_giustizia, tribunale).",
+          "default": ""
+        },
+        "tipo_documento": {
+          "type": "string",
+          "title": "Filtra per tipo (sentenza, ordinanza, co",
+          "description": "Filtra per tipo (sentenza, ordinanza, conclusioni_ag).",
+          "default": ""
+        },
+        "anno_da": {
+          "type": "string",
+          "title": "Anno di inizio in formato YYYY",
+          "description": "Anno di inizio in formato YYYY.",
+          "default": ""
+        },
+        "anno_a": {
+          "type": "string",
+          "title": "Anno di fine in formato YYYY",
+          "description": "Anno di fine in formato YYYY.",
+          "default": ""
+        },
+        "materia": {
+          "type": "string",
+          "title": "Filtra per materia predefinita (iva, con",
+          "description": "Filtra per materia predefinita (iva, concorrenza, ambiente...).",
+          "default": ""
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di risultati (default 10,",
+          "description": "Numero massimo di risultati (default 10, max 50).",
+          "default": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "leggi_sentenza_cgue",
+    "description": "Legge il testo completo di una sentenza CGUE tramite CELLAR URI.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "cellar_uri": {
+          "type": "string",
+          "title": "CELLAR URI riportato nei risultati della",
+          "description": "CELLAR URI riportato nei risultati della ricerca."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cellar_uri"
+      ]
+    }
+  },
+  {
+    "name": "cerca_pronuncia_costituzionale",
+    "description": "Cerca sentenze e ordinanze della Corte Costituzionale.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Parole chiave da cercare nel testo, virg",
+          "description": "Parole chiave da cercare nel testo, virgola-separate."
+        },
+        "tipo": {
+          "type": "string",
+          "title": "Filtra per tipo (\"sentenza\" o \"ordinanza",
+          "description": "Filtra per tipo (\"sentenza\" o \"ordinanza\").",
+          "default": ""
+        },
+        "anno_da": {
+          "type": "integer",
+          "title": "Anno di inizio (0 = solo anno corrente)",
+          "description": "Anno di inizio (0 = solo anno corrente).",
+          "default": 0
+        },
+        "anno_a": {
+          "type": "integer",
+          "title": "Anno di fine (0 = come anno_da)",
+          "description": "Anno di fine (0 = come anno_da).",
+          "default": 0
+        },
+        "max_risultati": {
+          "type": "integer",
+          "title": "Numero massimo di risultati (default 10,",
+          "description": "Numero massimo di risultati (default 10, max 50).",
+          "default": 10
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "leggi_pronuncia_costituzionale",
+    "description": "Legge il testo completo di una pronuncia della Corte Costituzionale.",
+    "input_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "numero": {
+          "type": "integer",
+          "title": "Numero della pronuncia",
+          "description": "Numero della pronuncia."
+        },
+        "anno": {
+          "type": "integer",
+          "title": "Anno della pronuncia",
+          "description": "Anno della pronuncia."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "numero",
+        "anno"
+      ]
+    }
+  }
+]
