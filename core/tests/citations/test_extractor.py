@@ -66,3 +66,11 @@ def test_judgment_fields_are_exposed_on_the_unified_citation():
     assert (sent.number, sent.year, sent.section) == ("123", "2021", "lav.")
     norm = [c for c in cits if c.kind == "norma"][0]
     assert (norm.number, norm.year, norm.section) == (None, None, None)
+
+
+def test_a_judgment_span_never_becomes_the_act_context_of_the_articles_that_follow():
+    # "Corte cost. n. 1/2020" is a judgment; the norm pass must not read "cost. n. 1/2020"
+    # as the Costituzione and hand it to the bare articles that follow (task 4 finding 2).
+    paras = [P(0, "Vedi Corte cost. n. 1/2020 e art. 5."), P(1, "Anche l'art. 6 rileva.")]
+    assert [(c.kind, c.canonical) for c in extract_all(paras)] == [
+        ("sentenza", "Corte cost. n. 1/2020"), ("norma", None), ("norma", None)]

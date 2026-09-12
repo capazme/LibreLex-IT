@@ -12,6 +12,7 @@ over stdio with the extension, talks MCP to mcp-legal-it, runs the citation pipe
     uv run librelex-dev check-mcp
     uv run librelex-dev verify path/to/atto.txt     # blank-line separated paragraphs
     uv run librelex-dev insert-norm "art. 2043 c.c."
+    uv run librelex-dev chat "riassumi l'atto" --file path/to/atto.txt   # needs [llm]
 
 Configuration: `~/Library/Application Support/LibreLex/config.toml` on macOS
 (see the spec, Appendix D); `LIBRELEX_CONFIG` overrides the path.

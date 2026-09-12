@@ -25,17 +25,31 @@ class Citation:
     section: str | None = None
 
 
+def _mask(text: str, spans: list[tuple[int, int]]) -> str:
+    """Blank the given spans, offsets preserved."""
+    if not spans:
+        return text
+    chars = list(text)
+    for a, b in spans:
+        for i in range(a, b):
+            chars[i] = " "
+    return "".join(chars)
+
+
 def extract_all(paragraphs: list[Paragraph]) -> list[Citation]:
     out: list[Citation] = []
     context: NormContext | None = None
     for para in paragraphs:
-        norms = extract_norms(para.text, context=context)
         judgments = extract_judgments(para.text)
-        taken = [(j.start, j.end) for j in judgments]
+        # The judgment spans are blanked before the norm pass: a court citation is not an
+        # act, so what looks like one inside it ("Corte cost. n. 1/2020") must neither be
+        # emitted as a norm nor become the act context of the bare articles that follow
+        # (task 4 review finding 2; before this, "... Corte cost. n. 1/2020 e art. 5."
+        # yielded "art. 5 Cost.").
+        masked = _mask(para.text, [(j.start, j.end) for j in judgments])
+        norms = extract_norms(masked, context=context)
         items: list[Citation] = []
         for n in norms:
-            if any(a < n.end and n.start < b for a, b in taken):
-                continue
             items.append(Citation("norma", para.id, n.start, n.end, n.display_text, n.canonical(),
                                   verifiable=n.canonical() is not None))
         for j in judgments:

@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from fastmcp import Client
@@ -31,6 +32,13 @@ ALLOWLIST: frozenset[str] = frozenset({
     "parcella_avvocato_civile", "termini_processuali_civili", "scadenza_processuale",
     "calcolo_tempo_trascorso",
 })
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    input_schema: dict
 
 
 class ToolError(Exception):
@@ -90,6 +98,8 @@ class LegalToolsClient:
         self._client: Client | None = None
         self.server_version: str = ""
         self.contract_checked: bool = False
+        self._specs: list[ToolSpec] | None = None
+        self._initial_tools: Iterable[Any] | None = None
 
     @classmethod
     def from_config(cls, cfg: McpConfig, timeout_s: float = 60.0) -> LegalToolsClient:
@@ -124,6 +134,7 @@ class LegalToolsClient:
         except Exception:
             tools = None
         self.contract_checked = tools is not None
+        self._initial_tools = tools
         if tools is not None:
             compatible = has_json_contract(tools)
             reason = "contract"
@@ -156,3 +167,16 @@ class LegalToolsClient:
         if isinstance(result.data, str):
             return result.data
         return "".join(getattr(c, "text", "") for c in result.content)
+
+    async def tool_specs(self) -> list[ToolSpec]:
+        """Allowlisted tool definitions from the server, sorted by name, fetched once."""
+        if self._specs is None:
+            if self._client is None:
+                raise RuntimeError("LegalToolsClient used outside 'async with'")
+            tools = self._initial_tools
+            if tools is None:
+                tools = await self._client.list_tools()
+            self._specs = sorted(
+                (ToolSpec(t.name, t.description or "", dict(t.inputSchema or {}))
+                 for t in tools if t.name in ALLOWLIST), key=lambda s: s.name)
+        return self._specs

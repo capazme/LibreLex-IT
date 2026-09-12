@@ -24,10 +24,41 @@ class _Section(BaseModel):
 
 class LLMConfig(_Section):
     preset: Literal["cliproxyapi", "openrouter", "ollama", "custom"] = "openrouter"
-    base_url: str = "https://openrouter.ai/api/v1"
+    base_url: str = ""
     api_key: str = ""
     model: str = ""
     zero_data_retention: bool = True
+
+
+LLM_PRESET_URLS = {"openrouter": "https://openrouter.ai/api/v1",
+                   "cliproxyapi": "http://127.0.0.1:8317/v1", "ollama": "http://localhost:11434/v1"}
+OPENROUTER_HEADERS = {"HTTP-Referer": "https://github.com/capazme/LibreLex-IT",
+                      "X-Title": "LibreLex-IT"}
+
+
+class Endpoint(BaseModel):
+    base_url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    extra_body: dict = Field(default_factory=dict)
+    host: str = ""
+
+
+def resolve_llm_endpoint(cfg: LLMConfig) -> Endpoint:
+    base_url = cfg.base_url or LLM_PRESET_URLS.get(cfg.preset, "")
+    if not base_url:
+        raise ConfigError("llm.base_url is required for preset = \"custom\"")
+    u = urlparse(base_url)
+    local = u.hostname in ("localhost", "127.0.0.1", "::1")
+    if u.scheme != "https" and not local:
+        raise ConfigError("llm.base_url must use https:// (http:// is allowed only for localhost)")
+    headers: dict[str, str] = {}
+    extra: dict = {}
+    if cfg.preset == "openrouter":
+        headers = dict(OPENROUTER_HEADERS)
+        extra = {"usage": {"include": True}}
+        if cfg.zero_data_retention:
+            extra = {"provider": {"data_collection": "deny"}, **extra}
+    return Endpoint(base_url=base_url, headers=headers, extra_body=extra, host=u.hostname or "")
 
 
 class McpConfig(_Section):
@@ -57,7 +88,7 @@ class DocumentConfig(_Section):
 
 class LimitsConfig(_Section):
     max_iterations: int = 12
-    turn_timeout_s: int = 180
+    turn_timeout_s: float = 180   # float so tests (and impatient users) can set sub-second turns
     tool_timeout_s: int = 60
     session_token_ceiling: int = 400_000
 

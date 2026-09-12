@@ -58,3 +58,14 @@ def test_list_and_show_text_subcommands(tmp_path, capsys):
     assert out.startswith("Cass. n. 12345/2024") and "Massima:" in out and "Fonte: Italgiure" in out
     assert main(["show-text", "TAR Lazio n. 1/2023"], tools_factory=_factory()) == 1
     assert "non disponibile" in capsys.readouterr().err
+
+
+def test_chat_subcommand_streams_and_summarises(tmp_path, capsys):
+    from tests.fakes import ScriptedLLM, text_turn
+    f = tmp_path / "atto.txt"
+    f.write_text("Testo.", encoding="utf-8")
+    llm = ScriptedLLM([text_turn("Risposta.")])
+    assert main(["chat", "ciao", "--file", str(f)], tools_factory=_factory(),
+                llm_factory=lambda cfg: llm) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Risposta.") and "token" in out
