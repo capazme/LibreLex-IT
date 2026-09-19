@@ -1,0 +1,79 @@
+# Tag vX.Y.Z on main -> tests -> build the .oxt -> GitHub Release with the .oxt, its sha256
+# and the CHANGELOG section as notes. No third-party release action: `gh` ships on the runner.
+name: release
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.13
+
+      - name: Check that the tag matches the extension version
+        run: |
+          set -e
+          ver=$(python3 - <<'PY'
+          import pathlib, re
+          init = pathlib.Path("extension/librelex_ext/__init__.py").read_text()
+          print(re.search(r'^__version__ = "([^"]+)"', init, re.M).group(1))
+          PY
+          )
+          if [ "v$ver" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match extension version $ver"
+            exit 1
+          fi
+          grep -q "^## \[$ver\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no '## [$ver]' section"; exit 1; }
+
+      - name: Test the core
+        working-directory: core
+        run: |
+          uv sync --locked --python 3.13
+          uv run ruff check .
+          uv run pytest -q
+
+      - name: Test the extension
+        working-directory: extension
+        run: |
+          uv sync --locked --python 3.13
+          uv run ruff check .
+          uv run pytest -q -m "not headless"
+
+      - name: Build the .oxt
+        run: python3 scripts/build_oxt.py --out dist
+
+      - name: Write the release notes from CHANGELOG.md
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v ver="$ver" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" ver "]") == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "## Install"
+            echo
+            echo "Download \`LibreLex-IT-$ver.oxt\`, quit LibreOffice, then Tools > Extension Manager > Add…"
+            echo "(or \`scripts/dev_install.sh\` from a checkout). LibreOffice 26.2+ and [uv](https://docs.astral.sh/uv/) are required."
+            echo
+            echo '```'
+            cat dist/*.sha256
+            echo '```'
+          } >> notes.md
+          cat notes.md
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.oxt dist/*.sha256 \
+            --verify-tag \
+            --title "LibreLex-IT $GITHUB_REF_NAME" \
+            --notes-file notes.md
