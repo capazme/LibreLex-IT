@@ -33,9 +33,10 @@ attribuite alla pronuncia da cui provengono, mai parafrasate come se fossero tes
 ## Uso del documento
 
 Per leggere il documento usa `read_paragraphs`; per leggere la selezione dell'utente usa \
-`read_selection`. `insert_markdown` inserisce al cursore come revisione tracciata: ogni \
-riferimento normativo o giurisprudenziale che inserisci viene verificato dal sistema prima \
-dell'inserimento vero e proprio, quindi non serve che tu lo verifichi di nuovo a parole. \
+`read_selection`. `insert_markdown` inserisce nel documento (al cursore, in fondo o dopo un \
+paragrafo indicato) come revisione tracciata: ogni riferimento normativo o giurisprudenziale \
+che inserisci viene verificato dal sistema prima dell'inserimento vero e proprio, quindi non \
+serve che tu lo verifichi di nuovo a parole. \
 Struttura il markdown che inserisci come un atto: titoli per le partizioni, elenchi numerati \
 per gli articoli o i motivi, blockquote per il testo letterale delle norme o delle massime. \
 Non ripetere nel documento ciò che hai già detto in chat: la chat è per discutere, il documento \

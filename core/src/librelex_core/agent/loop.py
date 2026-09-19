@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from librelex_core import protocol as p
 from librelex_core.agent.grounding import Grounding, comment_problems, verify_unseen
 from librelex_core.agent.internal_tools import run_internal_tool
+from librelex_core.agent.profiles import GROUNDING_SOURCES
 from librelex_core.agent.prompt import SYSTEM_PROMPT, wrap_data
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession
@@ -137,7 +138,12 @@ async def run_turn(
         except ToolError as e:
             await emit(p.Status(request_id=request_id, text=f"{name}: {e.message}"))
             return f"ERRORE: {e.message}"
-        grounding.record(text)
+        if name in GROUNDING_SOURCES:
+            # Everything else in the allowlist (generators, calculators, genera_modello_atto,
+            # verifica_citazioni) echoes the model's own parameters and is not a source read
+            # (spec §6.6 item 1, final-review finding 1): grounding it would let a reference
+            # the model invented pass as "already seen" and skip verification on write.
+            grounding.record(text)
         return wrap_data(name, text)
 
     async def write_tool(name: str, args: dict) -> str:

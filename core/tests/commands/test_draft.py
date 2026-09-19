@@ -23,7 +23,8 @@ def test_draft_prompt_carries_the_message_and_the_procedure():
     assert text.startswith("Redazione guidata da modello.")
     assert "Messaggio dell'utente: decreto ingiuntivo per fattura n. 12/2025 di 12.000 euro" in text
     for needle in ("genera_modello_atto", "read_paragraphs", "insert_markdown",
-                   'where="end"', "cite_law", "fermati", "parentesi quadre"):
+                   'where="end"', "cite_law", "fermati", "parentesi quadre",
+                   "già inserito", "dati già noti"):
         assert needle in text, needle
     assert PROFILE == "draft" and UNDO_LABEL == "LibreLex: redazione da modello"
 
@@ -113,3 +114,32 @@ async def test_second_turn_generates_computes_and_inserts_section_by_section():
                          for m in llm.calls[1][0] if m.get("role") == "tool"
                          and "decreto_ingiuntivo" in m["content"]))
     assert payload["giudice_competente"] == "Tribunale"
+
+
+async def test_generator_echo_does_not_ground_a_reference_the_model_invented():
+    """Finding 1 (final-review fix wave): decreto_ingiuntivo echoes its free-text parameters
+    verbatim into "bozza" (spec §6.6 item 1). A reference the model made up and passed as a
+    parameter must not come back "already seen": it still has to be verified, and flagged,
+    like any reference the model writes on insert."""
+    server, calls = make_fake_legal_server(
+        verdicts={"Cass. n. 99999/2024": ("inesistente", "nessuna decisione")})
+    doc = FakeDocument([""])
+    events = []
+
+    async def emit(m):
+        events.append(m)
+
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("decreto_ingiuntivo",
+                       {"creditore": "Alfa S.r.l. (cfr. Cass. n. 99999/2024)",
+                        "debitore": "Beta S.p.A.", "importo": 12000.0})),
+            tool_turn(("insert_markdown", {"where": "end", "markdown":
+                       "Come da Cass. n. 99999/2024, si chiede..."})),
+            text_turn("Inserito.")])
+        session = DocSession("d1")
+        out = await run_draft(session, "decreto ingiuntivo",
+                              await _deps(llm, doc, tools), emit, "r1")
+    assert calls["verifica"] == [["Cass. n. 99999/2024"]]
+    assert out.flagged == ["Cass. n. 99999/2024"]
+    assert len(doc.comments) == 1

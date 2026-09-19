@@ -17,6 +17,13 @@ CASE_LAW = ("cerca_giurisprudenza", "cerca_giurisprudenza_unificata", "leggi_sen
             "cerca_giurisprudenza_amministrativa", "leggi_provvedimento_amm",
             "cerca_giurisprudenza_cgue", "leggi_sentenza_cgue",
             "cerca_pronuncia_costituzionale", "leggi_pronuncia_costituzionale")
+NORM_SOURCES = ("cite_law", "fetch_act_index", "fetch_full_act", "cerca_brocardi")
+# Grounding (spec §6.6 item 1) may only come from tools that *read a source*: the norm
+# readers and the case-law tools. Everything else in the allowlist (genera_modello_atto,
+# lista_categorie_atti, the act generators, the calculators, verifica_citazioni) echoes the
+# model's own parameters back in its result, so treating that echo as grounded would let the
+# model insert a reference it invented itself without triggering verification on write.
+GROUNDING_SOURCES: frozenset[str] = frozenset(NORM_SOURCES + CASE_LAW)
 ALL_DOCUMENT = ("get_document_info", "read_selection", "read_paragraphs", "find_text",
                 "insert_markdown", "replace_selection", "add_comment", "goto")
 

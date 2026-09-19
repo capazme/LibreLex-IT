@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from librelex_core.agent.internal_tools import INTERNAL_TOOLS, run_internal_tool
-from librelex_core.agent.profiles import CALCULATORS, GENERATORS, PROFILES
+from librelex_core.agent.profiles import (
+    CALCULATORS,
+    CASE_LAW,
+    GENERATORS,
+    GROUNDING_SOURCES,
+    NORM_SOURCES,
+    PROFILES,
+)
 from librelex_core.agent.registry import (
     DOCUMENT_TOOLS,
     ToolRegistry,
@@ -39,6 +46,15 @@ def test_profiles_match_spec_6_3():
     assert set(PROFILES["draft"].legal) <= ALLOWLIST
     assert PROFILES["draft"].document == ("read_paragraphs", "insert_markdown")
     assert PROFILES["review"].document == ("read_selection", "replace_selection", "add_comment")
+
+
+def test_grounding_sources_are_exactly_the_source_reading_tools():
+    """Finding 1 (final-review fix wave): grounding may only come from tools that read a
+    source, not from tools that echo the model's own parameters (spec §6.6 item 1)."""
+    assert NORM_SOURCES == ("cite_law", "fetch_act_index", "fetch_full_act", "cerca_brocardi")
+    assert GROUNDING_SOURCES == frozenset(NORM_SOURCES + CASE_LAW)
+    assert len(GROUNDING_SOURCES) == 15
+    assert GROUNDING_SOURCES <= ALLOWLIST
 
 
 def test_overrides_cover_the_allowlist_and_are_concise():
