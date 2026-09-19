@@ -207,6 +207,8 @@ class Session:
         if missing:
             self.view.set_status(f"Compila i campi obbligatori: {', '.join(missing)}")
             return
+        if self._refuse_if_busy():
+            return
         self.draft_view["fields"], self.draft_view["notes"] = fields, notes
         self.draft_view["started"] = True
         self._draft_request = True
@@ -218,6 +220,8 @@ class Session:
         if not self.draft_view["questions"]:
             self.view.set_status("Nessuna domanda in sospeso")
             return
+        if self._refuse_if_busy():
+            return
         self._draft_request = True
         self.run_command("draft", {"action": "answer", "answers": answers},
                          label=f"Tu: risposte a {len(answers)} domande")
@@ -226,9 +230,23 @@ class Session:
         if not self.draft_view["started"]:
             self.view.set_status("Nessuna redazione in corso")
             return
+        if self._refuse_if_busy():
+            return
         self._draft_request = True
         self.run_command("draft", {"action": "continue", "message": message.strip()},
                          label=f"Tu: continua{': ' + message if message else ''}")
+
+    def _refuse_if_busy(self) -> bool:
+        """Pre-check used by the draft methods, which mutate draft_view/_draft_request only
+
+        once they know the request will actually be queued or sent: without this, a busy
+        refusal from _submit (unchanged, checked again there) would leave the Redazione panel
+        claiming a drafting that was never sent to the core.
+        """
+        if self.state == "busy":
+            self.view.set_status("Richiesta in corso: attendi o premi Annulla")
+            return True
+        return False
 
     def goto_partition(self, index: int) -> None:
         partitions = self.draft_view["partitions"]
@@ -252,8 +270,7 @@ class Session:
 
     def _submit(self, name: str | None, payload_factory: Callable[[str], dict],
                label: str | None = None) -> None:
-        if self.state == "busy":
-            self.view.set_status("Richiesta in corso: attendi o premi Annulla")
+        if self._refuse_if_busy():
             return
         if self.state == "starting":
             self.pending, self.pending_label = payload_factory, label
@@ -438,8 +455,7 @@ class Session:
         elif "campi" in summary and "routing" in summary:
             self.draft_view["template"] = summary
             self.view.set_template(summary)
-            view = {**self.draft_view, "busy": self._draft_request}
-            self.view.set_draft_status(render_draft_status(view), False)
+            self.view.set_draft_status(render_draft_status(self._status_view()), False)
             self._append(render_template_notes(summary))
         elif "riferimento" in summary and not isinstance(summary.get("riferimento"), str):
             # A dict-or-None value is the new set_reference final; a plain string is the
@@ -566,8 +582,11 @@ class Session:
             self._refresh_draft_status()
 
     def _refresh_draft_status(self) -> None:
-        view = {**self.draft_view, "busy": self._draft_request}
-        self.view.set_draft_status(render_draft_status(view), self.draft_view["started"])
+        self.view.set_draft_status(render_draft_status(self._status_view()),
+                                   self.draft_view["started"])
+
+    def _status_view(self) -> dict:
+        return {**self.draft_view, "busy": self._draft_request}
 
     def _clear_pending_consent(self) -> None:
         if self.pending_consent is not None:

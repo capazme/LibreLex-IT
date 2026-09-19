@@ -7,6 +7,7 @@ import pytest
 
 from librelex_ext import PROTOCOL_VERSION, DocumentActionError
 from librelex_ext.bridge import BridgeError
+from librelex_ext.render import render_draft_status
 from librelex_ext.session import Session, dispatch_doc_call
 
 
@@ -858,6 +859,56 @@ def test_draft_continue_refuses_when_nothing_started():
     s, adapter, view, bridges = make()
     s.draft_continue("qualcosa")
     assert view.status == "Nessuna redazione in corso" and not bridges
+
+
+def test_draft_start_refuses_while_busy_without_touching_the_drafting_view():
+    """Fix round 1, Important: draft_start used to set draft_view["started"] and
+
+    _draft_request before _submit had a chance to refuse a busy session, so a lawyer who
+    clicked "Avvia redazione" during an unrelated chat turn saw the Redazione panel claim a
+    drafting that was never sent to the core, stuck showing "Pronta per il prossimo passo"
+    once the unrelated turn ended instead of "Compila i campi obbligatori".
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.chat("leggi")
+    _hello(s, bridges)
+    assert s.state == "busy"
+    sent_before = list(bridges[0].sent)
+    s.draft_start("x", {}, "")
+    assert view.status == "Richiesta in corso: attendi o premi Annulla"
+    assert s.draft_view["started"] is False and s._draft_request is False
+    assert bridges[0].sent == sent_before                    # nothing new sent
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "cost_usd": None},
+        "summary": {"tool_calls": 0, "usage_totals": {"input_tokens": 1, "output_tokens": 1}}}})
+    assert render_draft_status({**s.draft_view, "busy": s._draft_request}) == (
+        "Compila i campi obbligatori")
+
+
+def test_draft_answer_refuses_while_busy_without_touching_the_drafting_view():
+    s, adapter, view, bridges = make()
+    s.draft_view["questions"] = [{"campo": "a"}]
+    s.chat("leggi")
+    _hello(s, bridges)
+    sent_before = list(bridges[0].sent)
+    s.draft_answer({"a": "b"})
+    assert view.status == "Richiesta in corso: attendi o premi Annulla"
+    assert s._draft_request is False
+    assert bridges[0].sent == sent_before
+
+
+def test_draft_continue_refuses_while_busy_without_touching_the_drafting_view():
+    s, adapter, view, bridges = make()
+    s.draft_view["started"] = True
+    s.chat("leggi")
+    _hello(s, bridges)
+    sent_before = list(bridges[0].sent)
+    s.draft_continue("qualcosa")
+    assert view.status == "Richiesta in corso: attendi o premi Annulla"
+    assert s._draft_request is False
+    assert bridges[0].sent == sent_before
 
 
 def test_reference_round_trip_and_rebind_replays_the_drafting_view():
