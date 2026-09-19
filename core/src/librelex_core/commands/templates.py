@@ -16,13 +16,17 @@ class TemplateNotFound(Exception):
 
 
 def field_type(name: str, schema: dict | None) -> str:
-    if schema:
-        t = schema.get("type")
-        types = t if isinstance(t, list) else [t]
-        if "boolean" in types:
-            return "sino"
-        if "integer" in types or "number" in types:
-            return "numero"
+    # Only a field backed by a schema (a parameter of the routing tool) gets the "data" name
+    # heuristic; a field the tool doesn't know about (no direct tool, or resource routing) is
+    # always "testo" (design §4.1: "fields without a schema are testo").
+    if schema is None:
+        return "testo"
+    t = schema.get("type")
+    types = t if isinstance(t, list) else [t]
+    if "boolean" in types:
+        return "sino"
+    if "integer" in types or "number" in types:
+        return "numero"
     return "data" if "data" in name.lower() else "testo"
 
 
