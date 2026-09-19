@@ -6,6 +6,7 @@ from librelex_ext.layout import (
     BUSY_DISABLED,
     CONSENT_BUTTONS,
     CONTROLS,
+    FIELD_ROWS,
     GAP,
     GRAY,
     KINDS,
@@ -20,11 +21,21 @@ from librelex_ext.layout import (
     total_height,
 )
 
+_FIELD_NAMES = {f"FieldLabel{n}" for n in range(1, FIELD_ROWS + 1)} | {
+    f"Field{n}" for n in range(1, FIELD_ROWS + 1)}
+_QUESTION_NAMES = {f"QuestionLabel{n}" for n in range(1, FIELD_ROWS + 1)} | {
+    f"Answer{n}" for n in range(1, FIELD_ROWS + 1)}
+
 EXPECTED = {
     "Actions": {"Notice", "DocumentLabel", "ListCitations", "VerifyDocument", "VerifySelection",
                 "Cancel", "ReferenceLabel", "Input", "Send", "Research", "ShowText", "InsertNorm",
-                "Draft", "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
+                "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
                 "Status", "Settings", "Usage"},
+    "Drafting": {"TemplateSearch", "TemplateRefresh", "Template", "TemplateNotes", "FieldsLabel",
+                 "NotesLabel", "Notes", "ReferenceLabel", "ReferenceBrowse", "ReferenceClear",
+                 "Start", "PartitionsLabel", "Partitions", "ResumeInput", "Resume",
+                 "DraftStatus"} | _FIELD_NAMES,
+    "Questions": {"QuestionsHint", "Continue", "QuestionsStatus"} | _QUESTION_NAMES,
     "Citations": {"CitationsHint", "Citations"},
     "Answers": {"Clear", "Transcript"},
 }
@@ -51,10 +62,18 @@ def test_each_kind_fits_its_width_without_overlaps(kind, width):
 
 
 def test_kinds_partition_the_controls_and_actions():
-    all_names = [c.name for k in KINDS for c in build_all(WIDTH)[k]]
-    assert len(all_names) == len(set(all_names))
-    assert set(ACTIONS) <= set(all_names) and set(BUSY_DISABLED) <= set(EXPECTED["Actions"])
-    assert set(TOOLTIPS) <= set(all_names)
+    # Names are unique within each panel (also checked per-kind by _no_overlap below); across
+    # panels a name may repeat when it names an unrelated control in a different deck window,
+    # as "ReferenceLabel" does for Actions (the free-text reference field) versus Drafting (the
+    # reference-act status line).
+    for k in KINDS:
+        names = [c.name for c in build_all(WIDTH)[k]]
+        assert len(names) == len(set(names))
+    all_names = {c.name for k in KINDS for c in build_all(WIDTH)[k]}
+    # BUSY_DISABLED now spans several panels (Drafting/Questions controls disabled while the
+    # core is busy too), so its invariant is "every name is a real control", same as ACTIONS.
+    assert set(ACTIONS) <= all_names and set(BUSY_DISABLED) <= all_names
+    assert set(TOOLTIPS) <= all_names
     assert set(CONTROLS) == set(KINDS)
     with pytest.raises(ValueError):
         build("Chat", WIDTH)
@@ -120,14 +139,45 @@ def test_new_buttons_are_wired_and_only_the_right_ones_are_busy_disabled():
         assert name in TOOLTIPS
 
 
-def test_draft_button_is_a_full_width_row_between_the_reference_buttons_and_the_consent():
-    width = WIDTH
-    by = {c.name: c for c in build("Actions", width)}
-    draft = by["Draft"]
-    assert draft.kind == "Button" and draft.props["Label"] == "Redigi da modello"
-    assert draft.x == MARGIN and draft.w == width - 2 * MARGIN
-    assert draft.y == by["ShowText"].y + by["ShowText"].h + GAP
-    assert by["ConsentText"].y == draft.y + draft.h + GAP
-    assert ACTIONS["Draft"] == "draft" and "Draft" in BUSY_DISABLED
-    assert TOOLTIPS["Draft"].startswith("Redige l'atto indicato qui sopra")
-    assert TOOLTIPS["Draft"].endswith("per rispondere alle domande del modello")
+def test_drafting_panel_rows_and_hidden_blocks():
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    assert by["TemplateSearch"].y == by["TemplateRefresh"].y
+    assert by["TemplateRefresh"].x + by["TemplateRefresh"].w == WIDTH - MARGIN
+    assert by["Template"].props["Dropdown"] is True and by["Template"].props["LineCount"] == 12
+    for n in range(1, FIELD_ROWS + 1):
+        label, edit = by[f"FieldLabel{n}"], by[f"Field{n}"]
+        assert label.y == edit.y and label.x == MARGIN and edit.x == label.x + label.w + GAP
+        assert edit.x + edit.w == WIDTH - MARGIN
+        assert label.props["Visible"] is False and edit.props["Visible"] is False
+    assert by["Field1"].y > by["FieldsLabel"].y and by["Notes"].props["MultiLine"] is True
+    assert by["ReferenceBrowse"].y == by["ReferenceClear"].y
+    assert by["ReferenceClear"].props["Enabled"] is False and by["Start"].props["Enabled"] is False
+    assert by["Partitions"].props["Dropdown"] is False
+    assert by["ResumeInput"].props["Visible"] is False and by["Resume"].props["Visible"] is False
+    assert by["DraftStatus"].props["Label"] == "Scegli un atto"
+    order = [c.name for c in build("Drafting", WIDTH)]
+    assert (order.index("Start") < order.index("PartitionsLabel") < order.index("Resume")
+            < order.index("DraftStatus"))
+    assert total_height(build("Drafting", WIDTH)) <= 460
+
+
+def test_questions_panel_rows_hidden_until_needed():
+    by = {c.name: c for c in build("Questions", WIDTH)}
+    for n in range(1, FIELD_ROWS + 1):
+        label, edit = by[f"QuestionLabel{n}"], by[f"Answer{n}"]
+        assert label.props["MultiLine"] is True and edit.y == label.y + label.h + GAP
+        assert label.props["Visible"] is False and edit.props["Visible"] is False
+    assert by["Continue"].props["Visible"] is False
+    assert by["QuestionsStatus"].props["Label"] == "Nessuna domanda in sospeso"
+    assert total_height(build("Questions", WIDTH)) <= 380
+
+
+def test_actions_lost_the_draft_button_and_the_new_actions_are_wired():
+    names = {c.name for c in build("Actions", WIDTH)}
+    assert "Draft" not in names and "Draft" not in ACTIONS and "Draft" not in TOOLTIPS
+    for name, command in (("TemplateRefresh", "template_search"),
+                          ("ReferenceBrowse", "reference_browse"),
+                          ("ReferenceClear", "reference_clear"), ("Start", "draft_start"),
+                          ("Resume", "draft_resume"), ("Continue", "draft_answer")):
+        assert ACTIONS[name] == command and name in BUSY_DISABLED and name in TOOLTIPS
+    assert KINDS == ("Actions", "Drafting", "Questions", "Citations", "Answers")

@@ -6,7 +6,10 @@ from librelex_ext.layout import KINDS
 
 ROUTES = {"append": "Answers", "set_transcript": "Answers", "append_stream": "Answers",
           "set_status": "Actions", "set_busy": "Actions", "set_progress": "Actions",
-          "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations"}
+          "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations",
+          "set_templates": "Drafting", "set_template": "Drafting", "set_reference": "Drafting",
+          "set_partitions": "Drafting", "set_draft_status": "Drafting",
+          "set_questions": "Questions"}
 
 
 def panel_kind(url: str) -> str:
@@ -60,3 +63,21 @@ class CompositeView:
 
     def set_consent(self, summary: dict | None) -> None:
         self._call("set_consent", summary)
+
+    def set_templates(self, labels: list[str], selected: int | None) -> None:
+        self._call("set_templates", labels, selected)
+
+    def set_template(self, info: dict | None) -> None:
+        self._call("set_template", info)
+
+    def set_reference(self, text: str, present: bool) -> None:
+        self._call("set_reference", text, present)
+
+    def set_partitions(self, labels: list[str]) -> None:
+        self._call("set_partitions", labels)
+
+    def set_draft_status(self, text: str, started: bool) -> None:
+        self._call("set_draft_status", text, started)
+
+    def set_questions(self, questions: list[dict]) -> None:
+        self._call("set_questions", questions)

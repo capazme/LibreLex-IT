@@ -1,7 +1,7 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 import pytest
 
-from librelex_ext.views import CompositeView, panel_kind
+from librelex_ext.views import ROUTES, CompositeView, panel_kind
 
 
 class Rec:
@@ -16,6 +16,8 @@ class Rec:
 
 def test_panel_kind_from_resource_url():
     assert panel_kind("private:resource/toolpanel/LibreLexPanelFactory/Answers") == "Answers"
+    assert panel_kind("private:resource/toolpanel/LibreLexPanelFactory/Drafting") == "Drafting"
+    assert panel_kind("private:resource/toolpanel/LibreLexPanelFactory/Questions") == "Questions"
     with pytest.raises(ValueError):
         panel_kind("private:resource/toolpanel/LibreLexPanelFactory/Panel")
 
@@ -40,3 +42,21 @@ def test_composite_routes_each_call_to_the_right_panel_and_tolerates_absence():
     v.detach("Answers")
     v.append("persa")
     assert answers.calls[-1] == ("set_transcript", ("tutto",))
+
+
+def test_routes_map_the_drafting_and_questions_methods():
+    for method in ("set_templates", "set_template", "set_reference", "set_partitions",
+                   "set_draft_status"):
+        assert ROUTES[method] == "Drafting"
+    assert ROUTES["set_questions"] == "Questions"
+
+
+def test_composite_routes_drafting_and_questions_calls():
+    v = CompositeView()
+    drafting, questions = Rec(), Rec()
+    v.attach("Drafting", drafting)
+    v.attach("Questions", questions)
+    v.set_template({"x": 1})
+    v.set_questions([])
+    assert drafting.calls == [("set_template", ({"x": 1},))]
+    assert questions.calls == [("set_questions", ([],))]
