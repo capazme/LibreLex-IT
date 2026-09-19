@@ -136,6 +136,16 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
             "riferimenti_normativi": ["art. 163 c.p.c."],
             "avvertenze": [],
         },
+        "precetto_ordinario": {
+            "categoria": "esecuzione",
+            "descrizione": "Atto di precetto su titolo esecutivo",
+            "routing": {"tipo": "tool_diretto", "tool": "atto_di_precetto", "parametri_fissi": {}},
+            "campi_obbligatori": ["creditore", "debitore", "titolo_esecutivo", "importo_capitale"],
+            "campi_opzionali": ["interessi", "spese"],
+            "tool_calcolo": ["interessi_legali"],
+            "riferimenti_normativi": ["art. 480 c.p.c."],
+            "avvertenze": [],
+        },
     }
 
     @server.tool()
@@ -190,6 +200,26 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
                 "bozza": (f"RICORSO PER DECRETO INGIUNTIVO\n(Artt. 633 e ss. c.p.c.)\n\n"
                           f"ILL.MO SIG. {giudice.upper()} DI [SEDE]\n\n{creditore} vanta un "
                           f"credito di Euro {importo:,.2f} nei confronti di {debitore}.")}
+
+    @server.tool()
+    async def atto_di_precetto(creditore: str, debitore: str, titolo_esecutivo: str,
+                               importo_capitale: float, interessi: float = 0,
+                               spese: float = 0) -> dict:
+        """Fake generator: an atto di precetto ex art. 480 c.p.c."""
+        calls["generatori"].append(("atto_di_precetto", creditore, debitore, importo_capitale))
+        return {
+            "testo": (f"ATTO DI PRECETTO\n\n{creditore} intima a {debitore} il pagamento di "
+                      f"Euro {importo_capitale:,.2f} in forza di {titolo_esecutivo}.\n\n"
+                      f"[Luogo], [Data]\nAvv. [LEGALE]"),
+            "totale": importo_capitale + interessi + spese,
+            "riferimento_normativo": "art. 480 c.p.c.",
+        }
+
+    @server.resource("legal://riferimenti/modelli-atti-catalogo")
+    def modelli_atti_catalogo() -> str:
+        """Fake catalogue resource: mirrors mcp-legal-it's legal:// riferimenti resources."""
+        return ("# Catalogo modelli atti (fake)\n\n"
+                "- decreto_ingiuntivo_ordinario\n- atto_di_citazione\n- precetto_ordinario\n")
 
     @server.tool()
     async def contributo_unificato(valore_causa: float, tipo_procedimento: str = "cognizione",

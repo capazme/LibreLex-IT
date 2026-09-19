@@ -146,6 +146,18 @@ async def run_turn(
             grounding.record(text)
         return wrap_data(name, text)
 
+    async def resource_tool(uri: str) -> str:
+        if not uri.startswith("legal://"):
+            return "ERRORE: URI non ammesso (solo legal://)"
+        if tools is None:
+            return NO_LEGAL_TOOLS
+        await emit(p.Status(request_id=request_id, text=f"Leggo la risorsa {uri}"))
+        try:
+            text = await tools.read_resource(uri)
+        except ToolError as e:
+            return f"ERRORE: {e.message}"
+        return wrap_data("leggi_risorsa", text)
+
     async def write_tool(name: str, args: dict) -> str:
         """Grounding on write (spec §6.6): verify, then write, then comment the problems."""
         markdown = str(args.get("markdown", ""))
@@ -247,6 +259,8 @@ async def run_turn(
                 return await legal_tool(call.name, args)
             if kind == "document":
                 return await document_tool(call.name, args)
+            if call.name == "leggi_risorsa":
+                return await resource_tool(str(args.get("uri", "")))
             try:
                 return run_internal_tool(call.name, args)
             except KeyError:            # an internal tool listed but no longer implemented

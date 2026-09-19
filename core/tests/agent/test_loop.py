@@ -292,3 +292,18 @@ async def test_an_answer_truncated_by_the_output_cap_is_reported():
     async with LegalToolsClient(server) as tools:
         outcome, _, _ = await _run(ScriptedLLM([truncated]), FakeDocument(["x"]), tools)
     assert outcome.stopped == "length" and outcome.text == "Risposta a metà"
+
+
+async def test_leggi_risorsa_reads_a_catalogue_resource_and_refuses_other_schemes():
+    server, _ = make_fake_legal_server()
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("leggi_risorsa", {"uri": "legal://riferimenti/modelli-atti-catalogo"}),
+                      ("leggi_risorsa", {"uri": "file:///etc/passwd"})),
+            text_turn("letto")])
+        outcome, events, session = await _run(llm, FakeDocument(["x"]), tools, "draft")
+    tool_msgs = [m for m in llm.calls[1][0] if m.get("role") == "tool"]
+    assert "<<<DATI: leggi_risorsa>>>" in tool_msgs[0]["content"]
+    assert "# Catalogo modelli atti (fake)" in tool_msgs[0]["content"]
+    assert tool_msgs[1]["content"] == "ERRORE: URI non ammesso (solo legal://)"
+    assert outcome.tool_calls == 2

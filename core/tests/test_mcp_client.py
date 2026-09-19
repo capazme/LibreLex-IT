@@ -15,9 +15,11 @@ from librelex_core.mcp.client import (
 from tests.conftest import make_fake_legal_server
 
 
-def test_allowlist_has_35_names():
-    assert len(ALLOWLIST) == 35 and "cite_law" in ALLOWLIST and "verifica_citazioni" in ALLOWLIST
+def test_allowlist_has_55_names():
+    assert len(ALLOWLIST) == 55 and "cite_law" in ALLOWLIST and "verifica_citazioni" in ALLOWLIST
     assert "decreto_ingiuntivo" in ALLOWLIST
+    assert "genera_dpa" in ALLOWLIST
+    assert "variazioni_istat" in ALLOWLIST
 
 
 def test_version_tuple():
@@ -154,3 +156,12 @@ async def test_tool_specs_are_allowlisted_sorted_and_cached():
         cite_law_spec = next(s for s in specs if s.name == "cite_law")
         assert "formato" in cite_law_spec.input_schema["properties"]
         assert await client.tool_specs() is specs
+
+
+async def test_read_resource_returns_the_text_and_refuses_unknown_uris():
+    server, _ = make_fake_legal_server()
+    async with LegalToolsClient(server) as client:
+        text = await client.read_resource("legal://riferimenti/modelli-atti-catalogo")
+        assert text.startswith("# Catalogo modelli atti (fake)")
+        with pytest.raises(ToolError):
+            await client.read_resource("legal://riferimenti/inesistente")

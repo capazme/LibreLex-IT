@@ -17,25 +17,40 @@ from librelex_core.config import McpConfig
 MIN_MCP_LEGAL_IT_VERSION = "2.14.0"
 CONTRACT_TOOLS = ("verifica_citazioni", "cite_law")
 
-ALLOWLIST: frozenset[str] = frozenset({
-    # norms
-    "cite_law", "fetch_act_index", "fetch_full_act", "verifica_citazioni", "cerca_brocardi",
-    # case law
+# Building blocks of ALLOWLIST. `profiles.py` imports `ALLOWLIST`, `ROUTING_GENERATORS` and
+# `CATALOGUE_CALCULATORS` from here rather than owning them: it already imports `ALLOWLIST`
+# from this module, so the reverse (this module importing from `profiles`) would be circular.
+NORMS = ("cite_law", "fetch_act_index", "fetch_full_act", "verifica_citazioni", "cerca_brocardi")
+CASE_LAW_TOOLS = (
     "cerca_giurisprudenza", "cerca_giurisprudenza_unificata", "leggi_sentenza",
     "giurisprudenza_su_norma", "orientamento_su_norma", "cerca_giurisprudenza_amministrativa",
     "leggi_provvedimento_amm", "cerca_giurisprudenza_cgue", "leggi_sentenza_cgue",
     "cerca_pronuncia_costituzionale", "leggi_pronuncia_costituzionale",
-    # act templates
-    "genera_modello_atto", "lista_categorie_atti",
-    # calculators
-    "interessi_legali", "interessi_mora", "rivalutazione_monetaria", "contributo_unificato",
-    "parcella_avvocato_civile", "termini_processuali_civili", "scadenza_processuale",
-    "calcolo_tempo_trascorso",
-    # act generators the genera_modello_atto catalogue routes to (deterministic, no network)
-    "decreto_ingiuntivo", "atto_di_precetto", "sollecito_pagamento", "procura_alle_liti",
-    "relata_notifica_pec", "attestazione_conformita", "sfratto_morosita",
-    "nota_precisazione_credito", "dichiarazione_553_cpc",
-})
+)
+TEMPLATES = ("genera_modello_atto", "lista_categorie_atti")
+# Every routing.tool of a modelli_atti.json catalogue entry (mcp-legal-it, 2026-09-19): the
+# act generators genera_modello_atto's "tool_diretto" routing can send a tipo_atto to.
+ROUTING_GENERATORS = (
+    "attestazione_conformita", "atto_di_precetto", "decreto_ingiuntivo", "dichiarazione_553_cpc",
+    "genera_dpa", "genera_dpia", "genera_informativa_cookie", "genera_informativa_dipendenti",
+    "genera_informativa_privacy", "genera_informativa_videosorveglianza",
+    "genera_notifica_data_breach", "genera_registro_trattamenti", "nota_precisazione_credito",
+    "preventivo_civile", "preventivo_stragiudiziale", "preventivo_volontaria_giurisdizione",
+    "procura_alle_liti", "relata_notifica_pec", "sfratto_morosita", "sollecito_pagamento",
+)
+# The 15 names of every tool_calcolo listed in modelli_atti.json (mcp-legal-it, 2026-09-19),
+# plus calcolo_hash and calcolo_tempo_trascorso (the two of Appendix B the catalogue does not
+# name). CALCULATORS (spec Appendix B, used by the review profile) is a subset of this tuple.
+CATALOGUE_CALCULATORS = (
+    "calcolo_hash", "calcolo_tempo_trascorso", "calcolo_valore_catastale", "compenso_ctu",
+    "conta_giorni", "contributo_unificato", "interessi_legali", "interessi_mora",
+    "parcella_avvocato_civile", "pignoramento_stipendio", "rivalutazione_monetaria",
+    "scadenza_processuale", "scadenze_impugnazioni", "spese_mediazione",
+    "termini_processuali_civili", "valutazione_data_breach", "variazioni_istat",
+)
+
+ALLOWLIST: frozenset[str] = frozenset(
+    NORMS + CASE_LAW_TOOLS + TEMPLATES + ROUTING_GENERATORS + CATALOGUE_CALCULATORS)
 
 
 @dataclass(frozen=True)
@@ -171,6 +186,20 @@ class LegalToolsClient:
         if isinstance(result.data, str):
             return result.data
         return "".join(getattr(c, "text", "") for c in result.content)
+
+    async def read_resource(self, uri: str) -> str:
+        """Text of an MCP resource of the server; failures become ToolError."""
+        if self._client is None:
+            raise RuntimeError("LegalToolsClient used outside 'async with'")
+        try:
+            contents = await self._client.read_resource(uri)
+        except Exception as e:
+            raise ToolError("leggi_risorsa", str(e)) from e
+        for item in contents:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                return text
+        raise ToolError("leggi_risorsa", f"risorsa senza testo: {uri}")
 
     async def tool_specs(self) -> list[ToolSpec]:
         """Allowlisted tool definitions from the server, sorted by name, fetched once."""

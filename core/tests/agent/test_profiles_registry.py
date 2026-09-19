@@ -8,10 +8,11 @@ from librelex_core.agent.internal_tools import INTERNAL_TOOLS, run_internal_tool
 from librelex_core.agent.profiles import (
     CALCULATORS,
     CASE_LAW,
-    GENERATORS,
+    CATALOGUE_CALCULATORS,
     GROUNDING_SOURCES,
     NORM_SOURCES,
     PROFILES,
+    ROUTING_GENERATORS,
 )
 from librelex_core.agent.registry import (
     DOCUMENT_TOOLS,
@@ -36,16 +37,39 @@ def test_profiles_match_spec_6_3():
         "cerca_pronuncia_costituzionale", "leggi_pronuncia_costituzionale", "cite_law"}
     assert PROFILES["research"].document == (
         "read_selection", "read_paragraphs", "insert_markdown")
-    assert GENERATORS == ("decreto_ingiuntivo", "atto_di_precetto", "sollecito_pagamento",
-                          "procura_alle_liti", "relata_notifica_pec", "attestazione_conformita",
-                          "sfratto_morosita", "nota_precisazione_credito", "dichiarazione_553_cpc")
     assert len(CALCULATORS) == 8
+    assert len(ROUTING_GENERATORS) == 20 and len(CATALOGUE_CALCULATORS) == 17
+    assert ROUTING_GENERATORS == tuple(sorted(ROUTING_GENERATORS))
+    assert CATALOGUE_CALCULATORS == tuple(sorted(CATALOGUE_CALCULATORS))
+    assert set(CALCULATORS) <= set(CATALOGUE_CALCULATORS)
     assert PROFILES["draft"].legal == (
         "genera_modello_atto", "lista_categorie_atti", "cite_law", "fetch_act_index",
-        "verifica_citazioni") + GENERATORS + CALCULATORS
+        "fetch_full_act", "verifica_citazioni") + ROUTING_GENERATORS + CATALOGUE_CALCULATORS
     assert set(PROFILES["draft"].legal) <= ALLOWLIST
+    assert len(ALLOWLIST) == 55
     assert PROFILES["draft"].document == ("read_paragraphs", "insert_markdown")
     assert PROFILES["review"].document == ("read_selection", "replace_selection", "add_comment")
+
+
+# Every routing tool and every tool_calcolo of modelli_atti.json (mcp-legal-it, 2026-09-19).
+CATALOGUE_ROUTING_TOOLS = {
+    "attestazione_conformita", "atto_di_precetto", "decreto_ingiuntivo", "dichiarazione_553_cpc",
+    "genera_dpa", "genera_dpia", "genera_informativa_cookie", "genera_informativa_dipendenti",
+    "genera_informativa_privacy", "genera_informativa_videosorveglianza",
+    "genera_notifica_data_breach", "genera_registro_trattamenti", "nota_precisazione_credito",
+    "preventivo_civile", "preventivo_stragiudiziale", "preventivo_volontaria_giurisdizione",
+    "procura_alle_liti", "relata_notifica_pec", "sfratto_morosita", "sollecito_pagamento"}
+CATALOGUE_TOOL_CALCOLO = {
+    "calcolo_hash", "calcolo_valore_catastale", "compenso_ctu", "conta_giorni",
+    "contributo_unificato", "interessi_legali", "interessi_mora", "parcella_avvocato_civile",
+    "pignoramento_stipendio", "rivalutazione_monetaria", "scadenza_processuale",
+    "scadenze_impugnazioni", "spese_mediazione", "valutazione_data_breach", "variazioni_istat"}
+
+
+def test_draft_profile_covers_every_tool_the_catalogue_names():
+    legal = set(PROFILES["draft"].legal)
+    assert CATALOGUE_ROUTING_TOOLS <= legal and CATALOGUE_TOOL_CALCOLO <= legal
+    assert GROUNDING_SOURCES == frozenset(NORM_SOURCES + CASE_LAW)     # unchanged by the growth
 
 
 def test_grounding_sources_are_exactly_the_source_reading_tools():
@@ -76,7 +100,7 @@ def test_registry_orders_groups_and_is_byte_stable():
     names = [t["function"]["name"] for t in reg.tools]
     assert names == ["cerca_giurisprudenza", "cite_law", "leggi_sentenza",
                      "insert_markdown", "read_paragraphs", "read_selection",
-                     "data_odierna", "estrai_citazioni"]
+                     "data_odierna", "estrai_citazioni", "leggi_risorsa"]
     assert reg.kind("cite_law") == "legal" and reg.kind("insert_markdown") == "document"
     assert reg.kind("data_odierna") == "internal"
     with pytest.raises(KeyError):
@@ -197,7 +221,9 @@ def test_research_profile_tools_array_stays_under_30k_chars():
 
 
 def test_internal_tools():
-    assert [t["function"]["name"] for t in INTERNAL_TOOLS] == ["data_odierna", "estrai_citazioni"]
+    names = [t["function"]["name"] for t in INTERNAL_TOOLS]
+    assert names == ["data_odierna", "estrai_citazioni", "leggi_risorsa"]
+    assert "leggi_risorsa" in names
     out = json.loads(run_internal_tool(
         "estrai_citazioni", {"testo": "Vedi art. 2043 c.c. e Cass. n. 1/2024."}))
     assert [c["citazione"] for c in out] == ["art. 2043 c.c.", "Cass. n. 1/2024"]
