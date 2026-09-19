@@ -12,7 +12,9 @@ from typing import Any, Protocol
 
 from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__
 from librelex_ext.bridge import BridgeError
+from librelex_ext.layout import FIELD_ROWS  # pure table module: no UNO import here
 from librelex_ext.render import (
+    render_base_error,
     render_draft_status,
     render_error,
     render_insert_summary,
@@ -49,6 +51,8 @@ class View(Protocol):
     def set_partitions(self, labels: list[str]) -> None: ...
     def set_draft_status(self, text: str, started: bool) -> None: ...
     def set_questions(self, questions: list[dict]) -> None: ...
+    def set_field_values(self, fields: dict, notes: str) -> None: ...
+    def set_answer_values(self, answers: dict) -> None: ...
 
 
 class NullView:
@@ -67,6 +71,8 @@ class NullView:
     def set_partitions(self, labels: list[str]) -> None: ...
     def set_draft_status(self, text: str, started: bool) -> None: ...
     def set_questions(self, questions: list[dict]) -> None: ...
+    def set_field_values(self, fields: dict, notes: str) -> None: ...
+    def set_answer_values(self, answers: dict) -> None: ...
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
@@ -113,15 +119,30 @@ class Session:
         self.pending_label: str | None = None
         self.request_id: str | None = None
         # Guided drafting (spec §6): the state behind the Redazione and Domande panels.
+        # ``fields``/``notes``/``answers_draft`` are what the lawyer typed and has not sent
+        # yet: it is state like the rest (design §6.2), kept here so a panel rebuilt by a
+        # deck switch gets it back through ``replay_drafting``.
         self.draft_view: dict = {
             "templates": [], "query": None, "template": None, "fields": {}, "notes": "",
-            "reference": None, "questions": [], "partitions": [], "open_placeholders": [],
-            "started": False, "done": False, "stopped": None,
+            "answers_draft": {}, "reference": None, "questions": [], "partitions": [],
+            "open_placeholders": [], "started": False, "done": False, "stopped": None,
+            "base_errore": None,
         }
         # True while a draft (start/answer/continue) request is queued or in flight: drives
         # the "Redazione in corso…" status independently of draft_view["started"], which
         # tracks the guided flow itself rather than a single request.
         self._draft_request = False
+        # The id of the in-flight `draft` start request, so an error that kills it can undo
+        # the "started" the panel committed to (a start is the one draft request whose
+        # failure means no drafting ever began). ``_draft_start_pending`` covers the window
+        # where the start is queued behind the hello and has no id yet: ``_send_payload``
+        # assigns it one request later.
+        self._draft_start_request_id: str | None = None
+        self._draft_start_pending = False
+        # Whether the reference act the lawyer chose was cut by MAX_REFERENCE_CHARS before
+        # it was sent: the core only ever sees the trimmed text, so its own `troncato` says
+        # nothing about this cut (I2).
+        self._reference_truncated = False
         self.pending_consent: tuple[str, str] | None = None
         # what a rebuilt Azioni panel has to be told again (it is created empty): the summary
         # of the consent the core is still waiting on, and the usage line of the last turn
@@ -142,20 +163,36 @@ class Session:
         self.view, self.ui_post = view, ui_post
         view.set_transcript("\n".join(self.transcript))
         view.set_citations([label for label, _, _ in self.citations])
-        view.set_templates(self._template_labels(), None)
-        view.set_template(self.draft_view["template"])
-        view.set_reference(render_reference(self.draft_view["reference"]),
-                           bool(self.draft_view["reference"]))
-        view.set_partitions(render_partitions(self.draft_view["partitions"],
-                                              self.draft_view["open_placeholders"]))
-        self._refresh_draft_status()
-        view.set_questions(self.draft_view["questions"])
+        self.replay_drafting(view)
         self._set_busy(self.state in ("starting", "busy"))
         view.set_consent(self.consent_summary)
         view.set_usage(self.usage_text)
         buffered, self._buffer = self._buffer, []
         for ev in buffered:
             ui_post(ev)
+
+    def replay_drafting(self, view: View) -> None:
+        """Show ``view`` the whole guided-drafting state the session kept (spec §5.1).
+
+        The one replay path: ``bind`` calls it for a freshly bound view, and a Redazione or
+        Domande panel rebuilt on its own (deck switch, collapse and expand) calls it for
+        itself. The eight calls are the six that describe the drafting plus the two that
+        give back what the lawyer had typed and not sent; each panel ignores the calls whose
+        controls belong to the other one, so both kinds can go through the same method.
+
+        ``set_field_values`` must follow ``set_template`` and ``set_answer_values`` must
+        follow ``set_questions``: those two clear the rows (another act, other values) and
+        decide which names the rows carry, so the stored values are written back after them.
+        """
+        draft = self.draft_view
+        view.set_templates(self._template_labels(), None)
+        view.set_template(draft["template"])
+        view.set_field_values(draft["fields"], draft["notes"])
+        view.set_reference(render_reference(draft["reference"]), bool(draft["reference"]))
+        view.set_partitions(render_partitions(draft["partitions"], draft["open_placeholders"]))
+        view.set_draft_status(render_draft_status(self._status_view()), draft["started"])
+        view.set_questions(draft["questions"])
+        view.set_answer_values(draft["answers_draft"])
 
     def unbind(self) -> None:
         self.view = NullView()
@@ -193,21 +230,31 @@ class Session:
         self.run_command("template_info", {"tipo_atto": tipo_atto})
 
     def set_reference(self, name: str, text: str) -> None:
-        """Forward a reference file to the core; the panel already read it from disk."""
+        """Forward a reference file to the core; the panel already read it from disk.
+
+        Whether the text was cut here is remembered: the core sees only what it was sent, so
+        its own ``troncato`` cannot report this cut (I2).
+        """
+        self._reference_truncated = len(text) > MAX_REFERENCE_CHARS
         self.run_command("set_reference", {"name": name, "text": text[:MAX_REFERENCE_CHARS]})
 
     def clear_reference(self) -> None:
+        self._reference_truncated = False
         self.run_command("set_reference", {"text": ""})
 
     def draft_start(self, tipo_atto: str, fields: dict[str, str], notes: str) -> None:
         if not tipo_atto:
-            self.view.set_status("Scegli prima un tipo di atto")
+            self._refuse_draft("Scegli prima un tipo di atto")
             return
         template = self.draft_view.get("template") or {}
-        missing = [c["nome"] for c in template.get("campi", [])
+        # Only the fields the Redazione panel actually offers (its first FIELD_ROWS rows)
+        # are validated: a template with more mandatory fields than rows would otherwise
+        # dead-end on data the lawyer was never shown. The model asks for the rest through
+        # ``chiedi_dati``, and the panel names them in its notes line.
+        missing = [c["nome"] for c in template.get("campi", [])[:FIELD_ROWS]
                   if c.get("obbligatorio") and not (fields.get(c["nome"]) or "").strip()]
         if missing:
-            self.view.set_status(f"Compila i campi obbligatori: {', '.join(missing)}")
+            self._refuse_draft(f"Compila i campi obbligatori: {', '.join(missing)}")
             return
         # draft_view/_draft_request are mutated only once the request is actually queued or
         # sent (run_command's return value): any refusal (busy, the core failing to start,
@@ -218,6 +265,11 @@ class Session:
                          "notes": notes},
                 label=f"Tu: avvio redazione {tipo_atto} ({len(fields)} campi)"):
             return
+        # The id the core will answer for: _on_error undoes the "started" below when this
+        # very request fails (M5). A start queued behind the hello has no id yet, and
+        # _send_payload fills it in when the hello is answered.
+        self._draft_start_request_id = self.request_id
+        self._draft_start_pending = self.request_id is None
         self.draft_view["fields"], self.draft_view["notes"] = fields, notes
         self.draft_view["started"] = True
         self._draft_request = True
@@ -225,17 +277,19 @@ class Session:
 
     def draft_answer(self, answers: dict[str, str]) -> None:
         if not self.draft_view["questions"]:
-            self.view.set_status("Nessuna domanda in sospeso")
+            self._refuse_draft("Nessuna domanda in sospeso")
             return
         if not self.run_command("draft", {"action": "answer", "answers": answers},
                                 label=f"Tu: risposte a {len(answers)} domande"):
             return
+        # the answers are on their way: the Domande panel starts a fresh round (I5)
+        self.draft_view["answers_draft"] = {}
         self._draft_request = True
         self._refresh_draft_status()
 
     def draft_continue(self, message: str = "") -> None:
         if not self.draft_view["started"]:
-            self.view.set_status("Nessuna redazione in corso")
+            self._refuse_draft("Nessuna redazione in corso")
             return
         if not self.run_command(
                 "draft", {"action": "continue", "message": message.strip()},
@@ -350,6 +404,7 @@ class Session:
         self.pending_label = None
         self.request_id = None
         self._draft_request = False
+        self._forget_draft_start()
 
     # --- events from the core (UI thread) -----------------------------------
     def handle_event(self, ev: dict) -> None:
@@ -359,7 +414,10 @@ class Session:
             self.bridge = None
             self.state, self.pending, self.pending_label, self.request_id = (
                 "stopped", None, None, None)
-            self._draft_request = False
+            was_draft, self._draft_request = self._draft_request, False
+            self._forget_draft_start()
+            if was_draft:      # same as _on_error: no drafting is running any more
+                self._refresh_draft_status()
             self._flush_stream()
             self._clear_pending_consent()
             self._set_busy(False)
@@ -395,7 +453,13 @@ class Session:
         if self.pending is not None:
             payload_factory, label = self.pending, self.pending_label
             self.pending = self.pending_label = None
-            self._send_payload(payload_factory, label)
+            queued_draft = self._draft_request
+            if not self._send_payload(payload_factory, label) and queued_draft:
+                # The draft request was taken while the core was still starting, so the
+                # Redazione panel already shows it as under way; this first write after the
+                # hello found a dead pipe, and no final, error or exit will ever follow to
+                # clear it (M4).
+                self._abandon_draft_request()
         else:
             self._set_busy(False)
 
@@ -442,6 +506,7 @@ class Session:
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
         self._draft_request = False
+        self._forget_draft_start()          # the start was answered: nothing left to undo
         self._set_busy(False)
         self.view.set_progress(0, None)
         self.view.set_status("Pronto")
@@ -456,14 +521,25 @@ class Session:
             self._append(msg["text"])
         elif "campi" in summary and "routing" in summary:
             self.draft_view["template"] = summary
+            # Another act, other fields: the panel's ``set_template`` clears the field rows,
+            # and the stored copy goes with them, so a rebuild after this never puts the
+            # previous template's values into the new template's rows (I5). The notes box is
+            # free text about the case, not about the act: the panel keeps it (browsing the
+            # catalogue fires a template_info on every selection), and so does the session.
+            self.draft_view["fields"] = {}
             self.view.set_template(summary)
-            self.view.set_draft_status(render_draft_status(self._status_view()), False)
+            # The status keeps the drafting's own "started": looking at another template
+            # mid-drafting must not hide "Continua la redazione" (I4).
+            self._refresh_draft_status()
             self._append(render_template_notes(summary))
         elif "riferimento" in summary and not isinstance(summary.get("riferimento"), str):
             # A dict-or-None value is the new set_reference final; a plain string is the
             # older insert_norm final, which also happens to use the "riferimento" key and
             # is handled further down, unchanged.
             ref = summary["riferimento"]
+            if ref:
+                # the core reports only its own truncation; ours happened before the send
+                ref = {**ref, "troncato": bool(ref.get("troncato") or self._reference_truncated)}
             self.draft_view["reference"] = ref
             self.view.set_reference(render_reference(ref), bool(ref))
             self._append(msg["text"])
@@ -508,8 +584,9 @@ class Session:
     def _merge_draft_turn(self, summary: dict) -> None:
         """A draft turn's Final (start/answer/continue, cancelled or not): update draft_view
 
-        and the Redazione/Domande panels. ``base_errore`` (wire contract addition) overrides
-        the computed status with the base-generation failure, when the core reports one.
+        and the Redazione/Domande panels. ``base_errore`` (wire contract addition) is stored
+        like the rest of the state, so the status line it produces survives a panel rebuild
+        (``render_draft_status`` reads it from the view).
         """
         self.draft_view["questions"] = summary.get("domande") or []
         self.draft_view["partitions"] = summary.get("partizioni") or []
@@ -517,29 +594,42 @@ class Session:
         self.draft_view["done"] = summary.get("completata", False)
         self.draft_view["started"] = True
         self.draft_view["stopped"] = summary.get("stopped")
+        self.draft_view["base_errore"] = summary.get("base_errore")
+        # the panel's set_questions empties the answer rows of the previous round: the
+        # stored copy a rebuild would replay goes with them (I5)
+        self.draft_view["answers_draft"] = {}
         self.view.set_questions(self.draft_view["questions"])
+        self.view.set_answer_values({})
         self.view.set_partitions(render_partitions(self.draft_view["partitions"],
                                                     self.draft_view["open_placeholders"]))
-        base_errore = summary.get("base_errore")
-        if base_errore:
-            status = f"Base non generata: {base_errore}"
-            self.view.set_draft_status(status, True)
-            self._append(status)
-        else:
-            self._refresh_draft_status()
+        self._refresh_draft_status()
+        if self.draft_view["base_errore"]:
+            self._append(render_base_error(self.draft_view["base_errore"]))
         if self.draft_view["done"] and summary.get("riepilogo"):
             self._append(render_riepilogo(summary["riepilogo"]))
 
     def _on_error(self, msg: dict) -> None:
+        # A start that fails is a drafting that never began: nothing was inserted, no turn
+        # can be continued, so the "started" the panel committed to has to go (M5).
+        failed_start = (self._draft_start_request_id is not None
+                        and msg.get("request_id") in (self._draft_start_request_id, None))
+        was_draft = False
         if self.state == "busy" and msg.get("request_id") in (self.request_id, None):
             self.state, self.request_id = "ready", None
-            self._draft_request = False
+            was_draft, self._draft_request = self._draft_request, False
             self._set_busy(False)
             self.view.set_status("Pronto")
         self.view.set_progress(0, None)
         self._flush_stream()
         self._clear_pending_consent()
         self._append(render_error(msg.get("code", "?"), msg.get("message", ""), self.config_path))
+        if failed_start:
+            self._forget_draft_start()
+            self._abandon_draft_request()
+        elif was_draft:
+            # the turn is over, however badly: the Redazione line must stop claiming that a
+            # drafting is running (only _set_busy(True) refreshes it, and this is the way out)
+            self._refresh_draft_status()
 
     # --- helpers -------------------------------------------------------------
     def _send(self, msg: dict) -> bool:
@@ -576,6 +666,8 @@ class Session:
         if not self._send(payload_factory(request_id)):
             return False
         self.request_id = request_id
+        if self._draft_start_pending:       # a start queued behind the hello: this is its id
+            self._draft_start_request_id, self._draft_start_pending = request_id, False
         self.state = "busy"
         self._set_busy(True)
         self.view.set_status("Invio della richiesta...")
@@ -593,6 +685,30 @@ class Session:
         self.view.set_busy(busy)
         if busy and self._draft_request:
             self._refresh_draft_status()
+
+    def _refuse_draft(self, message: str) -> None:
+        """Refuse a drafting action: the reason belongs next to the button that was pressed.
+
+        The Azioni status line alone is not enough (M3): Redazione and Domande are panels of
+        their own, and the lawyer who pressed "Avvia redazione" may not even have Azioni open.
+        """
+        self.view.set_status(message)
+        self.view.set_draft_status(message, self.draft_view["started"])
+
+    def _abandon_draft_request(self) -> None:
+        """Undo a draft request the core will never answer (M4, M5).
+
+        ``started`` is dropped only while the document holds no partition: once the core has
+        inserted something, the drafting is real whatever happened to this one request, and
+        "Continua la redazione" is the way back into it.
+        """
+        self._draft_request = False
+        if not self.draft_view["partitions"]:
+            self.draft_view["started"] = False
+        self._refresh_draft_status()
+
+    def _forget_draft_start(self) -> None:
+        self._draft_start_request_id, self._draft_start_pending = None, False
 
     def _refresh_draft_status(self) -> None:
         self.view.set_draft_status(render_draft_status(self._status_view()),

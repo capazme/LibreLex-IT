@@ -98,6 +98,7 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
             self.templates, self.template = ([], None), None
             self.reference, self.partitions, self.questions = ["", False], [], []
             self.draft_status = ["", False]
+            self.field_values, self.answer_values = [{{}}, ""], {{}}
         def append(self, t): self.lines.append(t)
         def set_transcript(self, t): pass
         def set_status(self, t): self.status.append(t)
@@ -116,6 +117,8 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         def set_partitions(self, labels): self.partitions = list(labels)
         def set_draft_status(self, text, started): self.draft_status = [text, started]
         def set_questions(self, questions): self.questions = list(questions)
+        def set_field_values(self, fields, notes): self.field_values = [dict(fields), notes]
+        def set_answer_values(self, answers): self.answer_values = dict(answers)
 
     def pump(session, view, events, until_state="ready", timeout=300):
         """Drive the session to `until_state`, granting consent once when it is asked."""

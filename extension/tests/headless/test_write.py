@@ -205,3 +205,39 @@ def test_replace_text_ignores_a_deletion_that_crosses_a_paragraph_boundary(soffi
     assert out["fresh"]["count"] == 1
     body = [t for _, t in out["texts"]]
     assert "Y" in body[-1] and body[-1].startswith("Terzo")
+
+
+def test_find_text_skips_text_under_a_pending_deletion(soffice):
+    """I1: a pending `Delete` redline is not live text for any caller, find_text included.
+
+    The core's open-placeholder rescan calls find_text: on a base the lawyer has accepted
+    (recording off, so the base counts as ordinary text and its replacement records a real
+    deletion) a filled "[SEDE]" would otherwise stay "open" forever, because the old text is
+    only struck through, not removed, until the change is accepted.
+    """
+    out = run_probe(soffice, "find_text_deleted", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "ILL.MO TRIBUNALE DI [SEDE].", False)
+        out["record_before"] = doc.RecordChanges       # off: the base counts as accepted
+        a = DocumentAdapter(ctx, doc)
+        out["open_before"] = a.find_text("[SEDE]")
+        out["replaced"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test")
+        out["redlines"] = redlines(doc)
+        out["paragraph"] = paragraph_texts(text)[0][1]
+        out["open_after"] = a.find_text("[SEDE]")
+        out["filled"] = a.find_text("MILANO")
+        out["in_paragraph"] = a.find_text("[SEDE]", "p:0")
+        doc.close(True)
+    ''')
+    assert out["record_before"] is False
+    assert len(out["open_before"]) == 1 and out["replaced"]["count"] == 1
+    # the deletion is real (the base was accepted text) and its text is still in getString
+    assert sorted(k for k, _ in out["redlines"]) == ["Delete", "Insert"]
+    assert "[SEDE]" in out["paragraph"]
+    assert out["open_after"] == []                     # struck through: no longer live text
+    assert out["in_paragraph"] == []                   # same with an explicit paragraph_id
+    assert len(out["filled"]) == 1
+    assert out["filled"][0]["anchor"]["paragraph_id"] == "p:0"

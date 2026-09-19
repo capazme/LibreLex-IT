@@ -50,6 +50,8 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
         def set_partitions(self, labels): pass
         def set_draft_status(self, text, started): pass
         def set_questions(self, questions): pass
+        def set_field_values(self, fields, notes): pass
+        def set_answer_values(self, answers): pass
         def set_consent(self, summary): self.consent = summary
 
     def pump(session, events, until_state="ready", timeout=180):

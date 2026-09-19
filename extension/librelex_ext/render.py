@@ -170,10 +170,18 @@ _TYPE_HINTS = {"numero": "numero", "data": "data", "sino": "sì/no"}
 
 
 def render_template_notes(info: dict) -> str:
-    """The routing line shown after a template is chosen: which base the core will use."""
+    """The routing line shown after a template is chosen: which base the core will use.
+
+    A routing that names a tool but carries no tool name falls back to the generic line: the
+    core composes from the model alone, and "Base deterministica: None" would name a
+    generator that does not exist.
+    """
     routing = info.get("routing") or {}
+    tool = routing.get("tool")
     template = _ROUTING_LABELS.get(routing.get("tipo"), "Composizione dal modello")
-    text = template.format(tool=routing.get("tool"))
+    if "{tool}" in template and not tool:
+        template = "Composizione dal modello"
+    text = template.format(tool=tool)
     avvertenze = info.get("avvertenze") or []
     if avvertenze:
         text += " · " + "; ".join(avvertenze)
@@ -196,10 +204,18 @@ def render_partitions(partizioni: list[dict], open_placeholders: list[str]) -> l
     return labels
 
 
+def render_base_error(message: str) -> str:
+    """The status (and transcript) line of a base the core could not generate."""
+    return f"Base non generata: {message}"
+
+
 def render_draft_status(view: dict) -> str:
     """The "DraftStatus" line: one state machine over template/started/busy/questions/done.
 
-    ``view`` is ``{**session.draft_view, "busy": session._draft_request}``.
+    ``view`` is ``{**session.draft_view, "busy": session._draft_request}``. ``base_errore``
+    is read from the view rather than pushed once by the turn that reported it, so a rebuilt
+    panel is told again; a turn that later produced a base clears it (the core sends the key
+    on every draft final), and a completed drafting never shows it.
     """
     if not view.get("template"):
         return "Scegli un atto"
@@ -207,6 +223,8 @@ def render_draft_status(view: dict) -> str:
         return "Compila i campi obbligatori"
     if view.get("busy"):
         return "Redazione in corso…"
+    if view.get("base_errore") and not view.get("done"):
+        return render_base_error(view["base_errore"])
     if view.get("questions"):
         return "In attesa delle tue risposte (pannello Domande)"
     if view.get("done"):

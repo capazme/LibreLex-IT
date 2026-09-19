@@ -236,18 +236,41 @@ class DocumentAdapter:
             out.append(e.as_dict())
         return out
 
+    def _live_hits(self, query: str, paragraph_id: str | None,
+                   first_paragraph_only: bool = False) -> list[tuple[Entry, list[int]]]:
+        """Offsets of every *live* `query` occurrence, grouped by paragraph, in document order.
+
+        Shared by `find_text` and `replace_text`: text covered by a pending `Delete` redline
+        is not live text for any caller (the core's open-placeholder rescan and the verify
+        pipeline's comment anchoring included), because `para.getString()` still returns it
+        until the change is accepted (see `_deleted_spans`). A hit overlapping one of its
+        paragraph's deleted spans is therefore skipped. The spans are computed once per call.
+        `first_paragraph_only` stops at the first paragraph with a hit (replace_text's
+        `all=False`); an unknown `paragraph_id` raises as `_entry` does.
+        """
+        entries = [self._entry(paragraph_id)] if paragraph_id else self._index()
+        deleted = self._deleted_spans()
+        groups: list[tuple[Entry, list[int]]] = []
+        for e in entries:
+            text, pos, hits = e.para.getString(), 0, []
+            spans = deleted.get(e.id, [])
+            while (pos := text.find(query, pos)) != -1:
+                end = pos + len(query)
+                if not any(pos < d_end and end > d_start for d_start, d_end in spans):
+                    hits.append(pos)
+                pos = end
+            if hits:
+                groups.append((e, hits))
+                if first_paragraph_only:
+                    break
+        return groups
+
     def find_text(self, query: str, paragraph_id=None) -> list[dict]:
         if not query:
             return []
-        entries = [self._entry(paragraph_id)] if paragraph_id else self._index()
-        out = []
-        for e in entries:
-            text, pos = e.para.getString(), 0
-            while (pos := text.find(query, pos)) != -1:
-                out.append({"anchor": {"paragraph_id": e.id, "start": pos,
-                                       "end": pos + len(query)}, "text": query})
-                pos += len(query)
-        return out
+        return [{"anchor": {"paragraph_id": e.id, "start": pos, "end": pos + len(query)},
+                 "text": query}
+                for e, hits in self._live_hits(query, paragraph_id) for pos in hits]
 
     def goto(self, paragraph_id: str) -> None:
         entry = self._entry(paragraph_id)
@@ -446,7 +469,8 @@ class DocumentAdapter:
         redline (it is only struck through, not removed, until the change is accepted), so
         a later `replace_text` call scanning the same paragraph would re-match text an
         earlier call had already replaced. Matches that fall inside one of these spans are
-        excluded from the scan in `replace_text`.
+        excluded from the scan of `_live_hits`, which both `find_text` and `replace_text` go
+        through.
 
         A `Delete` redline can cross a paragraph boundary (e.g. `replace_selection` over a
         multi-paragraph selection, still deleted-but-visible the same way): `RedlineStart`
@@ -462,9 +486,11 @@ class DocumentAdapter:
         the whole index again (`_entry_at`); fine for realistic documents.
         """
         spans: dict[str, list[tuple[int, int]]] = {}
+        enum = self.doc.Redlines.createEnumeration()
+        if not enum.hasMoreElements():
+            return spans       # no tracked change at all: skip the index walk entirely
         entries = self._index()
         by_id = {en.id: i for i, en in enumerate(entries)}
-        enum = self.doc.Redlines.createEnumeration()
         while enum.hasMoreElements():
             r = enum.nextElement()
             if r.RedlineType != "Delete":
@@ -494,9 +520,9 @@ class DocumentAdapter:
                      paragraph_id: str | None = None, all: bool = False) -> dict:
         """Replace one or every occurrence of `query` as a tracked deletion plus insertion.
 
-        Occurrences are located first, exactly as `find_text` does (through the index and
-        `para.getString().find`), grouped by paragraph, and skipping any match that falls
-        inside a pre-existing `Delete` redline (see `_deleted_spans`); each paragraph's own
+        Occurrences are located first, exactly as `find_text` does (both go through
+        `_live_hits`: the index, `para.getString().find`, and the same skipping of any match
+        that falls inside a pre-existing `Delete` redline); each paragraph's own
         hits are then replaced from the last offset to the first, so the offsets already
         computed for the earlier hits of that paragraph stay valid while the later ones are
         rewritten. `all=False` (the default) replaces only the first occurrence found, in
@@ -513,21 +539,7 @@ class DocumentAdapter:
         """
         if not query:
             return {"count": 0, "anchors": []}
-        entries = [self._entry(paragraph_id)] if paragraph_id else self._index()
-        deleted = self._deleted_spans()
-        groups: list[tuple[Entry, list[int]]] = []
-        for e in entries:
-            text, pos, hits = e.para.getString(), 0, []
-            spans = deleted.get(e.id, [])
-            while (pos := text.find(query, pos)) != -1:
-                end = pos + len(query)
-                if not any(pos < d_end and end > d_start for d_start, d_end in spans):
-                    hits.append(pos)
-                pos = end
-            if hits:
-                groups.append((e, hits))
-                if not all:
-                    break
+        groups = self._live_hits(query, paragraph_id, first_paragraph_only=not all)
         if not all and groups:
             groups = [(groups[0][0], groups[0][1][:1])]
         if not groups:
@@ -657,12 +669,19 @@ def read_reference(ctx, url: str) -> dict:
     through LibreOffice's own filters, and return its body/footnote/table-cell text (design
     §5.2). The document is loaded invisibly (`Hidden`) and never edited (`ReadOnly`), and is
     always closed before this function returns, whether the read succeeded or not.
+
+    The file comes from outside the lawyer's own work (a client's act, an attachment), so it
+    is loaded with its macros disabled and its links left alone: `MacroExecutionMode` 0 is
+    `com.sun.star.document.MacroExecMode.NEVER_EXECUTE` and `UpdateDocMode` 0 is
+    `com.sun.star.document.UpdateDocMode.NO_UPDATE` (no linked section, DDE field or database
+    lookup is refreshed while we read it).
     """
     name = unquote(url.rsplit("/", 1)[-1])
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     try:
         model = desktop.loadComponentFromURL(
-            url, "_blank", 0, (prop("Hidden", True), prop("ReadOnly", True)))
+            url, "_blank", 0, (prop("Hidden", True), prop("ReadOnly", True),
+                               prop("MacroExecutionMode", 0), prop("UpdateDocMode", 0)))
     except Exception as e:
         raise DocumentActionError(f"impossibile aprire il file: {name}") from e
     if model is None:

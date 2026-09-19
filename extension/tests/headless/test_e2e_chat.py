@@ -70,6 +70,8 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
         def set_partitions(self, labels): pass
         def set_draft_status(self, text, started): pass
         def set_questions(self, questions): pass
+        def set_field_values(self, fields, notes): pass
+        def set_answer_values(self, answers): pass
         def set_consent(self, summary):
             self.consent = summary
             if summary is not None:

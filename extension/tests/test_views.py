@@ -63,9 +63,10 @@ def test_set_busy_reaches_every_attached_panel():
 
 def test_routes_map_the_drafting_and_questions_methods():
     for method in ("set_templates", "set_template", "set_reference", "set_partitions",
-                   "set_draft_status"):
+                   "set_draft_status", "set_field_values"):
         assert ROUTES[method] == "Drafting"
-    assert ROUTES["set_questions"] == "Questions"
+    for method in ("set_questions", "set_answer_values"):
+        assert ROUTES[method] == "Questions"
 
 
 def test_composite_routes_drafting_and_questions_calls():
@@ -75,5 +76,10 @@ def test_composite_routes_drafting_and_questions_calls():
     v.attach("Questions", questions)
     v.set_template({"x": 1})
     v.set_questions([])
-    assert drafting.calls == [("set_template", ({"x": 1},))]
-    assert questions.calls == [("set_questions", ([],))]
+    # I5: what the lawyer typed is state, and it travels to its own panel like the rest
+    v.set_field_values({"creditore": "Alfa"}, "note")
+    v.set_answer_values({"sede": "Milano"})
+    assert drafting.calls == [("set_template", ({"x": 1},)),
+                              ("set_field_values", ({"creditore": "Alfa"}, "note"))]
+    assert questions.calls == [("set_questions", ([],)),
+                               ("set_answer_values", ({"sede": "Milano"},))]

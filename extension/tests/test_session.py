@@ -7,8 +7,9 @@ import pytest
 
 from librelex_ext import PROTOCOL_VERSION, DocumentActionError
 from librelex_ext.bridge import BridgeError
+from librelex_ext.layout import FIELD_ROWS
 from librelex_ext.render import render_draft_status
-from librelex_ext.session import Session, dispatch_doc_call
+from librelex_ext.session import MAX_REFERENCE_CHARS, Session, dispatch_doc_call
 
 
 def load_document_module():
@@ -116,6 +117,7 @@ class FakeView:
         self.stream, self.usage, self.consent = "", None, None
         self.templates, self.template, self.reference = None, None, None
         self.partitions, self.draft_status, self.questions = None, None, None
+        self.field_values, self.answer_values = None, None
 
     def append(self, text):
         self.lines.append(text)
@@ -161,6 +163,12 @@ class FakeView:
 
     def set_questions(self, questions):
         self.questions = questions
+
+    def set_field_values(self, fields, notes):
+        self.field_values = (fields, notes)
+
+    def set_answer_values(self, answers):
+        self.answer_values = answers
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -793,12 +801,15 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
     s, adapter, view, bridges = make()
     s.draft_start("", {}, "")
     assert view.status == "Scegli prima un tipo di atto" and not bridges
+    # M3: a refusal the lawyer reads next to the button he just pressed, not only in Azioni
+    assert view.draft_status == ("Scegli prima un tipo di atto", False)
     s.draft_view["template"] = {"tipo_atto": "x", "campi": [
         {"nome": "creditore", "tipo": "testo", "obbligatorio": True},
         {"nome": "importo", "tipo": "numero", "obbligatorio": True},
         {"nome": "note_extra", "tipo": "testo", "obbligatorio": False}]}
     s.draft_start("x", {"creditore": "Alfa", "importo": " "}, "")
     assert view.status == "Compila i campi obbligatori: importo" and not bridges
+    assert view.draft_status == ("Compila i campi obbligatori: importo", False)
     s.draft_start("x", {"creditore": "Alfa", "importo": "12000"}, "fattura 12")
     _hello(s, bridges)
     sent = bridges[0].sent[-1]
@@ -850,6 +861,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
     assert view.lines[-1] == "Riepilogo della redazione:\nCalcoli: CU 129,50."
     s.draft_answer({"x": "y"})
     assert view.status == "Nessuna domanda in sospeso"
+    assert view.draft_status == ("Nessuna domanda in sospeso", True)
     s.draft_continue("aggiungi la provvisoria esecuzione")
     assert bridges[0].sent[-1]["args"] == {"action": "continue",
                                            "message": "aggiungi la provvisoria esecuzione"}
@@ -859,6 +871,7 @@ def test_draft_continue_refuses_when_nothing_started():
     s, adapter, view, bridges = make()
     s.draft_continue("qualcosa")
     assert view.status == "Nessuna redazione in corso" and not bridges
+    assert view.draft_status == ("Nessuna redazione in corso", False)
 
 
 def test_draft_start_refuses_while_busy_without_touching_the_drafting_view():
@@ -1058,3 +1071,242 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
     status = "Base non generata: strumento decreto_ingiuntivo non disponibile"
     assert view.draft_status == (status, True)
     assert status in view.lines
+    # M6: the failure is part of the drafting state, so a rebuilt panel is told again
+    assert s.draft_view["base_errore"] == "strumento decreto_ingiuntivo non disponibile"
+    fresh = FakeView()
+    s.bind(fresh, lambda ev: None)
+    assert fresh.draft_status == (status, True)
+    # a later turn that does produce a base clears it
+    s.draft_continue("riprova")
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Fatto.",
+        "usage": {"input_tokens": 5, "output_tokens": 1, "cost_usd": None},
+        "summary": {"tool_calls": 1, "inserted": [], "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 5, "output_tokens": 1}, "tipo_atto": "x",
+                    "domande": [], "partizioni": [{"titolo": "Base", "from_id": "p:1",
+                                                   "to_id": "p:9"}],
+                    "segnaposto_aperti": [], "completata": False, "riepilogo": "",
+                    "ended_by": None}}})
+    assert s.draft_view["base_errore"] is None
+    assert fresh.draft_status == ("Pronta per il prossimo passo", True)
+
+
+def test_a_reference_the_extension_cut_is_labelled_troncato():
+    """I2: set_reference trims to MAX_REFERENCE_CHARS before sending, so the core's own
+
+    ``troncato`` is always False and the lawyer was never told that only part of the similar
+    case reached the model. The cut the extension made is OR-ed into the final's dict.
+    """
+    s, adapter, view, bridges = make()
+    s.set_reference("x.odt", "a" * (MAX_REFERENCE_CHARS + 1))
+    _hello(s, bridges)
+    assert len(bridges[0].sent[-1]["args"]["text"]) == MAX_REFERENCE_CHARS
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Atto di riferimento: x.odt.",
+        "summary": {"riferimento": {"name": "x.odt", "chars": MAX_REFERENCE_CHARS,
+                                    "troncato": False}}}})
+    assert view.reference[0].endswith(", troncato)")
+    assert s.draft_view["reference"]["troncato"] is True     # merged, so a rebuild keeps it
+    fresh = FakeView()
+    s.bind(fresh, lambda ev: None)
+    assert fresh.reference[0].endswith(", troncato)")
+    s.set_reference("y.odt", "b" * 10)                       # a short act that follows
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Atto di riferimento: y.odt.",
+        "summary": {"riferimento": {"name": "y.odt", "chars": 10, "troncato": False}}}})
+    assert fresh.reference == ("Caso simile: y.odt (10 caratteri)", True)
+    s.clear_reference()
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r3", "text": "Atto di riferimento rimosso.",
+        "summary": {"riferimento": None}}})
+    assert fresh.reference == ("Caso simile: nessuno", False)
+
+
+def test_draft_start_validates_only_the_field_rows_the_panel_offers():
+    """I3: the Redazione panel offers the first FIELD_ROWS fields of the template and names
+
+    the rest in the notes line, so validating every mandatory field dead-ended a template
+    with more of them: the lawyer could not fill what he was never shown. The model asks for
+    the missing data through ``chiedi_dati``.
+    """
+    s, adapter, view, bridges = make()
+    campi = [{"nome": f"c{n}", "tipo": "testo", "obbligatorio": True}
+             for n in range(FIELD_ROWS + 1)]
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": campi}
+    fields = {f"c{n}": "v" for n in range(FIELD_ROWS)}        # the offered rows, all filled
+    s.draft_start("x", fields, "")
+    _hello(s, bridges)
+    assert bridges[0].sent[-1]["args"]["fields"] == fields
+    assert s.draft_view["started"] is True
+    s2, _adapter2, view2, bridges2 = make()                   # an offered row left empty
+    s2.draft_view["template"] = {"tipo_atto": "x", "campi": campi}
+    s2.draft_start("x", {f"c{n}": "v" for n in range(FIELD_ROWS - 1)}, "")
+    assert view2.status == f"Compila i campi obbligatori: c{FIELD_ROWS - 1}" and not bridges2
+
+
+def test_choosing_another_template_mid_drafting_keeps_the_resume_controls():
+    """I4: the template_info final pushed started=False, which hides "Continua la redazione"
+
+    on a drafting that is still under way: looking at another act's fields must not lose the
+    only way back into the drafting. The typed values of the previous template do go.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view.update(started=True, fields={"creditore": "Alfa"}, notes="fattura 12",
+                        partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}])
+    info = {"tipo_atto": "y", "campi": [], "routing": {"tipo": "resource"}, "avvertenze": []}
+    s.template("y")
+    _hello(s, bridges)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Modello.", "summary": info}})
+    assert view.template == info
+    assert view.draft_status == ("Pronta per il prossimo passo", True)
+    # I5: another act, other fields — the stored copy goes with the rows the panel clears,
+    # while the notes box (free text about the case, kept by the panel) stays as it was
+    assert s.draft_view["fields"] == {} and s.draft_view["notes"] == "fattura 12"
+
+
+def test_replay_drafting_gives_back_the_typed_values_and_is_the_only_path_bind_uses():
+    """I5 and M2: what the lawyer typed is state (design §6.2), and one method replays the
+
+    whole Redazione/Domande state: ``bind`` and a panel rebuilt on its own go through it.
+    """
+    s, adapter, view, bridges = make()
+    info = {"tipo_atto": "x", "campi": [{"nome": "creditore", "tipo": "testo",
+                                         "obbligatorio": True}],
+            "routing": {"tipo": "resource"}, "avvertenze": []}
+    s.draft_view.update(
+        templates=[{"tipo_atto": "x", "descrizione": "Ricorso",
+                    "categoria": "atti_introduttivi"}],
+        template=info, fields={"creditore": "Alfa"}, notes="fattura 12",
+        reference={"name": "x.odt", "chars": 10, "troncato": False},
+        partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}],
+        open_placeholders=["[SEDE]"], questions=[{"campo": "sede", "domanda": "Sede?"}],
+        answers_draft={"sede": "Milano"}, started=True)
+    fresh = FakeView()
+    s.replay_drafting(fresh)
+    assert fresh.templates == (["atti_introduttivi · Ricorso"], None)
+    assert fresh.template == info
+    assert fresh.field_values == ({"creditore": "Alfa"}, "fattura 12")
+    assert fresh.reference == ("Caso simile: x.odt (10 caratteri)", True)
+    assert fresh.partitions == ["✓ Base", "… segnaposto aperti: 1"]
+    assert fresh.draft_status == ("In attesa delle tue risposte (pannello Domande)", True)
+    assert fresh.questions == [{"campo": "sede", "domanda": "Sede?"}]
+    assert fresh.answer_values == {"sede": "Milano"}
+    seen = []
+    s.replay_drafting = seen.append          # bind replays through that one method only
+    other = FakeView()
+    s.bind(other, lambda ev: None)
+    assert seen == [other]
+    assert other.template is None and other.draft_status is None
+
+
+def test_draft_answer_clears_the_stored_answers_only_when_the_request_is_taken():
+    """I5: the answers typed into the Domande panel are kept for a rebuild until the turn
+
+    that consumes them is on its way; a refused request must keep them on screen.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["questions"] = [{"campo": "sede"}]
+    s.draft_view["answers_draft"] = {"sede": "Milano"}
+    s.draft_answer({"sede": "Milano"})
+    assert s.draft_view["answers_draft"] == {}
+    s2, _adapter2, view2, _bridges2 = make()
+    s2.draft_view["answers_draft"] = {"sede": "Milano"}       # no question pending: refused
+    s2.draft_answer({"sede": "Milano"})
+    assert s2.draft_view["answers_draft"] == {"sede": "Milano"}
+
+
+def test_a_queued_draft_request_that_never_reaches_the_core_is_not_shown_as_started():
+    """M4: a draft request submitted while the core is starting is taken by ``_submit`` and
+
+    the drafting view commits to it, but the write that follows the hello can still hit a
+    dead pipe: nothing would ever clear the "Redazione in corso…" it left behind.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.draft_start("x", {}, "")
+    assert s.draft_view["started"] is True and s._draft_request is True
+    bridges[0].fail_send = True              # the core died between the hello and its answer
+    _hello(s, bridges)
+    assert s._draft_request is False and s.draft_view["started"] is False
+    assert view.draft_status == ("Compila i campi obbligatori", False)
+    assert "Core non raggiungibile" in s.transcript[-1]
+    # a drafting that already put a partition in the document is real: it stays started
+    s2, _adapter2, view2, bridges2 = make()
+    s2.draft_view.update(template={"tipo_atto": "x", "campi": []}, started=True,
+                         partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}])
+    s2.draft_continue("ancora")
+    bridges2[0].fail_send = True
+    _hello(s2, bridges2)
+    assert s2._draft_request is False and s2.draft_view["started"] is True
+    assert view2.draft_status == ("Pronta per il prossimo passo", True)
+
+
+def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
+    """M5: the core refusing the start (an unknown tipo_atto, a missing llm configuration)
+
+    left the Redazione panel claiming a drafting that never produced a line, with "Continua
+    la redazione" offered for a turn the core knows nothing about.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.draft_start("x", {}, "")
+    _hello(s, bridges)
+    assert s.draft_view["started"] is True
+    s.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r1", "code": "llm_config",
+        "message": "llm.model non impostato"}})
+    assert s.draft_view["started"] is False and s._draft_request is False
+    assert view.draft_status == ("Compila i campi obbligatori", False)
+    # a start whose turn already inserted a partition stays started
+    s2, _adapter2, view2, bridges2 = make()
+    s2.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s2.draft_start("x", {}, "")
+    _hello(s2, bridges2)
+    s2.draft_view["partitions"] = [{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}]
+    s2.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
+    assert s2.draft_view["started"] is True
+    # an error on a later turn of the drafting is not a failed start
+    s3, _adapter3, view3, bridges3 = make()
+    s3.draft_view.update(template={"tipo_atto": "x", "campi": []}, started=True)
+    s3.draft_continue("ancora")
+    _hello(s3, bridges3)
+    s3.handle_event({"kind": "message", "msg": {
+        "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
+    assert s3.draft_view["started"] is True
+    assert view3.draft_status == ("Pronta per il prossimo passo", True)
+
+
+def test_goto_partition_navigates_and_ignores_the_rows_that_are_not_partitions():
+    """M11: the Partizioni list box carries one row per partition plus, when there are open
+
+    placeholders, a trailing count that is not a position; every index outside the partitions
+    themselves is a no-op.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["partitions"] = [{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}]
+    s.draft_view["open_placeholders"] = ["[SEDE]"]
+    s.goto_partition(0)
+    assert adapter.calls[-1] == ("goto", "p:1")
+    calls = list(adapter.calls)
+    s.goto_partition(1)                      # the "… segnaposto aperti: 1" row
+    s.goto_partition(-1)
+    s.goto_partition(7)
+    assert adapter.calls == calls
+
+
+def test_a_core_that_dies_mid_drafting_stops_claiming_a_running_turn():
+    """The exit event clears the in-flight draft request; the Redazione line has to hear it,
+
+    or a core that crashed mid-drafting leaves "Redazione in corso…" on screen for good.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view.update(template={"tipo_atto": "x", "campi": []}, started=True,
+                        partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}])
+    s.draft_continue("ancora")
+    _hello(s, bridges)
+    assert view.draft_status == ("Redazione in corso…", True)
+    s.handle_event({"kind": "exit", "code": 1})
+    assert s._draft_request is False
+    assert view.draft_status == ("Pronta per il prossimo passo", True)

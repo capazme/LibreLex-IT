@@ -181,6 +181,12 @@ def test_render_guided_drafting_copy():
         "Base deterministica: decreto_ingiuntivo · Bozza indicativa")
     assert render_template_notes({"routing": {"tipo": "resource"}, "avvertenze": []}) == (
         "Composizione dal modello (risorsa del catalogo)")
+    # M8: a tool routing with no tool name must not render "Base deterministica: None"
+    assert render_template_notes({"routing": {"tipo": "tool_diretto", "tool": None}}) == (
+        "Composizione dal modello")
+    assert render_template_notes({"routing": {"tipo": "tool_enhance", "tool": ""},
+                                  "avvertenze": ["Bozza indicativa"]}) == (
+        "Composizione dal modello · Bozza indicativa")
     assert render_reference(None) == "Caso simile: nessuno"
     assert render_reference(
         {"name": "ricorso_rossi.docx", "chars": 12345, "troncato": False}) == (
@@ -216,3 +222,14 @@ def test_render_guided_drafting_copy():
     assert render_draft_status(view) == "Interrotta: premi Continua la redazione"
     view.update(stopped=None, done=True)
     assert render_draft_status(view) == "Redazione completata"
+    # M6: the base-generation failure is part of the state, so the line survives a rebuild
+    view.update(done=False, base_errore="strumento decreto_ingiuntivo non disponibile")
+    assert render_draft_status(view) == (
+        "Base non generata: strumento decreto_ingiuntivo non disponibile")
+    view.update(questions=[{"campo": "a"}])
+    assert render_draft_status(view) == (
+        "Base non generata: strumento decreto_ingiuntivo non disponibile")
+    view.update(questions=[], busy=True)
+    assert render_draft_status(view) == "Redazione in corso…"       # the turn wins while it runs
+    view.update(busy=False, done=True)
+    assert render_draft_status(view) == "Redazione completata"      # a later turn made a base

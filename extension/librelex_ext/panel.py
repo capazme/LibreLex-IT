@@ -31,12 +31,9 @@ from librelex_ext.document import (
 )
 from librelex_ext.render import (
     render_consent,
-    render_draft_status,
     render_field_label,
-    render_partitions,
     render_question_label,
     render_questions_hint,
-    render_reference,
     render_template_notes,
 )
 from librelex_ext.session import Session
@@ -308,10 +305,29 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     def dispose(self):
         """The panel is gone; the PanelSet is not: it keeps delivering events to the session
         (a queued `final` still lands on the transcript a reopened panel replays)."""
+        if self.session is not None:
+            # What the lawyer typed and has not sent is state too (design §6.2): hand it to
+            # the session before the controls go away, so the panel the sidebar builds next
+            # gets it back through replay_drafting. Never let a failure here (a control
+            # already torn down by the toolkit) stop the detach below.
+            with suppress(Exception):
+                self._store_typed_values()
         if self.panel_set is not None:
             self.panel_set.composite.detach(self.kind)
         self.panel_set = None
         self.session = None
+
+    def _store_typed_values(self):
+        """Push the rows of this panel into the session's drafting state (Redazione fields
+        and notes, Domande answers); no-op for the other kinds."""
+        draft = self.session.draft_view
+        if self.kind == "Drafting":
+            draft["fields"] = collect_fields(self._field_names,
+                                             self._row_texts("Field", self._field_names))
+            draft["notes"] = self.window.getControl("Notes").getText()
+        elif self.kind == "Questions":
+            draft["answers_draft"] = collect_fields(
+                self._question_fields, self._row_texts("Answer", self._question_fields))
 
     def addEventListener(self, listener):
         pass
@@ -396,23 +412,12 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.set_transcript("\n".join(session.transcript))
         elif self.kind == "Citations":
             self.set_citations([label for label, _, _ in session.citations])
-        elif self.kind == "Drafting":
-            # the same six calls Session.bind makes, from the state it kept (spec §5.1);
-            # _template_labels and _draft_request are the session's own, and reading them
-            # here is what keeps the replayed catalogue and status identical to a live one
-            view = session.draft_view
-            self.set_templates(session._template_labels(), None)
-            self.set_template(view["template"])
-            self.set_reference(render_reference(view["reference"]), bool(view["reference"]))
-            self.set_partitions(render_partitions(view["partitions"],
-                                                  view["open_placeholders"]))
-            self.set_draft_status(render_draft_status({**view, "busy": session._draft_request}),
-                                  view["started"])
+        elif self.kind in ("Drafting", "Questions"):
+            # exactly what Session.bind replays, through the session's one replay path: the
+            # calls this panel has no controls for are no-ops (see the View methods below)
+            session.replay_drafting(self)
             # after the state calls: _apply_enabled then settles Start and Rimuovi from both
             # the replayed state and the busy flag, whichever order they arrived in
-            self.set_busy(session.state in ("starting", "busy"))
-        elif self.kind == "Questions":
-            self.set_questions(session.draft_view["questions"])
             self.set_busy(session.state in ("starting", "busy"))
         else:
             busy = session.state in ("starting", "busy")
@@ -746,6 +751,29 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self._set_visible(f"Field{n}", campo is not None)
         self._template_set = info is not None
         self._apply_enabled()
+
+    def set_field_values(self, fields, notes):
+        """Write typed field values and notes back into the rows (after a rebuild, I5).
+
+        Always paired with ``set_template``, which clears the rows and decides which field
+        names they carry: a name with no stored value is written back as empty, so a fresh
+        template (the session stores nothing for it) leaves the rows blank.
+        """
+        if not self.model.hasByName("Notes"):
+            return
+        values = fields or {}
+        for n, name in enumerate(self._field_names, start=1):
+            self.window.getControl(f"Field{n}").setText(values.get(name, ""))
+        self.window.getControl("Notes").setText(notes or "")
+
+    def set_answer_values(self, answers):
+        """Write typed answers back into the rows (after a rebuild, I5); pairs with
+        ``set_questions``, exactly as ``set_field_values`` pairs with ``set_template``."""
+        if not self.model.hasByName("QuestionsHint"):
+            return
+        values = answers or {}
+        for n, name in enumerate(self._question_fields, start=1):
+            self.window.getControl(f"Answer{n}").setText(values.get(name, ""))
 
     def set_reference(self, text, present):
         if not self.model.hasByName("ReferenceInfo"):

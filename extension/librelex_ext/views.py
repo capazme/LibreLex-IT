@@ -12,7 +12,8 @@ ROUTES = {"append": "Answers", "set_transcript": "Answers", "append_stream": "An
           "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations",
           "set_templates": "Drafting", "set_template": "Drafting", "set_reference": "Drafting",
           "set_partitions": "Drafting", "set_draft_status": "Drafting",
-          "set_questions": "Questions"}
+          "set_field_values": "Drafting",
+          "set_questions": "Questions", "set_answer_values": "Questions"}
 
 
 def panel_kind(url: str) -> str:
@@ -86,3 +87,9 @@ class CompositeView:
 
     def set_questions(self, questions: list[dict]) -> None:
         self._call("set_questions", questions)
+
+    def set_field_values(self, fields: dict, notes: str) -> None:
+        self._call("set_field_values", fields, notes)
+
+    def set_answer_values(self, answers: dict) -> None:
+        self._call("set_answer_values", answers)
