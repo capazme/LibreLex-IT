@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from librelex_ext.layout import KINDS
 
+# Every view method but ``set_busy``, which is broadcast instead of routed: the controls
+# ``layout.BUSY_DISABLED`` names are spread over Azioni, Redazione and Domande, so each
+# attached panel has to hear the busy state and disable its own share of them.
 ROUTES = {"append": "Answers", "set_transcript": "Answers", "append_stream": "Answers",
-          "set_status": "Actions", "set_busy": "Actions", "set_progress": "Actions",
+          "set_status": "Actions", "set_progress": "Actions",
           "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations",
           "set_templates": "Drafting", "set_template": "Drafting", "set_reference": "Drafting",
           "set_partitions": "Drafting", "set_draft_status": "Drafting",
@@ -47,7 +50,9 @@ class CompositeView:
         self._call("set_status", text)
 
     def set_busy(self, busy: bool) -> None:
-        self._call("set_busy", busy)
+        """Broadcast (see ROUTES): every attached panel disables its own busy controls."""
+        for panel in list(self.panels.values()):
+            panel.set_busy(busy)
 
     def set_progress(self, done: int, total) -> None:
         self._call("set_progress", done, total)

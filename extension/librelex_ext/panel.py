@@ -193,6 +193,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         # True while the panel itself is rewriting a list box, so the selection change that
         # follows is not mistaken for a click and sent to the session
         self._quiet_items = False
+        # the two flags Avvia redazione / Rimuovi depend on, besides the busy state
+        self._template_set = False
+        self._reference_present = False
+        self._busy = False
 
     # --- XUIElement ------------------------------------------------------------
     def getRealInterface(self):
@@ -404,7 +408,8 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                                                   view["open_placeholders"]))
             self.set_draft_status(render_draft_status({**view, "busy": session._draft_request}),
                                   view["started"])
-            # last: set_template enables Avvia redazione, and a request in flight has to win
+            # after the state calls: _apply_enabled then settles Start and Rimuovi from both
+            # the replayed state and the busy flag, whichever order they arrived in
             self.set_busy(session.state in ("starting", "busy"))
         elif self.kind == "Questions":
             self.set_questions(session.draft_view["questions"])
@@ -565,6 +570,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     def drop(self, dtde):
         """Take the first local file of a ``text/uri-list`` drop as the similar case."""
         url = None
+        owed = False                    # acceptDrop called: a dropComplete is now owed
         try:
             transferable = dtde.getTransferable()
             flavor = next((f for f in transferable.getTransferDataFlavors()
@@ -573,12 +579,19 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                 dtde.rejectDrop()
             else:
                 dtde.acceptDrop(dtde.DropAction)
+                owed = True
                 url = first_file_uri(transferable.getTransferData(flavor))
                 dtde.dropComplete(bool(url))
+                owed = False
         except Exception:
             url = None
             with suppress(Exception):
-                dtde.rejectDrop()
+                # an accepted drop is ours to finish: only dropComplete ends it, and
+                # rejectDrop after acceptDrop would leave the source hanging
+                if owed:
+                    dtde.dropComplete(False)
+                else:
+                    dtde.rejectDrop()
         if self.session is None:
             return
         if url:
@@ -624,11 +637,32 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName("Status").Label = text
 
     def set_busy(self, busy):
+        self._busy = bool(busy)
         for name in layout.BUSY_DISABLED:
             if self.model.hasByName(name):
                 self.model.getByName(name).Enabled = not busy
         if self.model.hasByName("Cancel"):
             self.model.getByName("Cancel").Enabled = bool(busy)
+        self._apply_enabled()           # last: the two state-driven buttons win over the loop
+
+    def _apply_enabled(self):
+        """Avvia redazione and Rimuovi are state-driven *and* busy-driven.
+
+        Invariant: ``Start`` is enabled only while a template is chosen and no request is
+        running, ``ReferenceClear`` only while a reference act is loaded and no request is
+        running. The generic ``BUSY_DISABLED`` loop of ``set_busy`` knows nothing of the
+        first half, so all three writers (``set_template``, ``set_reference``, ``set_busy``)
+        recompute both here instead of writing ``Enabled`` themselves: otherwise an idle
+        ``set_busy(False)`` on a rebuilt panel would re-enable a Start with no template and
+        a Rimuovi with no reference.
+        """
+        if self.model is None:
+            return
+        if self.model.hasByName("Start"):
+            self.model.getByName("Start").Enabled = self._template_set and not self._busy
+        if self.model.hasByName("ReferenceClear"):
+            self.model.getByName("ReferenceClear").Enabled = (self._reference_present
+                                                              and not self._busy)
 
     def set_citations(self, labels):
         if self.model.hasByName("Citations"):
@@ -666,8 +700,14 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
 
     # --- View protocol: guided drafting (Redazione, Domande) ----------------------------
     def set_templates(self, labels, selected=None):
-        """Fill the catalogue list box; ``selected`` preselects a row (the session sends
-        None today, so the lawyer's own pick is never overwritten)."""
+        """Fill the catalogue list box; ``selected`` preselects a row, None leaves the list
+        with no row selected.
+
+        Reassigning ``StringItemList`` clears the visible selection, so after a new search
+        the list shows no highlighted row. What survives is the chosen template itself: the
+        session keeps it in ``draft_view["template"]``, and with it the field rows,
+        ``_field_names`` and the Avvia redazione button, which only ``set_template`` writes.
+        """
         if not self.model.hasByName("Template"):
             return
         m = self.model.getByName("Template")
@@ -704,13 +744,15 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.window.getControl(f"Field{n}").setText("")
             self._set_visible(f"FieldLabel{n}", campo is not None)
             self._set_visible(f"Field{n}", campo is not None)
-        self.model.getByName("Start").Enabled = info is not None
+        self._template_set = info is not None
+        self._apply_enabled()
 
     def set_reference(self, text, present):
         if not self.model.hasByName("ReferenceInfo"):
             return
         self.model.getByName("ReferenceInfo").Label = text
-        self.model.getByName("ReferenceClear").Enabled = bool(present)
+        self._reference_present = bool(present)
+        self._apply_enabled()
 
     def set_partitions(self, labels):
         if not self.model.hasByName("Partitions"):
