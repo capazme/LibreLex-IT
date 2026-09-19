@@ -221,7 +221,7 @@ def build(kind: str, width: int) -> list[Control]:
                                  "HelpText": TOOLTIPS["Notes"]}))
         y += NOTES_H + GAP
 
-        controls.append(Control("FixedText", "ReferenceLabel", MARGIN, y, inner, 20,
+        controls.append(Control("FixedText", "ReferenceInfo", MARGIN, y, inner, 20,
                                 {"Label": "Caso simile: nessuno", "MultiLine": True}))
         y += 20 + GAP
         button("ReferenceBrowse", "Sfoglia…", MARGIN)

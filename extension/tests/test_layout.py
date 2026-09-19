@@ -32,7 +32,7 @@ EXPECTED = {
                 "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
                 "Status", "Settings", "Usage"},
     "Drafting": {"TemplateSearch", "TemplateRefresh", "Template", "TemplateNotes", "FieldsLabel",
-                 "NotesLabel", "Notes", "ReferenceLabel", "ReferenceBrowse", "ReferenceClear",
+                 "NotesLabel", "Notes", "ReferenceInfo", "ReferenceBrowse", "ReferenceClear",
                  "Start", "PartitionsLabel", "Partitions", "ResumeInput", "Resume",
                  "DraftStatus"} | _FIELD_NAMES,
     "Questions": {"QuestionsHint", "Continue", "QuestionsStatus"} | _QUESTION_NAMES,
@@ -62,18 +62,12 @@ def test_each_kind_fits_its_width_without_overlaps(kind, width):
 
 
 def test_kinds_partition_the_controls_and_actions():
-    # Names are unique within each panel (also checked per-kind by _no_overlap below); across
-    # panels a name may repeat when it names an unrelated control in a different deck window,
-    # as "ReferenceLabel" does for Actions (the free-text reference field) versus Drafting (the
-    # reference-act status line).
-    for k in KINDS:
-        names = [c.name for c in build_all(WIDTH)[k]]
-        assert len(names) == len(set(names))
-    all_names = {c.name for k in KINDS for c in build_all(WIDTH)[k]}
+    all_names = [c.name for k in KINDS for c in build_all(WIDTH)[k]]
+    assert len(all_names) == len(set(all_names))   # every control name is unique across the deck
     # BUSY_DISABLED now spans several panels (Drafting/Questions controls disabled while the
     # core is busy too), so its invariant is "every name is a real control", same as ACTIONS.
-    assert set(ACTIONS) <= all_names and set(BUSY_DISABLED) <= all_names
-    assert set(TOOLTIPS) <= all_names
+    assert set(ACTIONS) <= set(all_names) and set(BUSY_DISABLED) <= set(all_names)
+    assert set(TOOLTIPS) <= set(all_names)
     assert set(CONTROLS) == set(KINDS)
     with pytest.raises(ValueError):
         build("Chat", WIDTH)
