@@ -137,6 +137,15 @@ class Session:
     def research(self, question: str) -> None:
         self.run_command("research", {"question": question} if question.strip() else {})
 
+    def draft(self, message: str) -> None:
+        """Start or continue a template-guided drafting (spec §6.9): the same command carries
+        the act to draft and, later, the answers to the model's questions."""
+        if not message.strip():
+            self.view.set_status(
+                "Scrivi il tipo di atto (es. decreto ingiuntivo) o la risposta alle domande")
+            return
+        self.run_command("draft", {"message": message.strip()})
+
     def _document_context(self) -> dict:
         try:
             info = self.adapter.get_document_info()

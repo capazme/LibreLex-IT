@@ -709,3 +709,38 @@ def test_a_rebuilt_panel_gets_back_the_pending_consent_and_the_usage_line():
     assert fresh.usage == "Turno: 10 + 5 token · sessione: 15 token"
     s.answer_consent("document")
     assert s.consent_summary is None and fresh.consent is None
+
+
+def test_draft_refuses_a_blank_message_and_sends_the_command_with_it():
+    s, adapter, view, bridges = make()
+    s.draft("   ")
+    assert view.status == (
+        "Scrivi il tipo di atto (es. decreto ingiuntivo) o la risposta alle domande")
+    assert not bridges
+    s.draft("decreto ingiuntivo per la fattura n. 12/2025")
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.3.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    assert bridges[0].sent[-1] == {
+        "type": "command", "id": "r1", "doc_id": "d1", "name": "draft",
+        "args": {"message": "decreto ingiuntivo per la fattura n. 12/2025"}}
+    s.handle_event({"kind": "message",
+                    "msg": {"type": "delta", "request_id": "r1", "text": "Mi serve il debitore."}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Mi serve il debitore.",
+        "cancelled": False, "usage": {"input_tokens": 300, "output_tokens": 12, "cost_usd": None},
+        "summary": {"tool_calls": 2, "inserted": [], "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 300, "output_tokens": 12}}}})
+    assert s.state == "ready" and s.transcript[-2:] == ["Mi serve il debitore.", ""]
+    assert view.usage == "Turno: 300 + 12 token · sessione: 312 token"
+    s.draft("il debitore è Beta S.p.A.")            # the answer goes through the same command
+    assert bridges[0].sent[-1]["args"] == {"message": "il debitore è Beta S.p.A."}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Inserite intestazione e conclusioni.",
+        "cancelled": False, "usage": {"input_tokens": 900, "output_tokens": 80, "cost_usd": None},
+        "summary": {"tool_calls": 4, "inserted": [{"from_id": "p:1", "to_id": "p:4"},
+                                                  {"from_id": "p:5", "to_id": "p:7"}],
+                    "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 1200, "output_tokens": 92}}}})
+    assert view.lines[-3:] == ["", "Inserito nei paragrafi p:1-p:4",
+                               "Inserito nei paragrafi p:5-p:7"]
+    assert "Inserite intestazione e conclusioni." in view.lines

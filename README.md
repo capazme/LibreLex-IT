@@ -56,6 +56,14 @@ section) stops it, keeping the partial text with an `[annullato]` note.
 - **Ricerca**: the same turn restricted to case law (`cerca_*`/`leggi_*` plus `cite_law`),
   for questions like "qual è l'orientamento sulla responsabilità del custode?". It reads and
   inserts, but never comments or replaces.
+- **Redigi da modello**: template-guided drafting. Name the act in the input box ("decreto
+  ingiuntivo per la fattura n. 12/2025 di 12.000 euro") and press the button: the model looks
+  the template up in mcp-legal-it, reads the document (with consent), asks in Risposte for the
+  data it still needs, and stops. Type the answers in the same box and press the button again:
+  it computes the amounts (interests, revaluation, contributo unificato, fees) with the
+  calculators and inserts the act at the end of the document one section at a time, each as a
+  redline, leaving `[...]` where nobody supplied a value. The session keeps the thread until the
+  document is closed, so "continua" resumes a drafting cut by the iteration limit.
 
 Text written into the document is grounded: a reference the model did not read from a source
 is verified before the insertion and commented when it turns out to be non-existent or

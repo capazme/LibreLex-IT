@@ -226,6 +226,9 @@ LibreLex-IT/
   the progress bar, which keeps its slot in the control table at all times
   (only the visibilities are flipped, so showing it never moves the controls
   under it) and stays enabled while the core is busy.
+- Drafting (M3): "Redigi da modello" is a full-width button under the Mostra testo / Inserisci
+  norma row; the input box above it names the act on the first press and carries the answers to
+  the model's questions on the next ones.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
 - Streaming: the bridge reader thread pushes events onto a `queue.Queue` and
@@ -349,7 +352,7 @@ a v2 command "Aggiorna citazioni" will re-check every such bookmark.
 Three sources, merged into one OpenAI `tools` array per turn:
 
 1. **Legal tools** from mcp-legal-it via `fastmcp.Client`, filtered by the
-   allowlist in Appendix B (26 tools). Parameter schemas pass through
+   allowlist in Appendix B (35 tools). Parameter schemas pass through
    unchanged. Descriptions are replaced by concise ones from
    `tool_overrides.yaml` (2 to 3 lines each; the original description of
    `cerca_giurisprudenza` alone is 2,500 characters), falling back to the
@@ -368,7 +371,7 @@ before schema overhead, versus >50,000 for all 221 tools.
 |---------|-------------|----------------|
 | `chat` (free) | all 26 | all |
 | `research` | cerca_giurisprudenza, cerca_giurisprudenza_unificata, leggi_sentenza, giurisprudenza_su_norma, orientamento_su_norma, cerca_giurisprudenza_amministrativa, leggi_provvedimento_amm, cerca_giurisprudenza_cgue, leggi_sentenza_cgue, cerca_pronuncia_costituzionale, leggi_pronuncia_costituzionale, cite_law | read_selection, read_paragraphs, insert_markdown |
-| `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, verifica_citazioni, the 8 calculators | read_paragraphs, insert_markdown |
+| `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, verifica_citazioni, the 9 act generators, the 8 calculators | read_paragraphs, insert_markdown |
 | `review` | cite_law, verifica_citazioni, the 8 calculators | read_selection, replace_selection, add_comment |
 | `verify_citations` | deterministic pipeline (§7.1), no model | read_paragraphs / read_selection, add_comment, remove_comments |
 | `insert_norm` | deterministic pipeline (§7.2), no model | read_selection, insert_markdown |
@@ -435,6 +438,23 @@ Kept in the core, in Italian, versioned with the code. Contents:
 
 One session per `doc_id`: history, consent state, grounded-reference set per
 turn, usage totals. Sessions live in memory for the life of the core process.
+
+### 6.9 Drafting from a template (M3, added 2026-09-19)
+
+The `draft` command runs the agent loop with the `draft` profile and one fixed
+Italian procedure in the user message: find the template with
+`genera_modello_atto` (its `istruzioni` say whether a deterministic generator such
+as `decreto_ingiuntivo` provides the base text or the act is composed from the
+listed fields), read the document for the data already there, ask the lawyer for
+the missing mandatory fields and stop, then compute the amounts with the
+calculators the template names and insert the act at the end of the document one
+partition per `insert_markdown` call (heading and parties, facts, law with
+`cite_law`, conclusions with the computed sums, exhibits), `[...]` where no value
+was supplied. Every later press of the button sends the same procedure with the
+lawyer's new message; the session history (§6.5, §6.8) is the drafting state, so
+nothing is persisted in the core or in the extension. Grounding on write (§6.6)
+applies to every section. The generators the `genera_modello_atto` catalogue
+routes to (27 of its 100 acts) are allowlisted for this (Appendix B).
 
 ## 7. Deterministic pipelines
 
@@ -686,6 +706,8 @@ verification of Consulta/TAR/CGUE, OS keyring, pseudonymisation via
 LibreOffice `update.xml`, Windows polish, footnote insertion, Brocardi in
 chat.
 
+M3 was implemented on 2026-09-19 as §6.9.
+
 ## 12. Assumptions to validate in the spike
 
 1. `insertDocumentFromURL` with `FilterName="Markdown"` inserts at the cursor
@@ -763,6 +785,8 @@ Extension → core:
  "context": {"title": "…", "has_selection": true, "cursor_paragraph": "p:12"}}
 {"id": "r3", "type": "command", "doc_id": "…", "name": "verify_citations",
  "args": {"scope": "document"}}
+{"id": "r4", "type": "command", "doc_id": "…", "name": "draft",
+ "args": {"message": "decreto ingiuntivo per la fattura n. 12/2025 di 12.000 euro"}}
 {"id": "r3", "type": "doc_result", "call_id": "c7", "ok": true, "result": {…}}
 {"id": "r3", "type": "doc_result", "call_id": "c8", "ok": false, "error": "…"}
 {"id": "r2", "type": "consent_result", "call_id": "k1", "decision": "document"}
@@ -794,7 +818,7 @@ Document action payloads follow §5.3; the exact pydantic models in
 `core/src/librelex_core/protocol.py` are the contract. The `read_paragraphs` keys are
 `from_` and `to` (Python parameter names), both always present, `null` when unbounded.
 
-## Appendix B · mcp-legal-it tool allowlist (26)
+## Appendix B · mcp-legal-it tool allowlist (35)
 
 Norms: `cite_law`, `fetch_act_index`, `fetch_full_act`, `verifica_citazioni`,
 `cerca_brocardi`.
@@ -806,6 +830,11 @@ Case law: `cerca_giurisprudenza`, `cerca_giurisprudenza_unificata`,
 `cerca_pronuncia_costituzionale`, `leggi_pronuncia_costituzionale`.
 
 Act templates: `genera_modello_atto`, `lista_categorie_atti`.
+
+Act generators (9, added 2026-09-19 for M3: the catalogue of genera_modello_atto routes to
+them): decreto_ingiuntivo, atto_di_precetto, sollecito_pagamento, procura_alle_liti,
+relata_notifica_pec, attestazione_conformita, sfratto_morosita, nota_precisazione_credito,
+dichiarazione_553_cpc.
 
 Calculators (8): `interessi_legali`, `interessi_mora`,
 `rivalutazione_monetaria`, `contributo_unificato`,
