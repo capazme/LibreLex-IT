@@ -113,6 +113,8 @@ class FakeView:
         self.citations, self.transcript = None, None
         self.progress = None
         self.stream, self.usage, self.consent = "", None, None
+        self.templates, self.template, self.reference = None, None, None
+        self.partitions, self.draft_status, self.questions = None, None, None
 
     def append(self, text):
         self.lines.append(text)
@@ -140,6 +142,24 @@ class FakeView:
 
     def set_consent(self, summary):
         self.consent = summary
+
+    def set_templates(self, labels, selected):
+        self.templates = (labels, selected)
+
+    def set_template(self, info):
+        self.template = info
+
+    def set_reference(self, text, present):
+        self.reference = (text, present)
+
+    def set_partitions(self, labels):
+        self.partitions = labels
+
+    def set_draft_status(self, text, started):
+        self.draft_status = (text, started)
+
+    def set_questions(self, questions):
+        self.questions = questions
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -550,7 +570,7 @@ def test_chat_sends_context_streams_deltas_and_shows_usage():
         "cancelled": False, "usage": {"input_tokens": 100, "output_tokens": 20, "cost_usd": None},
         "summary": {"tool_calls": 1, "usage_totals": {"input_tokens": 100, "output_tokens": 20}}}})
     assert view.lines[-1] == "" and "Il documento dice X." not in view.lines      # not duplicated
-    assert s.transcript[-2] == "Il documento dice X." and s.state == "ready"
+    assert s.transcript[-2] == "LibreLex: Il documento dice X." and s.state == "ready"
     assert view.usage == "Turno: 100 + 20 token · sessione: 120 token"
 
 
@@ -646,7 +666,8 @@ def test_research_final_without_deltas_shows_its_text_the_grounding_notes_and_us
         "summary": {"inserted": [{"from_id": "p:2", "to_id": "p:5"}],
                     "flagged": ["Cass. n. 9/2024"], "unverified": ["Cass. n. 1/2020"],
                     "usage_totals": {"input_tokens": 500, "output_tokens": 80}}}})
-    assert view.lines == ["Inserite 2 massime.", "", "Inserito nei paragrafi p:2-p:5",
+    assert view.lines == ["Tu: ricerca: usucapione", "LibreLex: Inserite 2 massime.", "",
+                          "Inserito nei paragrafi p:2-p:5",
                           "Riferimenti segnalati con un commento: Cass. n. 9/2024",
                           "Riferimenti non verificati (fonte non disponibile): Cass. n. 1/2020"]
     assert view.usage == "Turno: 500 + 80 token · sessione: 580 token"
@@ -719,36 +740,208 @@ def test_a_rebuilt_panel_gets_back_the_pending_consent_and_the_usage_line():
     assert s.consent_summary is None and fresh.consent is None
 
 
-def test_draft_refuses_a_blank_message_and_sends_the_command_with_it():
-    s, adapter, view, bridges = make()
-    s.draft("   ")
-    assert view.status == (
-        "Scrivi il tipo di atto (es. decreto ingiuntivo) o la risposta alle domande")
-    assert not bridges
-    s.draft("decreto ingiuntivo per la fattura n. 12/2025")
-    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.3.0",
+# Session.draft(message) (a single free-text command) is superseded by draft_start/
+# draft_answer/draft_continue: the wire contract's `draft` command now carries a structured
+# `action` (start/answer/continue), not a plain `message` (plan 2 wire contract). The scenario
+# the old test covered (start, then answer through the same call) is now covered by
+# test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view below.
+
+
+def _hello(s, bridges):
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.4.0",
                                                "protocol": PROTOCOL_VERSION, "warnings": []}})
-    assert bridges[0].sent[-1] == {
-        "type": "command", "id": "r1", "doc_id": "d1", "name": "draft",
-        "args": {"message": "decreto ingiuntivo per la fattura n. 12/2025"}}
+
+
+def test_templates_and_template_info_fill_the_drafting_view():
+    s, adapter, view, bridges = make()
+    s.templates("  ingiuntivo ")
+    _hello(s, bridges)
+    assert bridges[0].sent[-1]["name"] == "list_templates"
+    assert bridges[0].sent[-1]["args"] == {"query": "ingiuntivo"}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Catalogo: 1 modelli.",
+        "summary": {"modelli": [{"tipo_atto": "decreto_ingiuntivo_ordinario",
+                                 "descrizione": "Ricorso per decreto ingiuntivo",
+                                 "categoria": "atti_introduttivi", "tier": 1}],
+                    "totale": 1, "query": "ingiuntivo"}}})
+    assert view.templates == (["atti_introduttivi · Ricorso per decreto ingiuntivo"], None)
+    assert s.draft_view["templates"][0]["tipo_atto"] == "decreto_ingiuntivo_ordinario"
+    s.template("decreto_ingiuntivo_ordinario")
+    assert bridges[0].sent[-1] == {"type": "command", "id": "r2", "doc_id": "d1",
+                                   "name": "template_info",
+                                   "args": {"tipo_atto": "decreto_ingiuntivo_ordinario"}}
+    info = {"tipo_atto": "decreto_ingiuntivo_ordinario", "descrizione": "Ricorso",
+            "categoria": "atti_introduttivi",
+            "campi": [{"nome": "creditore", "tipo": "testo", "obbligatorio": True,
+                      "descrizione": ""},
+                      {"nome": "importo", "tipo": "numero", "obbligatorio": True,
+                      "descrizione": ""}],
+            "routing": {"tipo": "tool_diretto", "tool": "decreto_ingiuntivo",
+                       "parametri_fissi": {}, "resource": None},
+            "avvertenze": ["Bozza indicativa"], "campi_obbligatori": ["creditore", "importo"],
+            "campi_opzionali": [], "tool_calcolo": [], "riferimenti_normativi": [],
+            "istruzioni": ""}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Modello: 2 campi.", "summary": info}})
+    assert view.template == info and s.draft_view["template"] == info
+    assert view.draft_status == ("Compila i campi obbligatori", False)
+    assert "Base deterministica: decreto_ingiuntivo" in view.lines[-1]
+
+
+def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view():
+    s, adapter, view, bridges = make()
+    s.draft_start("", {}, "")
+    assert view.status == "Scegli prima un tipo di atto" and not bridges
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": [
+        {"nome": "creditore", "tipo": "testo", "obbligatorio": True},
+        {"nome": "importo", "tipo": "numero", "obbligatorio": True},
+        {"nome": "note_extra", "tipo": "testo", "obbligatorio": False}]}
+    s.draft_start("x", {"creditore": "Alfa", "importo": " "}, "")
+    assert view.status == "Compila i campi obbligatori: importo" and not bridges
+    s.draft_start("x", {"creditore": "Alfa", "importo": "12000"}, "fattura 12")
+    _hello(s, bridges)
+    sent = bridges[0].sent[-1]
+    assert sent["name"] == "draft"
+    assert sent["args"] == {"action": "start", "tipo_atto": "x",
+                            "fields": {"creditore": "Alfa", "importo": "12000"},
+                            "notes": "fattura 12"}
+    assert s.transcript[-1] == "Tu: avvio redazione x (2 campi)"
+    assert view.draft_status == ("Redazione in corso…", True)
     s.handle_event({"kind": "message",
-                    "msg": {"type": "delta", "request_id": "r1", "text": "Mi serve il debitore."}})
+                    "msg": {"type": "delta", "request_id": "r1", "text": "Mi servono"}})
+    assert view.stream == "LibreLex: Mi servono"
     s.handle_event({"kind": "message", "msg": {
-        "type": "final", "request_id": "r1", "text": "Mi serve il debitore.",
-        "cancelled": False, "usage": {"input_tokens": 300, "output_tokens": 12, "cost_usd": None},
-        "summary": {"tool_calls": 2, "inserted": [], "flagged": [], "unverified": [],
-                    "usage_totals": {"input_tokens": 300, "output_tokens": 12}}}})
-    assert s.state == "ready" and s.transcript[-2:] == ["Mi serve il debitore.", ""]
-    assert view.usage == "Turno: 300 + 12 token · sessione: 312 token"
-    s.draft("il debitore è Beta S.p.A.")            # the answer goes through the same command
-    assert bridges[0].sent[-1]["args"] == {"message": "il debitore è Beta S.p.A."}
-    s.handle_event({"kind": "message", "msg": {
-        "type": "final", "request_id": "r2", "text": "Inserite intestazione e conclusioni.",
-        "cancelled": False, "usage": {"input_tokens": 900, "output_tokens": 80, "cost_usd": None},
-        "summary": {"tool_calls": 4, "inserted": [{"from_id": "p:1", "to_id": "p:4"},
-                                                  {"from_id": "p:5", "to_id": "p:7"}],
+        "type": "final", "request_id": "r1", "text": "Mi servono",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cost_usd": None},
+        "summary": {"tool_calls": 2,
+                    "inserted": [{"from_id": "p:1", "to_id": "p:9", "titolo": "Base: Ricorso"}],
                     "flagged": [], "unverified": [],
-                    "usage_totals": {"input_tokens": 1200, "output_tokens": 92}}}})
-    assert view.lines[-3:] == ["", "Inserito nei paragrafi p:1-p:4",
-                               "Inserito nei paragrafi p:5-p:7"]
-    assert "Inserite intestazione e conclusioni." in view.lines
+                    "usage_totals": {"input_tokens": 10, "output_tokens": 2},
+                    "tipo_atto": "x",
+                    "domande": [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
+                                "tipo": "testo"}],
+                    "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"}],
+                    "segnaposto_aperti": ["[SEDE]"], "completata": False, "riepilogo": "",
+                    "ended_by": "questions"}}})
+    assert s.transcript[-3:] == ["LibreLex: Mi servono", "", "Inserito nei paragrafi p:1-p:9"]
+    assert view.questions == [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
+                               "tipo": "testo"}]
+    assert view.partitions == ["✓ Base: Ricorso", "… segnaposto aperti: 1"]
+    assert view.draft_status == ("In attesa delle tue risposte (pannello Domande)", True)
+    s.draft_answer({"sede": "Milano"})
+    assert bridges[0].sent[-1]["args"] == {"action": "answer", "answers": {"sede": "Milano"}}
+    assert s.transcript[-1] == "Tu: risposte a 1 domande"
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Fatto.",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cost_usd": None},
+        "summary": {"tool_calls": 3,
+                    "inserted": [{"from_id": "p:10", "to_id": "p:12", "titolo": "Conclusioni"}],
+                    "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 20, "output_tokens": 4}, "tipo_atto": "x",
+                    "domande": [],
+                    "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"},
+                                  {"titolo": "Conclusioni", "from_id": "p:10", "to_id": "p:12"}],
+                    "segnaposto_aperti": [], "completata": True,
+                    "riepilogo": "Calcoli: CU 129,50.", "ended_by": "done"}}})
+    assert view.questions == [] and view.partitions == ["✓ Base: Ricorso", "✓ Conclusioni"]
+    assert view.draft_status == ("Redazione completata", True)
+    assert "LibreLex: Fatto." in view.lines
+    assert view.lines[-1] == "Riepilogo della redazione:\nCalcoli: CU 129,50."
+    s.draft_answer({"x": "y"})
+    assert view.status == "Nessuna domanda in sospeso"
+    s.draft_continue("aggiungi la provvisoria esecuzione")
+    assert bridges[0].sent[-1]["args"] == {"action": "continue",
+                                           "message": "aggiungi la provvisoria esecuzione"}
+
+
+def test_draft_continue_refuses_when_nothing_started():
+    s, adapter, view, bridges = make()
+    s.draft_continue("qualcosa")
+    assert view.status == "Nessuna redazione in corso" and not bridges
+
+
+def test_reference_round_trip_and_rebind_replays_the_drafting_view():
+    s, adapter, view, bridges = make()
+    s.set_reference("ricorso_rossi.docx", "RICORSO ...")
+    _hello(s, bridges)
+    assert bridges[0].sent[-1]["args"] == {"name": "ricorso_rossi.docx", "text": "RICORSO ..."}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1",
+        "text": "Atto di riferimento: ricorso_rossi.docx (11 caratteri).",
+        "summary": {"riferimento": {"name": "ricorso_rossi.docx", "chars": 11,
+                                    "troncato": False}}}})
+    assert view.reference == ("Caso simile: ricorso_rossi.docx (11 caratteri)", True)
+    view2 = FakeView()
+    s.bind(view2, lambda ev: None)
+    assert view2.reference == ("Caso simile: ricorso_rossi.docx (11 caratteri)", True)
+    assert view2.draft_status == ("Scegli un atto", False)
+    assert view2.questions == [] and view2.partitions == []
+    s.clear_reference()
+    assert bridges[0].sent[-1]["args"] == {"text": ""}
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r2", "text": "Atto di riferimento rimosso.",
+        "summary": {"riferimento": None}}})
+    # s.bind(view2, ...) above made view2 the session's current view (as every other rebind
+    # test in this file does: events after a rebind reach the fresh view, not the old one).
+    assert view2.reference == ("Caso simile: nessuno", False)
+
+
+def test_chat_and_research_get_turn_separators():
+    s, adapter, view, bridges = make()
+    s.chat("che dice?")
+    _hello(s, bridges)
+    assert s.transcript[-1] == "Tu: che dice?"
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Dice X.",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "cost_usd": None},
+        "summary": {"tool_calls": 0, "inserted": [], "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 1, "output_tokens": 1}}}})
+    assert view.lines[-2:] == ["LibreLex: Dice X.", ""]
+    s.research("usucapione")
+    assert s.transcript[-1] == "Tu: ricerca: usucapione"
+
+
+def test_cancelled_draft_turn_merges_into_the_view_without_resetting_it():
+    """Plan 2 wire contract addition (post-brief): a cancelled draft turn still carries the
+
+    draft keys (partitions inserted so far) and must be merged into draft_view, not discarded
+    as a plain "[annullato]" note with nothing else updated.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.draft_start("x", {}, "")
+    _hello(s, bridges)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "", "cancelled": True,
+        "usage": {"input_tokens": 5, "output_tokens": 1, "cost_usd": None},
+        "summary": {"stopped": "cancelled", "tool_calls": 1, "inserted": [], "flagged": [],
+                    "unverified": [],
+                    "usage_totals": {"input_tokens": 5, "output_tokens": 1}, "tipo_atto": "x",
+                    "domande": [],
+                    "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1",
+                                   "to_id": "p:9"}],
+                    "segnaposto_aperti": [], "completata": False, "riepilogo": "",
+                    "ended_by": None, "base_errore": None}}})
+    assert "[annullato]" in view.lines
+    assert view.partitions == ["✓ Base: Ricorso"]
+    assert s.draft_view["partitions"] == [
+        {"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"}]
+    assert view.draft_status == ("Interrotta: premi Continua la redazione", True)
+
+
+def test_base_errore_reports_the_missing_base_in_status_and_transcript():
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.draft_start("x", {}, "")
+    _hello(s, bridges)
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Non riesco.",
+        "usage": {"input_tokens": 5, "output_tokens": 1, "cost_usd": None},
+        "summary": {"tool_calls": 1, "inserted": [], "flagged": [], "unverified": [],
+                    "usage_totals": {"input_tokens": 5, "output_tokens": 1}, "tipo_atto": "x",
+                    "domande": [], "partizioni": [], "segnaposto_aperti": [],
+                    "completata": False, "riepilogo": "", "ended_by": None,
+                    "base_errore": "strumento decreto_ingiuntivo non disponibile"}}})
+    status = "Base non generata: strumento decreto_ingiuntivo non disponibile"
+    assert view.draft_status == (status, True)
+    assert status in view.lines

@@ -132,12 +132,12 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
     assert summary["model"] == "stub" and summary["endpoint_host"] == "127.0.0.1"
     assert out["consent_pending"] is None
     # The answer streamed into the panel and the usage line carries the stub's tokens.
-    assert out["stream"] == ANSWER, out
+    assert out["stream"] == "LibreLex: " + ANSWER, out
     assert out["usage"].startswith("Turno: 120 + 9 token"), out["usage"]
     # The streamed text is what the reopened panel replays; the trailing blank line is the
     # separator _on_final adds after a streamed turn, and no note follows it (nothing was
     # inserted, flagged or left unverified).
-    assert out["transcript"] == [ANSWER, ""], out["transcript"]
+    assert out["transcript"] == ["Tu: Di cosa parla?", "LibreLex: " + ANSWER, ""], out["transcript"]
     # A chat turn writes nothing: no insertion, no redline.
     assert out["paragraphs_after"] == out["paragraphs_before"]
     assert [t for _, t in out["paragraphs_after"]] == [PARAGRAPH]

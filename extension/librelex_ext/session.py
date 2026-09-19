@@ -13,14 +13,24 @@ from typing import Any, Protocol
 from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__
 from librelex_ext.bridge import BridgeError
 from librelex_ext.render import (
+    render_draft_status,
     render_error,
     render_insert_summary,
     render_list_summary,
+    render_partitions,
+    render_reference,
+    render_riepilogo,
     render_show_text,
+    render_template_notes,
     render_turn_notes,
     render_usage,
     render_verify_summary,
 )
+
+# Kept in sync by hand with the core's own limit (core/src/librelex_core/agent/state.py):
+# the core trims again, but a reference this size would already brush the 4 MiB stdio line
+# limit once JSON-escaped, so the extension trims first.
+MAX_REFERENCE_CHARS = 60_000
 
 
 class View(Protocol):
@@ -33,6 +43,12 @@ class View(Protocol):
     def append_stream(self, text: str) -> None: ...
     def set_usage(self, text: str) -> None: ...
     def set_consent(self, summary: dict | None) -> None: ...
+    def set_templates(self, labels: list[str], selected: int | None) -> None: ...
+    def set_template(self, info: dict | None) -> None: ...
+    def set_reference(self, text: str, present: bool) -> None: ...
+    def set_partitions(self, labels: list[str]) -> None: ...
+    def set_draft_status(self, text: str, started: bool) -> None: ...
+    def set_questions(self, questions: list[dict]) -> None: ...
 
 
 class NullView:
@@ -45,6 +61,12 @@ class NullView:
     def append_stream(self, text: str) -> None: ...
     def set_usage(self, text: str) -> None: ...
     def set_consent(self, summary: dict | None) -> None: ...
+    def set_templates(self, labels: list[str], selected: int | None) -> None: ...
+    def set_template(self, info: dict | None) -> None: ...
+    def set_reference(self, text: str, present: bool) -> None: ...
+    def set_partitions(self, labels: list[str]) -> None: ...
+    def set_draft_status(self, text: str, started: bool) -> None: ...
+    def set_questions(self, questions: list[dict]) -> None: ...
 
 
 def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
@@ -88,7 +110,18 @@ class Session:
         self.bridge: Any = None
         self.state = "stopped"
         self.pending: Callable[[str], dict] | None = None
+        self.pending_label: str | None = None
         self.request_id: str | None = None
+        # Guided drafting (spec §6): the state behind the Redazione and Domande panels.
+        self.draft_view: dict = {
+            "templates": [], "query": None, "template": None, "fields": {}, "notes": "",
+            "reference": None, "questions": [], "partitions": [], "open_placeholders": [],
+            "started": False, "done": False, "stopped": None,
+        }
+        # True while a draft (start/answer/continue) request is queued or in flight: drives
+        # the "Redazione in corso…" status independently of draft_view["started"], which
+        # tracks the guided flow itself rather than a single request.
+        self._draft_request = False
         self.pending_consent: tuple[str, str] | None = None
         # what a rebuilt Azioni panel has to be told again (it is created empty): the summary
         # of the consent the core is still waiting on, and the usage line of the last turn
@@ -109,7 +142,15 @@ class Session:
         self.view, self.ui_post = view, ui_post
         view.set_transcript("\n".join(self.transcript))
         view.set_citations([label for label, _, _ in self.citations])
-        view.set_busy(self.state in ("starting", "busy"))
+        view.set_templates(self._template_labels(), None)
+        view.set_template(self.draft_view["template"])
+        view.set_reference(render_reference(self.draft_view["reference"]),
+                           bool(self.draft_view["reference"]))
+        view.set_partitions(render_partitions(self.draft_view["partitions"],
+                                              self.draft_view["open_placeholders"]))
+        self._refresh_draft_status()
+        view.set_questions(self.draft_view["questions"])
+        self._set_busy(self.state in ("starting", "busy"))
         view.set_consent(self.consent_summary)
         view.set_usage(self.usage_text)
         buffered, self._buffer = self._buffer, []
@@ -125,9 +166,9 @@ class Session:
         self.ui_post(ev)
 
     # --- user actions (UI thread) -------------------------------------------
-    def run_command(self, name: str, args: dict) -> None:
+    def run_command(self, name: str, args: dict, label: str | None = None) -> None:
         self._submit(name, lambda rid: {"type": "command", "id": rid, "doc_id": self.doc_id,
-                                        "name": name, "args": args})
+                                        "name": name, "args": args}, label)
 
     def chat(self, message: str) -> None:
         if not message.strip():
@@ -135,19 +176,71 @@ class Session:
             return
         context = self._document_context()
         self._submit(None, lambda rid: {"type": "chat", "id": rid, "doc_id": self.doc_id,
-                                        "message": message, "context": context})
+                                        "message": message, "context": context},
+                     label=f"Tu: {message}")
 
     def research(self, question: str) -> None:
-        self.run_command("research", {"question": question} if question.strip() else {})
+        self.run_command("research", {"question": question} if question.strip() else {},
+                         label=f"Tu: ricerca: {question or 'testo selezionato'}")
 
-    def draft(self, message: str) -> None:
-        """Start or continue a template-guided drafting (spec §6.9): the same command carries
-        the act to draft and, later, the answers to the model's questions."""
-        if not message.strip():
-            self.view.set_status(
-                "Scrivi il tipo di atto (es. decreto ingiuntivo) o la risposta alle domande")
+    # --- guided drafting (spec §6) -------------------------------------------
+    def templates(self, query: str = "") -> None:
+        self.run_command("list_templates", {"query": query.strip()} if query.strip() else {})
+
+    def template(self, tipo_atto: str) -> None:
+        self.run_command("template_info", {"tipo_atto": tipo_atto})
+
+    def set_reference(self, name: str, text: str) -> None:
+        """Forward a reference file to the core; the panel already read it from disk."""
+        self.run_command("set_reference", {"name": name, "text": text[:MAX_REFERENCE_CHARS]})
+
+    def clear_reference(self) -> None:
+        self.run_command("set_reference", {"text": ""})
+
+    def draft_start(self, tipo_atto: str, fields: dict[str, str], notes: str) -> None:
+        if not tipo_atto:
+            self.view.set_status("Scegli prima un tipo di atto")
             return
-        self.run_command("draft", {"message": message.strip()})
+        template = self.draft_view.get("template") or {}
+        missing = [c["nome"] for c in template.get("campi", [])
+                  if c.get("obbligatorio") and not (fields.get(c["nome"]) or "").strip()]
+        if missing:
+            self.view.set_status(f"Compila i campi obbligatori: {', '.join(missing)}")
+            return
+        self.draft_view["fields"], self.draft_view["notes"] = fields, notes
+        self.draft_view["started"] = True
+        self._draft_request = True
+        self.run_command("draft", {"action": "start", "tipo_atto": tipo_atto, "fields": fields,
+                                   "notes": notes},
+                         label=f"Tu: avvio redazione {tipo_atto} ({len(fields)} campi)")
+
+    def draft_answer(self, answers: dict[str, str]) -> None:
+        if not self.draft_view["questions"]:
+            self.view.set_status("Nessuna domanda in sospeso")
+            return
+        self._draft_request = True
+        self.run_command("draft", {"action": "answer", "answers": answers},
+                         label=f"Tu: risposte a {len(answers)} domande")
+
+    def draft_continue(self, message: str = "") -> None:
+        if not self.draft_view["started"]:
+            self.view.set_status("Nessuna redazione in corso")
+            return
+        self._draft_request = True
+        self.run_command("draft", {"action": "continue", "message": message.strip()},
+                         label=f"Tu: continua{': ' + message if message else ''}")
+
+    def goto_partition(self, index: int) -> None:
+        partitions = self.draft_view["partitions"]
+        if not (0 <= index < len(partitions)):
+            return
+        try:
+            self.adapter.goto(partitions[index]["from_id"])
+        except Exception as e:  # navigation is best effort, as in select_citation
+            self.view.set_status(f"Posizione non raggiungibile: {e}")
+
+    def _template_labels(self) -> list[str]:
+        return [f"{m['categoria']} · {m['descrizione']}" for m in self.draft_view["templates"]]
 
     def _document_context(self) -> dict:
         try:
@@ -157,12 +250,13 @@ class Session:
         return {"title": info.get("title", ""), "has_selection": info.get("has_selection", False),
                 "cursor_paragraph": info.get("cursor_paragraph")}
 
-    def _submit(self, name: str | None, payload_factory: Callable[[str], dict]) -> None:
+    def _submit(self, name: str | None, payload_factory: Callable[[str], dict],
+               label: str | None = None) -> None:
         if self.state == "busy":
             self.view.set_status("Richiesta in corso: attendi o premi Annulla")
             return
         if self.state == "starting":
-            self.pending = payload_factory
+            self.pending, self.pending_label = payload_factory, label
             return
         if self.state == "stopped":
             try:
@@ -173,14 +267,14 @@ class Session:
                 self._append(f"Impossibile avviare il core: {e}")
                 return
             self.state = "starting"
-            self.pending = payload_factory
-            self.view.set_busy(True)
+            self.pending, self.pending_label = payload_factory, label
+            self._set_busy(True)
             self.view.set_status("Avvio del core...")
             self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
                         "extension_version": __version__, "lo_version": self.lo_version,
                         "has_markdown_filter": self.has_markdown_filter})
             return
-        self._send_payload(payload_factory)
+        self._send_payload(payload_factory, label)
 
     def cancel(self) -> None:
         if self.state == "busy" and self.request_id and self.bridge is not None:
@@ -234,7 +328,9 @@ class Session:
                 self.bridge = None
         self.state = "stopped"
         self.pending = None
+        self.pending_label = None
         self.request_id = None
+        self._draft_request = False
 
     # --- events from the core (UI thread) -----------------------------------
     def handle_event(self, ev: dict) -> None:
@@ -242,10 +338,12 @@ class Session:
         if kind == "exit":
             was_active = self.state in ("starting", "busy")
             self.bridge = None
-            self.state, self.pending, self.request_id = "stopped", None, None
+            self.state, self.pending, self.pending_label, self.request_id = (
+                "stopped", None, None, None)
+            self._draft_request = False
             self._flush_stream()
             self._clear_pending_consent()
-            self.view.set_busy(False)
+            self._set_busy(False)
             self.view.set_progress(0, None)
             self.view.set_status("Core non attivo")
             if was_active:
@@ -271,16 +369,16 @@ class Session:
                 f"{PROTOCOL_VERSION} (core {msg.get('core_version')}). Aggiorna l'estensione."
             )
             self.shutdown()
-            self.view.set_busy(False)
+            self._set_busy(False)
             return
         self.state = "ready"
         self.view.set_status("Pronto")
         if self.pending is not None:
-            payload_factory = self.pending
-            self.pending = None
-            self._send_payload(payload_factory)
+            payload_factory, label = self.pending, self.pending_label
+            self.pending = self.pending_label = None
+            self._send_payload(payload_factory, label)
         else:
-            self.view.set_busy(False)
+            self._set_busy(False)
 
     def _on_status(self, msg: dict) -> None:
         self.view.set_status(msg.get("text", ""))
@@ -292,6 +390,8 @@ class Session:
 
     def _on_delta(self, msg: dict) -> None:
         text = msg.get("text", "")
+        if not self._streamed:
+            text = "LibreLex: " + text     # only the first chunk of the turn carries it
         self._streamed = True
         self._stream_buffer += text
         self.view.append_stream(text)
@@ -322,27 +422,52 @@ class Session:
 
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
-        self.view.set_busy(False)
+        self._draft_request = False
+        self._set_busy(False)
         self.view.set_progress(0, None)
         self.view.set_status("Pronto")
         self._clear_pending_consent()
         was_streamed = self._streamed
         self._flush_stream()
         summary = msg.get("summary") or {}
-        if was_streamed or "usage_totals" in summary or "tool_calls" in summary:
-            # A model turn (chat or research) is recognised by the shape of its final, not by
-            # whether anything was streamed: a turn that ends on tool calls only (iteration
-            # limit, timeout while tools run) emits no delta and must still show its notes
-            # ([interrotto: ...], the inserted/flagged/unverified lines) and the usage line.
-            # A streamed turn always replays through here, cancelled or not: the cancellation
-            # shows up as a "[annullato]" note (render_turn_notes reads summary["stopped"]),
-            # not as a separate "Annullato." line.
+        if "modelli" in summary:
+            self.draft_view["templates"] = summary["modelli"]
+            self.draft_view["query"] = summary.get("query")
+            self.view.set_templates(self._template_labels(), None)
+            self._append(msg["text"])
+        elif "campi" in summary and "routing" in summary:
+            self.draft_view["template"] = summary
+            self.view.set_template(summary)
+            view = {**self.draft_view, "busy": self._draft_request}
+            self.view.set_draft_status(render_draft_status(view), False)
+            self._append(render_template_notes(summary))
+        elif "riferimento" in summary and not isinstance(summary.get("riferimento"), str):
+            # A dict-or-None value is the new set_reference final; a plain string is the
+            # older insert_norm final, which also happens to use the "riferimento" key and
+            # is handled further down, unchanged.
+            ref = summary["riferimento"]
+            self.draft_view["reference"] = ref
+            self.view.set_reference(render_reference(ref), bool(ref))
+            self._append(msg["text"])
+        elif was_streamed or "usage_totals" in summary or "tool_calls" in summary:
+            # A model turn (chat, research or draft) is recognised by the shape of its final,
+            # not by whether anything was streamed: a turn that ends on tool calls only
+            # (iteration limit, timeout while tools run) emits no delta and must still show
+            # its notes ([interrotto: ...], the inserted/flagged/unverified lines) and the
+            # usage line. A streamed turn always replays through here, cancelled or not: the
+            # cancellation shows up as a "[annullato]" note (render_turn_notes reads
+            # summary["stopped"]), not as a separate "Annullato." line. A draft turn
+            # (identified by "partizioni") additionally merges into draft_view below,
+            # cancelled or not (plan 2 wire contract: a cancelled draft Final still carries
+            # the partitions inserted so far).
             if not was_streamed and (msg.get("text") or "").strip():
-                self._append(msg["text"])       # the prose the turn never streamed
+                self._append("LibreLex: " + msg["text"])     # the prose the turn never streamed
             self._append("")
             for note in render_turn_notes(summary):
                 self._append(note)
             self._set_usage(render_usage(msg.get("usage"), summary.get("usage_totals")))
+            if "partizioni" in summary:
+                self._merge_draft_turn(summary)
         elif msg.get("cancelled"):
             self._append(msg.get("text") or "Annullato.")
         elif "elenco" in summary or "per_verdetto" in summary:
@@ -362,10 +487,36 @@ class Session:
         else:
             self._append(msg.get("text") or "Completato.")
 
+    def _merge_draft_turn(self, summary: dict) -> None:
+        """A draft turn's Final (start/answer/continue, cancelled or not): update draft_view
+
+        and the Redazione/Domande panels. ``base_errore`` (wire contract addition) overrides
+        the computed status with the base-generation failure, when the core reports one.
+        """
+        self.draft_view["questions"] = summary.get("domande") or []
+        self.draft_view["partitions"] = summary.get("partizioni") or []
+        self.draft_view["open_placeholders"] = summary.get("segnaposto_aperti") or []
+        self.draft_view["done"] = summary.get("completata", False)
+        self.draft_view["started"] = True
+        self.draft_view["stopped"] = summary.get("stopped")
+        self.view.set_questions(self.draft_view["questions"])
+        self.view.set_partitions(render_partitions(self.draft_view["partitions"],
+                                                    self.draft_view["open_placeholders"]))
+        base_errore = summary.get("base_errore")
+        if base_errore:
+            status = f"Base non generata: {base_errore}"
+            self.view.set_draft_status(status, True)
+            self._append(status)
+        else:
+            self._refresh_draft_status()
+        if self.draft_view["done"] and summary.get("riepilogo"):
+            self._append(render_riepilogo(summary["riepilogo"]))
+
     def _on_error(self, msg: dict) -> None:
         if self.state == "busy" and msg.get("request_id") in (self.request_id, None):
             self.state, self.request_id = "ready", None
-            self.view.set_busy(False)
+            self._draft_request = False
+            self._set_busy(False)
             self.view.set_status("Pronto")
         self.view.set_progress(0, None)
         self._flush_stream()
@@ -387,17 +538,20 @@ class Session:
             return True
         except BridgeError as e:
             self.shutdown()          # drops the bridge; the next command restarts it
-            self.view.set_busy(False)
+            self._set_busy(False)
             self.view.set_status("Core non attivo")
             self._append(f"Core non raggiungibile: {e}. Riprova: verrà riavviato.")
             return False
 
-    def _send_payload(self, payload_factory: Callable[[str], dict]) -> None:
+    def _send_payload(self, payload_factory: Callable[[str], dict],
+                      label: str | None = None) -> None:
         self._n += 1
         self.request_id = f"r{self._n}"
         self.state = "busy"
-        self.view.set_busy(True)
+        self._set_busy(True)
         self.view.set_status("Invio della richiesta...")
+        if label is not None:
+            self._append(label)
         self._send(payload_factory(self.request_id))
 
     def _flush_stream(self) -> None:
@@ -405,6 +559,15 @@ class Session:
             self.transcript.append(self._stream_buffer)
         self._streamed = False
         self._stream_buffer = ""
+
+    def _set_busy(self, busy: bool) -> None:
+        self.view.set_busy(busy)
+        if busy and self._draft_request:
+            self._refresh_draft_status()
+
+    def _refresh_draft_status(self) -> None:
+        view = {**self.draft_view, "busy": self._draft_request}
+        self.view.set_draft_status(render_draft_status(view), self.draft_view["started"])
 
     def _clear_pending_consent(self) -> None:
         if self.pending_consent is not None:
