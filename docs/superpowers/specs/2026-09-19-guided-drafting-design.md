@@ -33,7 +33,8 @@ Goals:
   facts of the new case, and sent only after consent.
 
 Non-goals (v1 of this flow): pseudonymisation of the reference act (v2, `privacy-filter-it`);
-acts routed to catalogue resources that mcp-legal-it has not published yet (`atti://…`), which
+acts routed to catalogue resources that mcp-legal-it has not published yet
+(`legal://modelli-atti/…`), which
 the model composes from the template fields as today; PDF references (LibreOffice opens them in
 Draw; convert first); editing the fields of a drafting already inserted (start a new one).
 
@@ -294,7 +295,7 @@ markdown markers in chat; the recipe's summary (§4.5) is plain text as well.
   dependency; the file is closed right after extraction.
 - The drop target accepts one local file (`file://` URIs only); anything else is ignored with a
   status line.
-- `leggi_risorsa` accepts `legal://` and `atti://` URIs only; the text is wrapped as data.
+- `leggi_risorsa` accepts `legal://` URIs only; the text is wrapped as data.
 - The generators of the profile are deterministic text builders; their outputs are wrapped as
   data and never ground a reference (§6.6 of the main spec).
 
