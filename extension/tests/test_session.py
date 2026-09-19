@@ -946,6 +946,33 @@ def test_draft_continue_leaves_the_drafting_view_untouched_when_the_core_fails_t
     assert s.transcript[-1].startswith("Impossibile avviare il core")
 
 
+def test_draft_continue_leaves_the_drafting_view_untouched_on_a_dead_pipe_to_a_ready_core():
+    """Fix round 3, Important (still open after rounds 1-2): _submit's "ready" branch used to
+
+    report True unconditionally after handing the payload to _send_payload, even though
+    _send_payload's own _send() can fail on a dead pipe to a core that was ready a moment
+    ago (it calls shutdown(), which correctly resets _draft_request to False) — but the
+    caller (draft_continue) then ran anyway and set _draft_request back to True and pushed
+    "Redazione in corso…" with no bridge left to ever clear it again.
+    """
+    s, adapter, view, bridges = make()
+    s.run_command("verify_citations", {})
+    s.handle_event({"kind": "message", "msg": {"type": "hello_ok", "core_version": "0.1.0",
+                                               "protocol": PROTOCOL_VERSION, "warnings": []}})
+    s.handle_event({"kind": "message", "msg": {
+        "type": "final", "request_id": "r1", "text": "Fatto.", "cancelled": False,
+        "usage": None, "summary": {}}})
+    assert s.state == "ready"
+    s.draft_view["started"] = True
+    bridges[0].fail_send = True                      # the core dies between two requests
+    s.draft_continue("continua")
+    assert s._draft_request is False
+    assert view.draft_status != ("Redazione in corso…", True)
+    assert s.state == "stopped"
+    assert not any(line.startswith("Tu: continua") for line in s.transcript)
+    assert "Core non raggiungibile" in s.transcript[-1]
+
+
 def test_reference_round_trip_and_rebind_replays_the_drafting_view():
     s, adapter, view, bridges = make()
     s.set_reference("ricorso_rossi.docx", "RICORSO ...")

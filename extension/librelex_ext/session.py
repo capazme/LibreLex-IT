@@ -293,8 +293,7 @@ class Session:
             return self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
                                "extension_version": __version__, "lo_version": self.lo_version,
                                "has_markdown_filter": self.has_markdown_filter})
-        self._send_payload(payload_factory, label)
-        return True
+        return self._send_payload(payload_factory, label)
 
     def cancel(self) -> None:
         if self.state == "busy" and self.request_id and self.bridge is not None:
@@ -563,15 +562,26 @@ class Session:
             return False
 
     def _send_payload(self, payload_factory: Callable[[str], dict],
-                      label: str | None = None) -> None:
+                      label: str | None = None) -> bool:
+        """Send the payload to an already-connected core; return whether it was accepted.
+
+        Everything here (``request_id``, the busy state, the "Tu:" label) is committed only
+        after ``_send`` actually succeeds: a dead pipe on a core that was ready a moment ago
+        (``_send``'s failure path already calls ``shutdown()``) must leave nothing behind for
+        a caller that mutates its own state on success — such as the three draft methods,
+        via ``_submit``'s return value — to roll back.
+        """
         self._n += 1
-        self.request_id = f"r{self._n}"
+        request_id = f"r{self._n}"
+        if not self._send(payload_factory(request_id)):
+            return False
+        self.request_id = request_id
         self.state = "busy"
         self._set_busy(True)
         self.view.set_status("Invio della richiesta...")
         if label is not None:
             self._append(label)
-        self._send(payload_factory(self.request_id))
+        return True
 
     def _flush_stream(self) -> None:
         if self._streamed:
