@@ -31,6 +31,10 @@ ALLOWLIST: frozenset[str] = frozenset({
     "interessi_legali", "interessi_mora", "rivalutazione_monetaria", "contributo_unificato",
     "parcella_avvocato_civile", "termini_processuali_civili", "scadenza_processuale",
     "calcolo_tempo_trascorso",
+    # act generators the genera_modello_atto catalogue routes to (deterministic, no network)
+    "decreto_ingiuntivo", "atto_di_precetto", "sollecito_pagamento", "procura_alle_liti",
+    "relata_notifica_pec", "attestazione_conformita", "sfratto_morosita",
+    "nota_precisazione_credito", "dichiarazione_553_cpc",
 })
 
 

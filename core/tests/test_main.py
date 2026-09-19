@@ -150,7 +150,7 @@ async def test_not_implemented_and_unparsed_reference():
     async def scenario(h: Harness):
         await h.send(HELLO)
         await h.pump(p.HelloOk)
-        await h.send(p.Command(id="r1", doc_id="d1", name="draft"))
+        await h.send(p.Command(id="r1", doc_id="d1", name="review"))
         await h.pump(p.Error)
         assert h.received[-1].code == "not_implemented"
         await h.send(p.Command(id="r2", doc_id="d1", name="insert_norm", args={"reference": "boh"}))
@@ -337,3 +337,31 @@ async def test_chat_without_llm_config_and_research_dispatch():
         assert "Domanda: usucapione" in llm.calls[0][0][1]["content"]
 
     await h2.run(scenario2)
+
+
+async def test_draft_dispatch_runs_a_model_turn_and_refuses_an_empty_message():
+    llm = ScriptedLLM([tool_turn(("insert_markdown", {"where": "end", "markdown": "# Atto"})),
+                       text_turn("Inserita l'intestazione.")])
+    h = Harness(FakeDocument([""]), llm=llm)
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(id="r1", doc_id="d1", name="draft", args={"message": "  "}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "bad_request"
+        await h.send(p.Command(id="r2", doc_id="d1", name="draft",
+                               args={"message": "decreto ingiuntivo"}))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.text == "Inserita l'intestazione." and final.summary["tool_calls"] == 1
+        assert final.summary["inserted"] == [{"from_id": "p:1", "to_id": "p:1"}]
+        assert "usage_totals" in final.summary
+        assert h.doc.inserts[0]["undo_label"] == "LibreLex: redazione da modello"
+        assert "Messaggio dell'utente: decreto ingiuntivo" in llm.calls[0][0][1]["content"]
+        # review is the only command still to come
+        await h.send(p.Command(id="r3", doc_id="d1", name="review"))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "not_implemented"
+
+    await h.run(scenario)

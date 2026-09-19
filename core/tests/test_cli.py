@@ -69,3 +69,16 @@ def test_chat_subcommand_streams_and_summarises(tmp_path, capsys):
                 llm_factory=lambda cfg: llm) == 0
     out = capsys.readouterr().out
     assert out.startswith("Risposta.") and "token" in out
+
+
+def test_draft_subcommand_streams_and_summarises(tmp_path, capsys):
+    from tests.fakes import ScriptedLLM, text_turn, tool_turn
+    f = tmp_path / "atto.txt"
+    f.write_text("Fattura n. 12.", encoding="utf-8")
+    llm = ScriptedLLM([tool_turn(("insert_markdown", {"where": "end", "markdown": "# Atto"})),
+                       text_turn("Inserito.")])
+    assert main(["draft", "decreto ingiuntivo", "--file", str(f)], tools_factory=_factory(),
+                llm_factory=lambda cfg: llm) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Inserito.") and "1 inserimenti nel documento in memoria" in out
+    assert "Messaggio dell'utente: decreto ingiuntivo" in llm.calls[0][0][1]["content"]

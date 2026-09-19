@@ -9,6 +9,9 @@ from librelex_core.mcp.client import ALLOWLIST
 CALCULATORS = ("interessi_legali", "interessi_mora", "rivalutazione_monetaria",
                "contributo_unificato", "parcella_avvocato_civile", "termini_processuali_civili",
                "scadenza_processuale", "calcolo_tempo_trascorso")
+GENERATORS = ("decreto_ingiuntivo", "atto_di_precetto", "sollecito_pagamento",
+              "procura_alle_liti", "relata_notifica_pec", "attestazione_conformita",
+              "sfratto_morosita", "nota_precisazione_credito", "dichiarazione_553_cpc")
 CASE_LAW = ("cerca_giurisprudenza", "cerca_giurisprudenza_unificata", "leggi_sentenza",
             "giurisprudenza_su_norma", "orientamento_su_norma",
             "cerca_giurisprudenza_amministrativa", "leggi_provvedimento_amm",
@@ -29,7 +32,7 @@ PROFILES: dict[str, Profile] = {
     "research": Profile(CASE_LAW + ("cite_law",),
                         ("read_selection", "read_paragraphs", "insert_markdown")),
     "draft": Profile(("genera_modello_atto", "lista_categorie_atti", "cite_law", "fetch_act_index",
-                      "verifica_citazioni") + CALCULATORS,
+                      "verifica_citazioni") + GENERATORS + CALCULATORS,
                      ("read_paragraphs", "insert_markdown")),
     "review": Profile(("cite_law", "verifica_citazioni") + CALCULATORS,
                       ("read_selection", "replace_selection", "add_comment")),
