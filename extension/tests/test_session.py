@@ -69,6 +69,10 @@ class FakeAdapter:
     def replace_selection(self, markdown, undo_label):
         return {"from_id": "p:0", "to_id": "p:0"}
 
+    def replace_text(self, query, replacement, undo_label, paragraph_id=None, all=False):
+        self.calls.append(("replace_text", query, replacement, paragraph_id, all))
+        return {"count": 1, "anchors": [{"paragraph_id": "p:0", "start": 3, "end": 7}]}
+
     def add_comment(self, paragraph_id, start, end, expected_text, author, text):
         self.calls.append(("add_comment", paragraph_id, author))
         return "exact"
@@ -171,6 +175,10 @@ def test_dispatch_maps_actions_and_wraps_results():
     assert dispatch_doc_call(a, "insert_markdown", {
         "where": "cursor", "markdown": "x", "undo_label": "u", "bookmark": None,
         "author": "LibreLex"}) == {"from_id": "p:1", "to_id": "p:2"}
+    assert dispatch_doc_call(a, "replace_text", {
+        "query": "[SEDE]", "replacement": "Roma", "undo_label": "u", "all": True}) == {
+        "count": 1, "anchors": [{"paragraph_id": "p:0", "start": 3, "end": 7}]}
+    assert a.calls[-1] == ("replace_text", "[SEDE]", "Roma", None, True)
     with pytest.raises(Exception, match="azione sconosciuta"):
         dispatch_doc_call(a, "format_disk", {})
 

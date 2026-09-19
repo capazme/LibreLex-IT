@@ -63,6 +63,9 @@ def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
                                        args.get("bookmark"), args.get("author"))
     if action == "replace_selection":
         return adapter.replace_selection(args["markdown"], args["undo_label"])
+    if action == "replace_text":
+        return adapter.replace_text(args["query"], args["replacement"], args["undo_label"],
+                                    args.get("paragraph_id"), bool(args.get("all", False)))
     if action == "add_comment":
         return {"anchored": adapter.add_comment(
             args["paragraph_id"], args["start"], args["end"], args["expected_text"],

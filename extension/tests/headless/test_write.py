@@ -125,3 +125,39 @@ def test_insert_inside_footnote_and_replace_selection(soffice):
     kinds = sorted(set(t for t, _ in out["redlines"]))
     assert kinds == ["Delete", "Insert"] and all(a == "LibreLex" for _, a in out["redlines"])
     assert out["tail"][-1][1] == "Paragrafo riscritto."
+
+
+def test_replace_text_is_a_tracked_deletion_plus_insertion(soffice):
+    out = run_probe(soffice, "replace_text", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "ILL.MO TRIBUNALE DI [SEDE] e ancora [SEDE].", False)
+        text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+        text.insertString(cur, "Avv. [LEGALE]", False)
+        a = DocumentAdapter(ctx, doc)
+        out["first"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test")
+        out["redlines_after_first"] = redlines(doc)
+        out["rest"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test", all=True)
+        out["legale"] = a.replace_text("[LEGALE]", "Mario Rossi", "LibreLex: test",
+                                       paragraph_id="p:1")
+        out["none"] = a.replace_text("[NIENTE]", "x", "LibreLex: test")
+        out["texts"] = paragraph_texts(text)
+        out["redlines"] = redlines(doc)
+        out["undo"] = doc.getUndoManager().getCurrentUndoActionTitle()
+        doc.close(True)
+    ''')
+    assert out["first"]["count"] == 1
+    assert out["first"]["anchors"] == [{"paragraph_id": "p:0", "start": 20, "end": 26}]
+    # every replacement is recorded as a deletion plus an insertion by LibreLex
+    kinds = [k for k, _ in out["redlines_after_first"]]
+    assert sorted(kinds) == ["Delete", "Insert"]
+    assert all(author == "LibreLex" for _, author in out["redlines_after_first"])
+    assert out["rest"]["count"] == 1 and out["legale"]["count"] == 1 and out["none"]["count"] == 0
+    # the visible text (deleted redline text is still part of getString on 26.8: assert on
+    # presence of the replacements and on the redline count, not on exact equality)
+    body = [t for _, t in out["texts"]]
+    assert "MILANO" in body[0] and "Mario Rossi" in body[1]
+    assert len([k for k, _ in out["redlines"] if k == "Insert"]) == 3
+    assert len([k for k, _ in out["redlines"] if k == "Delete"]) == 3
