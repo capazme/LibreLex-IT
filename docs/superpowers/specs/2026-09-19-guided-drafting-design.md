@@ -221,11 +221,12 @@ clears it. The extension never keeps the file open or copies it anywhere.
 Internal tool `leggi_atto_riferimento()` (no arguments; it reads the drafting state, so the
 loop executes it like a document read, with consent) returns the stored text wrapped as
 `<<<DATI: atto di riferimento (nome)>>>`; the model calls it when the recipe tells it to (at
-the first drafting turn, and again after a compaction if it needs the text). The first call in a
-session asks consent through the existing channel with `scope: "reference"`, the file name and
-the character count, unless the session consent is already "document"; "annulla" returns the
-usual denial string and the drafting goes on without the reference. The consent block's text
-names the file. Nothing of the reference is logged.
+the first drafting turn, and again after a compaction if it needs the text). The first call
+after the reference is set asks consent through the existing channel with `scope: "reference"`,
+the file name and the character count, regardless of the consent given for the document (the
+reference is another case's text, possibly another client's); "annulla" returns the usual
+denial string and the drafting goes on without the reference. The consent block's text names
+the file. Nothing of the reference is logged.
 
 ## 6. The guided flow in the sidebar (extension)
 

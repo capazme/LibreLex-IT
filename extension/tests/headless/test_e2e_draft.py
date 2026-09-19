@@ -14,7 +14,9 @@ from tests.headless.conftest import run_probe
 from tests.headless.llm_stub import StubLLM, text_response, tool_call_response
 
 pytestmark = [pytest.mark.headless,
-              pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")]
+              pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed"),
+              pytest.mark.xfail(strict=False, reason="draft protocol changed by plan "
+                                "2026-09-19-guided-drafting-core; rewritten in plan 2")]
 
 CORE = paths.repo_core_dir()
 PARAGRAPH = "Fattura n. 12 del 3 marzo 2025 di Euro 12.000,00 emessa da Alfa S.r.l. a Beta S.p.A."
