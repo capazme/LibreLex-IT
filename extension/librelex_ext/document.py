@@ -446,20 +446,48 @@ class DocumentAdapter:
         redline (it is only struck through, not removed, until the change is accepted), so
         a later `replace_text` call scanning the same paragraph would re-match text an
         earlier call had already replaced. Matches that fall inside one of these spans are
-        excluded from the scan below.
+        excluded from the scan in `replace_text`.
+
+        A `Delete` redline can cross a paragraph boundary (e.g. `replace_selection` over a
+        multi-paragraph selection, still deleted-but-visible the same way): `RedlineStart`
+        and `RedlineEnd` then sit in two different paragraphs, so each end is resolved to
+        its own paragraph separately (`_entry_at`, not the other end's `entry`, which
+        `_offset_in_paragraph` would silently measure against the wrong paragraph and
+        return a bogus offset for). The start paragraph is covered from its offset to its
+        end, the end paragraph from its start to its offset, and every paragraph strictly
+        between the two (by index order) is covered in full. Redlines that resolve (partly)
+        outside the index are skipped.
+
+        Cost: O(redlines x paragraphs), since resolving each redline's paragraph(s) walks
+        the whole index again (`_entry_at`); fine for realistic documents.
         """
         spans: dict[str, list[tuple[int, int]]] = {}
+        entries = self._index()
+        by_id = {en.id: i for i, en in enumerate(entries)}
         enum = self.doc.Redlines.createEnumeration()
         while enum.hasMoreElements():
             r = enum.nextElement()
             if r.RedlineType != "Delete":
                 continue
-            e = self._entry_at(r.RedlineStart)
-            if e is None:
+            e_start = self._entry_at(r.RedlineStart)
+            e_end = self._entry_at(r.RedlineEnd)
+            if e_start is None or e_end is None:
+                continue           # redline lives (partly) outside the indexed text
+            i0, i1 = by_id.get(e_start.id), by_id.get(e_end.id)
+            if i0 is None or i1 is None:
                 continue
-            start = self._offset_in_paragraph(e, r.RedlineStart)
-            end = self._offset_in_paragraph(e, r.RedlineEnd)
-            spans.setdefault(e.id, []).append((start, end))
+            if i0 == i1:
+                start = self._offset_in_paragraph(e_start, r.RedlineStart)
+                end = self._offset_in_paragraph(e_end, r.RedlineEnd)
+                spans.setdefault(e_start.id, []).append((start, end))
+                continue
+            lo, hi = min(i0, i1), max(i0, i1)
+            start = self._offset_in_paragraph(e_start, r.RedlineStart)
+            spans.setdefault(e_start.id, []).append((start, len(e_start.para.getString())))
+            end = self._offset_in_paragraph(e_end, r.RedlineEnd)
+            spans.setdefault(e_end.id, []).append((0, end))
+            for mid in entries[lo + 1:hi]:
+                spans.setdefault(mid.id, []).append((0, len(mid.para.getString())))
         return spans
 
     def replace_text(self, query: str, replacement: str, undo_label: str,
@@ -502,6 +530,8 @@ class DocumentAdapter:
                     break
         if not all and groups:
             groups = [(groups[0][0], groups[0][1][:1])]
+        if not groups:
+            return {"count": 0, "anchors": []}
 
         anchors: list[dict] = []
         with self._undo(undo_label):

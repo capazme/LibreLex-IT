@@ -161,3 +161,47 @@ def test_replace_text_is_a_tracked_deletion_plus_insertion(soffice):
     assert "MILANO" in body[0] and "Mario Rossi" in body[1]
     assert len([k for k, _ in out["redlines"] if k == "Insert"]) == 3
     assert len([k for k, _ in out["redlines"] if k == "Delete"]) == 3
+
+
+def test_replace_text_ignores_a_deletion_that_crosses_a_paragraph_boundary(soffice):
+    """Regression: a Delete redline spanning two paragraphs (reachable today through
+    replace_selection over a multi-paragraph selection) used to be attributed a bogus,
+    inverted span on its start paragraph, so replace_text could still match and re-replace
+    text that was already deleted. Route: replace_selection is driven headless through the
+    view cursor, exactly as `_first_selection_range`'s own docstring says it must be on a
+    hidden document (getCurrentSelection() is None there); no fallback was needed."""
+    out = run_probe(soffice, "replace_text_cross_para", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "Primo [X] fine", False)
+        text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+        text.insertString(cur, "[X] secondo", False)
+        a = DocumentAdapter(ctx, doc)
+        vc = doc.getCurrentController().getViewCursor()
+        a.goto("p:0")
+        vc.goRight(6, False)                       # after "Primo "
+        p1 = a._entry("p:1").para
+        end_cur = text.createTextCursorByRange(p1.getStart())
+        end_cur.goRight(3, False)                   # after "[X]" in p:1
+        vc.gotoRange(end_cur, True)                  # select across the paragraph break
+        a.replace_selection("NUOVO", "LibreLex: test")
+        out["redlines_before"] = redlines(doc)
+        out["cross"] = a.replace_text("[X]", "Y", "LibreLex: test", all=True)
+        out["redlines_after"] = redlines(doc)
+        cur2 = text.createTextCursor()
+        cur2.gotoEnd(False)
+        text.insertControlCharacter(cur2, PARAGRAPH_BREAK, False)
+        text.insertString(cur2, "Terzo [X].", False)
+        out["fresh"] = a.replace_text("[X]", "Y", "LibreLex: test", all=True)
+        out["texts"] = paragraph_texts(text)
+        doc.close(True)
+    ''')
+    # both original "[X]" occurrences sit entirely under the cross-paragraph deletion
+    assert out["cross"] == {"count": 0, "anchors": []}
+    assert out["redlines_before"] == out["redlines_after"]      # no spurious redline added
+    # a genuinely live "[X]" in a later paragraph is still found and replaced
+    assert out["fresh"]["count"] == 1
+    body = [t for _, t in out["texts"]]
+    assert "Y" in body[-1] and body[-1].startswith("Terzo")
