@@ -911,6 +911,41 @@ def test_draft_continue_refuses_while_busy_without_touching_the_drafting_view():
     assert bridges[0].sent == sent_before
 
 
+def test_draft_start_leaves_the_drafting_view_untouched_when_the_core_fails_to_start():
+    """Fix round 2, Important (still open after round 1): the busy refusal is guarded, but a
+
+    core that fails to start (bridge.start() raises) is a second refusal path _submit takes,
+    and draft_start/draft_answer/draft_continue used to mutate draft_view/_draft_request
+    before knowing whether _submit would take the request at all. Nothing then ever clears
+    _draft_request (no core process exists, so no final/error/exit ever fires), so the next
+    unrelated request would show "Redazione in corso…" for a drafting that was never sent.
+    """
+    s, adapter, view, bridges = make(fail_start=True)
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": [
+        {"nome": "creditore", "tipo": "testo", "obbligatorio": True}]}
+    s.draft_start("x", {"creditore": "Alfa"}, "")
+    assert s.draft_view["started"] is False and s._draft_request is False
+    assert s.transcript[-1].startswith("Impossibile avviare il core")
+    assert view.draft_status is None or view.draft_status[0] != "Redazione in corso…"
+
+
+def test_draft_answer_leaves_the_drafting_view_untouched_when_the_core_fails_to_start():
+    s, adapter, view, bridges = make(fail_start=True)
+    s.draft_view["started"] = True
+    s.draft_view["questions"] = [{"campo": "a"}]
+    s.draft_answer({"a": "b"})
+    assert s._draft_request is False
+    assert s.transcript[-1].startswith("Impossibile avviare il core")
+
+
+def test_draft_continue_leaves_the_drafting_view_untouched_when_the_core_fails_to_start():
+    s, adapter, view, bridges = make(fail_start=True)
+    s.draft_view["started"] = True
+    s.draft_continue("qualcosa")
+    assert s._draft_request is False
+    assert s.transcript[-1].startswith("Impossibile avviare il core")
+
+
 def test_reference_round_trip_and_rebind_replays_the_drafting_view():
     s, adapter, view, bridges = make()
     s.set_reference("ricorso_rossi.docx", "RICORSO ...")

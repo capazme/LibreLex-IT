@@ -166,9 +166,11 @@ class Session:
         self.ui_post(ev)
 
     # --- user actions (UI thread) -------------------------------------------
-    def run_command(self, name: str, args: dict, label: str | None = None) -> None:
-        self._submit(name, lambda rid: {"type": "command", "id": rid, "doc_id": self.doc_id,
-                                        "name": name, "args": args}, label)
+    def run_command(self, name: str, args: dict, label: str | None = None) -> bool:
+        """Submit a command; returns whether it was queued or sent (see ``_submit``)."""
+        return self._submit(name, lambda rid: {"type": "command", "id": rid,
+                                                "doc_id": self.doc_id, "name": name,
+                                                "args": args}, label)
 
     def chat(self, message: str) -> None:
         if not message.strip():
@@ -207,46 +209,40 @@ class Session:
         if missing:
             self.view.set_status(f"Compila i campi obbligatori: {', '.join(missing)}")
             return
-        if self._refuse_if_busy():
+        # draft_view/_draft_request are mutated only once the request is actually queued or
+        # sent (run_command's return value): any refusal (busy, the core failing to start,
+        # or a dead pipe on the hello) must leave the Redazione panel exactly as it was, or a
+        # drafting that never reached the core would be shown as under way.
+        if not self.run_command(
+                "draft", {"action": "start", "tipo_atto": tipo_atto, "fields": fields,
+                         "notes": notes},
+                label=f"Tu: avvio redazione {tipo_atto} ({len(fields)} campi)"):
             return
         self.draft_view["fields"], self.draft_view["notes"] = fields, notes
         self.draft_view["started"] = True
         self._draft_request = True
-        self.run_command("draft", {"action": "start", "tipo_atto": tipo_atto, "fields": fields,
-                                   "notes": notes},
-                         label=f"Tu: avvio redazione {tipo_atto} ({len(fields)} campi)")
+        self._refresh_draft_status()
 
     def draft_answer(self, answers: dict[str, str]) -> None:
         if not self.draft_view["questions"]:
             self.view.set_status("Nessuna domanda in sospeso")
             return
-        if self._refuse_if_busy():
+        if not self.run_command("draft", {"action": "answer", "answers": answers},
+                                label=f"Tu: risposte a {len(answers)} domande"):
             return
         self._draft_request = True
-        self.run_command("draft", {"action": "answer", "answers": answers},
-                         label=f"Tu: risposte a {len(answers)} domande")
+        self._refresh_draft_status()
 
     def draft_continue(self, message: str = "") -> None:
         if not self.draft_view["started"]:
             self.view.set_status("Nessuna redazione in corso")
             return
-        if self._refuse_if_busy():
+        if not self.run_command(
+                "draft", {"action": "continue", "message": message.strip()},
+                label=f"Tu: continua{': ' + message if message else ''}"):
             return
         self._draft_request = True
-        self.run_command("draft", {"action": "continue", "message": message.strip()},
-                         label=f"Tu: continua{': ' + message if message else ''}")
-
-    def _refuse_if_busy(self) -> bool:
-        """Pre-check used by the draft methods, which mutate draft_view/_draft_request only
-
-        once they know the request will actually be queued or sent: without this, a busy
-        refusal from _submit (unchanged, checked again there) would leave the Redazione panel
-        claiming a drafting that was never sent to the core.
-        """
-        if self.state == "busy":
-            self.view.set_status("Richiesta in corso: attendi o premi Annulla")
-            return True
-        return False
+        self._refresh_draft_status()
 
     def goto_partition(self, index: int) -> None:
         partitions = self.draft_view["partitions"]
@@ -269,12 +265,19 @@ class Session:
                 "cursor_paragraph": info.get("cursor_paragraph")}
 
     def _submit(self, name: str | None, payload_factory: Callable[[str], dict],
-               label: str | None = None) -> None:
-        if self._refuse_if_busy():
-            return
+               label: str | None = None) -> bool:
+        """Queue or send the request; return whether it was taken.
+
+        False on every refusal (busy, the core failing to start, a dead pipe on the hello):
+        callers that mutate their own state before submitting (the three draft methods) rely
+        on this to know whether that state actually reflects a request the core will see.
+        """
+        if self.state == "busy":
+            self.view.set_status("Richiesta in corso: attendi o premi Annulla")
+            return False
         if self.state == "starting":
             self.pending, self.pending_label = payload_factory, label
-            return
+            return True
         if self.state == "stopped":
             try:
                 self.bridge = self.bridge_factory(self.post_event)
@@ -282,16 +285,16 @@ class Session:
             except BridgeError as e:
                 self.bridge = None
                 self._append(f"Impossibile avviare il core: {e}")
-                return
+                return False
             self.state = "starting"
             self.pending, self.pending_label = payload_factory, label
             self._set_busy(True)
             self.view.set_status("Avvio del core...")
-            self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
-                        "extension_version": __version__, "lo_version": self.lo_version,
-                        "has_markdown_filter": self.has_markdown_filter})
-            return
+            return self._send({"type": "hello", "id": "h1", "protocol": PROTOCOL_VERSION,
+                               "extension_version": __version__, "lo_version": self.lo_version,
+                               "has_markdown_filter": self.has_markdown_filter})
         self._send_payload(payload_factory, label)
+        return True
 
     def cancel(self) -> None:
         if self.state == "busy" and self.request_id and self.bridge is not None:
