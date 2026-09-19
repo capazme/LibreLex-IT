@@ -71,12 +71,15 @@ bundled copy otherwise.
 When the template's routing names a direct tool (`tool_diretto`), the core, not the model:
 
 1. calls the generator with the fields the lawyer filled plus `parametri_fissi`;
-2. inserts the generator's text (the `testo` key of its result, used by the privacy and
-   court-act generators, else a key starting with `bozza`, as `bozza_ricorso` of
-   `decreto_ingiuntivo`; a result with neither, as the `preventivo_*` tools that return
-   amounts, inserts no base and the model composes from the data) at the end of the document
-   as one tracked insertion with undo label `LibreLex: base <tipo_atto>` and bookmark
-   `LibreLex.atto.<tipo_atto>`;
+2. inserts the generator's text (the `testo` key of its result, used by most generators,
+   else the first key starting with `testo`, as `testo_lettera` of `sollecito_pagamento` and
+   `testo_preventivo` of the `preventivo_*` tools, else a key starting with `bozza`, as
+   `bozza_ricorso` of `decreto_ingiuntivo`; a result with no text key inserts no base, and
+   its data still reach the model as `risultato di <tool>`) at the end of the document as one
+   tracked insertion with undo label `LibreLex: base <tipo_atto>` and bookmark
+   `LibreLex.atto.<tipo_atto>`; a generator failure (a tool error, a malformed result, a
+   date the generator cannot parse) inserts nothing and is reported to the panel as
+   `base_errore` in the turn's summary and to the model in the user message;
 3. records the placeholders found in it (`[SEDE]`, `[LEGALE]`, `[...]`, `{campo}`) in the
    drafting state.
 
