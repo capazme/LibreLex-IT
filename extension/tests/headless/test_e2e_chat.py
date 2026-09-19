@@ -62,6 +62,14 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
         def set_progress(self, done, total): pass
         def append_stream(self, t): self.stream += t
         def set_usage(self, t): self.usage = t
+        # The View protocol gained the six drafting methods with the Redazione and Domande
+        # panels: a probe's recorder must implement them too, since Session.bind calls them.
+        def set_templates(self, labels, selected): pass
+        def set_template(self, info): pass
+        def set_reference(self, text, present): pass
+        def set_partitions(self, labels): pass
+        def set_draft_status(self, text, started): pass
+        def set_questions(self, questions): pass
         def set_consent(self, summary):
             self.consent = summary
             if summary is not None:

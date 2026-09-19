@@ -200,18 +200,24 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with three panels (Azioni,
-  Citazioni, Risposte) served by one factory; each panel is collapsible
-  through the sidebar's own title bar and "Risposte" takes the remaining
+- Registered as a sidebar deck "LibreLex" with five panels (Azioni,
+  Redazione, Domande, Citazioni, Risposte) served by one factory; each panel is
+  collapsible through the sidebar's own title bar and "Risposte" takes the remaining
   height; each panel is a UNO `XUIElement` built from an XDL dialog
   (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
   controls: read-only multi-line transcript, a citation list (one entry per
   reference found; selecting an entry jumps to its paragraph and shows its text,
   §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
   Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,
-  Redigi da modello, Rivedi selezione), status line, cancel button, usage/cost
+  Rivedi selezione), status line, cancel button, usage/cost
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
+- **Redazione** holds the guided drafting of the drafting design §6.1 (catalogue
+  search and list, typed fields, notes, the similar-case row, "Avvia redazione",
+  the partitions list, "Continua la redazione" and the drafting status line), and
+  **Domande** holds the questions a drafting turn asks, one labelled box each, with
+  "Continua" to send the answers back. The "Redigi da modello" button is removed from
+  Azioni: the drafting starts in Redazione.
 - Layout (M1): the controls are grouped in labelled sections (Documento,
   Riferimento) over a two-column button grid, with a progress bar above the
   status line, a `Svuota` button on the answers, tooltips on every button
@@ -226,9 +232,8 @@ LibreLex-IT/
   the progress bar, which keeps its slot in the control table at all times
   (only the visibilities are flipped, so showing it never moves the controls
   under it) and stays enabled while the core is busy.
-- Drafting (M3): "Redigi da modello" is a full-width button under the Mostra testo / Inserisci
-  norma row; the input box above it names the act on the first press and carries the answers to
-  the model's questions on the next ones.
+- Drafting (M3): moved out of Azioni into the Redazione and Domande panels above
+  (drafting design §6.1); the Azioni input box serves chat and research only.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
 - Streaming: the bridge reader thread pushes events onto a `queue.Queue` and

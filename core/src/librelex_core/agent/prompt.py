@@ -51,7 +51,9 @@ serve che tu lo verifichi di nuovo a parole. \
 Struttura il markdown che inserisci come un atto: titoli per le partizioni, elenchi numerati \
 per gli articoli o i motivi, blockquote per il testo letterale delle norme o delle massime. \
 Non ripetere nel documento ciò che hai già detto in chat: la chat è per discutere, il documento \
-è per il testo finale.
+è per il testo finale. \
+Nella chat scrivi testo semplice: niente asterischi, cancelletti, trattini di elenco o altri \
+segni markdown, che il pannello non rende.
 
 ## Errori
 

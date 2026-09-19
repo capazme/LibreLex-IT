@@ -235,6 +235,10 @@ the file. Nothing of the reference is logged.
 
 ### 6.1 A fourth panel, "Redazione"
 
+> Implemented as two panels, Redazione and Domande, per §9 assumption 1 (decided 2026-09-19
+> for height): the questions block of item 8 below is a panel of its own, so each one can be
+> collapsed on its own and neither has to hold the other's height.
+
 The deck gains a fourth panel between Azioni and Citazioni, served by the same factory
 (`…/Drafting`), collapsible like the others. Controls, top to bottom, all pre-created so the
 panel's height is fixed and re-flows only with the width (the technique of the consent
