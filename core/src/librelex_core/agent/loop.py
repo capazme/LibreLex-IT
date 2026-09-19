@@ -27,7 +27,7 @@ from librelex_core.agent.state import DocSession
 from librelex_core.citations.verifier import RETRYABLE as UNVERIFIED_VERDICT
 from librelex_core.citations.verifier import Verdict
 from librelex_core.config import LimitsConfig
-from librelex_core.document import DocumentClient, DocumentError
+from librelex_core.document import DocumentClient, DocumentError, InsertedRange
 from librelex_core.llm.client import ToolCallRequest
 from librelex_core.mcp.client import LegalToolsClient, ToolError
 from librelex_core.protocol import Usage
@@ -41,7 +41,7 @@ CONSENT_DENIED = "ERRORE: invio del testo del documento non autorizzato dall'ute
 NO_LEGAL_TOOLS = "ERRORE: mcp-legal-it non disponibile"
 
 READ_TOOLS = ("read_selection", "read_paragraphs", "find_text")
-WRITE_TOOLS = ("insert_markdown", "replace_selection")
+WRITE_TOOLS = ("insert_markdown", "replace_selection", "replace_text")
 WRITE_AUTHOR = "LibreLex"
 
 
@@ -70,6 +70,7 @@ class TurnOutcome:
     usage: Usage = field(default_factory=Usage)
     stopped: str | None = None
     inserted: list[dict] = field(default_factory=list)
+    replaced: int = 0
     flagged: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
     tool_calls: int = 0
@@ -161,23 +162,39 @@ async def run_turn(
     async def write_tool(name: str, args: dict) -> str:
         """Grounding on write (spec §6.6): verify, then write, then comment the problems."""
         markdown = str(args.get("markdown", ""))
+        query = str(args.get("query", ""))
+        text_to_ground = markdown if name != "replace_text" else str(args.get("replacement", ""))
         verdicts: dict[str, Verdict] = {}
-        refs = grounding.unseen(markdown)
+        refs = grounding.unseen(text_to_ground)
         if refs:
             await emit(p.Status(
                 request_id=request_id,
                 text=f"Verifico {len(refs)} riferimenti prima dell'inserimento"))
             verdicts = await verify_unseen(refs, tools)
+        replaced_count = 0
         if name == "insert_markdown":
             inserted = await doc.insert_markdown(str(args.get("where", "cursor")), markdown,
                                                  undo_label, bookmark=None, author=WRITE_AUTHOR)
+        elif name == "replace_text":
+            replaced = await doc.replace_text(
+                query, text_to_ground, undo_label,
+                paragraph_id=args.get("paragraph_id"), all=bool(args.get("all", False)))
+            if replaced.count == 0:
+                return f"Nessuna occorrenza di «{query}»."
+            replaced_count = replaced.count
+            outcome.replaced += replaced_count
+            inserted = InsertedRange(from_id=replaced.anchors[0].paragraph_id,
+                                     to_id=replaced.anchors[-1].paragraph_id)
         else:
             inserted = await doc.replace_selection(markdown, undo_label)
         # The text is in the document from here on: the write is recorded before anything
         # else can fail, so undo/redline and the panel always know about it (review
         # finding 3), and a comment that cannot be anchored is reported to the model as
-        # such instead of looking like a failed insertion.
-        outcome.inserted.append(inserted.model_dump())
+        # such instead of looking like a failed insertion. `replace_text` is not a partition
+        # of the document (it can touch a range already covered by an earlier insertion), so
+        # it is counted separately in `outcome.replaced` instead of `outcome.inserted`.
+        if name != "replace_text":
+            outcome.inserted.append(inserted.model_dump())
         # A reference the source could not verify gets no comment and no Status from
         # comment_problems: say it explicitly, to the model and to the panel, so the
         # §6.6 promise does not degrade silently when mcp-legal-it is down (review
@@ -191,15 +208,16 @@ async def run_turn(
                 if ref not in outcome.unverified:
                     outcome.unverified.append(ref)
             await emit(p.Status(request_id=request_id, text=_unverified_text(unverified)))
+        prefix = (f"Sostituite {replaced_count} occorrenze di «{query}»." if name == "replace_text"
+                 else f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}.")
         try:
             flagged = await comment_problems(doc, inserted, verdicts)
         except DocumentError as e:
-            return (f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}. "
-                    f"ERRORE: commenti di verifica non applicati: {e}" + note)
+            return f"{prefix} ERRORE: commenti di verifica non applicati: {e}" + note
         for ref in flagged:
             if ref not in outcome.flagged:
                 outcome.flagged.append(ref)
-        content = f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}."
+        content = prefix
         if flagged:
             content += f" Riferimenti segnalati con un commento: {', '.join(flagged)}."
         return content + note

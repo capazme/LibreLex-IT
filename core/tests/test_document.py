@@ -103,3 +103,33 @@ async def test_fake_document_consent_script():
     doc = FakeDocument(["x"], consent_decisions=["deny", "document"])
     assert await doc.ask_consent(None) == "deny" and await doc.ask_consent(None) == "document"
     assert await doc.ask_consent(None) == "document" and len(doc.consent_requests) == 3
+
+
+async def test_fake_replace_text_first_or_all_with_anchors():
+    doc = FakeDocument(["Il [SEDE] e ancora [SEDE].", "Avv. [LEGALE]"])
+    out = await doc.replace_text("[SEDE]", "Tribunale di Milano", "LibreLex: test")
+    assert out.count == 1 and out.anchors[0].paragraph_id == "p:0" and out.anchors[0].start == 3
+    assert (await doc.read_paragraphs())[0].text == "Il Tribunale di Milano e ancora [SEDE]."
+    out = await doc.replace_text("[SEDE]", "Tribunale di Milano", "LibreLex: test", all=True)
+    assert out.count == 1
+    assert (await doc.replace_text("[NIENTE]", "x", "u")).count == 0
+    assert doc.inserts[-1]["where"] == "replace"
+
+
+async def test_bridge_replace_text_wire_shape():
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    doc = BridgeDocument(send, "r1", timeout_s=1)
+    task = asyncio.create_task(doc.replace_text("[SEDE]", "Roma", "u", paragraph_id="p:0"))
+    await asyncio.sleep(0)
+    call = sent[0]
+    assert call.action == "replace_text" and call.args == {
+        "query": "[SEDE]", "replacement": "Roma", "undo_label": "u", "paragraph_id": "p:0",
+        "all": False}
+    doc.resolve(p.DocResult(id="r1", call_id=call.call_id, ok=True, result={
+        "count": 1, "anchors": [{"paragraph_id": "p:0", "start": 0, "end": 4}]}))
+    out = await task
+    assert out.count == 1 and out.anchors[0].end == 4

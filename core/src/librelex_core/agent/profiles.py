@@ -29,7 +29,7 @@ NORM_SOURCES = ("cite_law", "fetch_act_index", "fetch_full_act", "cerca_brocardi
 # model insert a reference it invented itself without triggering verification on write.
 GROUNDING_SOURCES: frozenset[str] = frozenset(NORM_SOURCES + CASE_LAW)
 ALL_DOCUMENT = ("get_document_info", "read_selection", "read_paragraphs", "find_text",
-                "insert_markdown", "replace_selection", "add_comment", "goto")
+                "insert_markdown", "replace_selection", "replace_text", "add_comment", "goto")
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ PROFILES: dict[str, Profile] = {
     "draft": Profile(("genera_modello_atto", "lista_categorie_atti", "cite_law", "fetch_act_index",
                       "fetch_full_act", "verifica_citazioni")
                      + ROUTING_GENERATORS + CATALOGUE_CALCULATORS,
-                     ("read_paragraphs", "insert_markdown")),
+                     ("read_paragraphs", "insert_markdown", "replace_text")),
     "review": Profile(("cite_law", "verifica_citazioni") + CALCULATORS,
-                      ("read_selection", "replace_selection", "add_comment")),
+                      ("read_selection", "replace_selection", "add_comment", "replace_text")),
 }

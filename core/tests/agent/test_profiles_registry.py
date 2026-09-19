@@ -47,8 +47,10 @@ def test_profiles_match_spec_6_3():
         "fetch_full_act", "verifica_citazioni") + ROUTING_GENERATORS + CATALOGUE_CALCULATORS
     assert set(PROFILES["draft"].legal) <= ALLOWLIST
     assert len(ALLOWLIST) == 55
-    assert PROFILES["draft"].document == ("read_paragraphs", "insert_markdown")
-    assert PROFILES["review"].document == ("read_selection", "replace_selection", "add_comment")
+    assert PROFILES["draft"].document == (
+        "read_paragraphs", "insert_markdown", "replace_text")
+    assert PROFILES["review"].document == (
+        "read_selection", "replace_selection", "add_comment", "replace_text")
 
 
 # Every routing tool and every tool_calcolo of modelli_atti.json (mcp-legal-it, 2026-09-19).
@@ -115,7 +117,7 @@ def test_registry_orders_groups_and_is_byte_stable():
 def test_document_tools_mirror_the_actions():
     assert set(DOCUMENT_TOOLS) == {"get_document_info", "read_selection", "read_paragraphs",
                                    "find_text", "insert_markdown", "replace_selection",
-                                   "add_comment", "remove_comments", "goto"}
+                                   "replace_text", "add_comment", "remove_comments", "goto"}
     ins = DOCUMENT_TOOLS["insert_markdown"]["function"]["parameters"]
     assert set(ins["required"]) == {"where", "markdown"}
     assert ins["properties"]["where"]["type"] == "string"

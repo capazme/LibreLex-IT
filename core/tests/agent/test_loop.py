@@ -294,6 +294,24 @@ async def test_an_answer_truncated_by_the_output_cap_is_reported():
     assert outcome.stopped == "length" and outcome.text == "Risposta a metà"
 
 
+async def test_replace_text_is_a_grounded_write():
+    server, calls = make_fake_legal_server(
+        verdicts={"Cass. n. 99999/2024": ("inesistente", "nessuna decisione")})
+    doc = FakeDocument(["Come da [PRECEDENTE], si chiede."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[PRECEDENTE]",
+                                        "replacement": "Cass. n. 99999/2024"})),
+            text_turn("fatto")])
+        outcome, events, session = await _run(llm, doc, tools, "draft")
+    assert calls["verifica"] == [["Cass. n. 99999/2024"]]
+    assert outcome.flagged == ["Cass. n. 99999/2024"] and len(doc.comments) == 1
+    assert (await doc.read_paragraphs())[0].text == "Come da Cass. n. 99999/2024, si chiede."
+    tool_msg = [m for m in llm.calls[1][0] if m.get("role") == "tool"][0]["content"]
+    assert tool_msg.startswith("Sostituite 1 occorrenze di «[PRECEDENTE]».")
+    assert "Riferimenti segnalati con un commento: Cass. n. 99999/2024" in tool_msg
+
+
 async def test_leggi_risorsa_reads_a_catalogue_resource_and_refuses_other_schemes():
     server, _ = make_fake_legal_server()
     async with LegalToolsClient(server) as tools:

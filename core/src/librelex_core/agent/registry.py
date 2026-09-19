@@ -52,7 +52,7 @@ def _truncate(text: str, max_desc: int) -> str:
     return cut.rstrip() + "…"
 
 
-# The nine document actions of spec §5.3, as OpenAI tool objects. `undo_label`, `bookmark`
+# The ten document actions of spec §5.3, as OpenAI tool objects. `undo_label`, `bookmark`
 # and `author` (where present) are set by the core, not exposed to the model.
 DOCUMENT_TOOLS: dict[str, dict] = {
     "get_document_info": {"type": "function", "function": {
@@ -107,6 +107,22 @@ DOCUMENT_TOOLS: dict[str, dict] = {
             "markdown": {"type": "string",
                         "description": "Testo in markdown che sostituisce la selezione."},
         }, "required": ["markdown"]}}},
+    "replace_text": {"type": "function", "function": {
+        "name": "replace_text",
+        "description": "Sostituisce nel documento la prima occorrenza (o tutte, con all=true) "
+                       "di un testo esatto con un altro, come modifica tracciata: serve a "
+                       "riempire i segnaposto tra parentesi quadre della base inserita. Le "
+                       "citazioni nuove nel testo sostitutivo vengono verificate prima "
+                       "(grounding).",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Testo esatto da cercare e sostituire."},
+            "replacement": {"type": "string", "description": "Testo che sostituisce ``query``."},
+            "paragraph_id": {"type": ["string", "null"],
+                             "description": "Limita la sostituzione a questo paragrafo, se "
+                                            "indicato."},
+            "all": {"type": "boolean", "default": False,
+                    "description": "Sostituisce tutte le occorrenze anziché solo la prima."},
+        }, "required": ["query", "replacement"]}}},
     "add_comment": {"type": "function", "function": {
         "name": "add_comment",
         "description": "Aggiunge un commento di Writer ancorato a un intervallo di testo di un "

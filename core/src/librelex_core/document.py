@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from librelex_core import protocol as p
 
@@ -58,6 +58,11 @@ class Occurrence(BaseModel):
     text: str
 
 
+class ReplaceResult(BaseModel):
+    count: int
+    anchors: list[Anchor] = Field(default_factory=list)
+
+
 class DocumentClient(Protocol):
     async def info(self) -> DocInfo: ...
     async def read_selection(self) -> Selection: ...
@@ -70,6 +75,10 @@ class DocumentClient(Protocol):
         bookmark: str | None = None, author: str | None = None,
     ) -> InsertedRange: ...
     async def replace_selection(self, markdown: str, undo_label: str) -> InsertedRange: ...
+    async def replace_text(
+        self, query: str, replacement: str, undo_label: str,
+        paragraph_id: str | None = None, all: bool = False,
+    ) -> ReplaceResult: ...
     async def add_comment(
         self, paragraph_id: str, start: int, end: int, expected_text: str,
         author: str, text: str,
@@ -158,6 +167,28 @@ class FakeDocument:
         self.inserts.append({"where": "selection", "markdown": markdown, "undo_label": undo_label,
                              "bookmark": None, "author": None})
         return InsertedRange(from_id=f"p:{i}", to_id=f"p:{i}")
+
+    async def replace_text(self, query: str, replacement: str, undo_label: str,
+                           paragraph_id: str | None = None, all: bool = False) -> ReplaceResult:
+        anchors: list[Anchor] = []
+        indices = ([int(paragraph_id.split(":")[1])] if paragraph_id
+                   else range(len(self._paragraphs)))
+        for i in indices:
+            text = self._paragraphs[i]
+            start = text.find(query)
+            while start != -1 and query:
+                anchors.append(Anchor(paragraph_id=f"p:{i}", start=start,
+                                      end=start + len(replacement)))
+                text = text[:start] + replacement + text[start + len(query):]
+                if not all:
+                    break
+                start = text.find(query, start + len(replacement))
+            self._paragraphs[i] = text
+            if anchors and not all:
+                break
+        self.inserts.append({"where": "replace", "query": query, "replacement": replacement,
+                             "undo_label": undo_label, "bookmark": None, "author": None})
+        return ReplaceResult(count=len(anchors), anchors=anchors)
 
     async def add_comment(self, paragraph_id: str, start: int, end: int, expected_text: str,
                           author: str, text: str) -> CommentResult:
@@ -269,6 +300,12 @@ class BridgeDocument:
     async def replace_selection(self, markdown: str, undo_label: str) -> InsertedRange:
         return InsertedRange.model_validate(await self._call(
             "replace_selection", markdown=markdown, undo_label=undo_label))
+
+    async def replace_text(self, query: str, replacement: str, undo_label: str,
+                           paragraph_id: str | None = None, all: bool = False) -> ReplaceResult:
+        return ReplaceResult.model_validate(await self._call(
+            "replace_text", query=query, replacement=replacement, undo_label=undo_label,
+            paragraph_id=paragraph_id, all=all))
 
     async def add_comment(self, paragraph_id: str, start: int, end: int, expected_text: str,
                           author: str, text: str) -> CommentResult:
