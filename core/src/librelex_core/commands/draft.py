@@ -31,7 +31,7 @@ from librelex_core.agent.loop import (
 )
 from librelex_core.agent.prompt import load_recipe, wrap_data
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import DocSession, DraftState
+from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, DraftState
 from librelex_core.commands.templates import FIELD_TYPES, field_type
 from librelex_core.document import DocumentError
 from librelex_core.mcp.client import ToolError
@@ -51,6 +51,9 @@ NO_REFERENCE = "ERRORE: nessun atto di riferimento caricato"
 # cap keeps a stray bracket in the act's prose from becoming a placeholder.
 PLACEHOLDER_RE = re.compile(r"\[[^\[\]\n]{1,60}\]|\{[a-z_]+\}")
 _YES = ("sì", "si", "s", "true", "1", "yes")
+# A dot that separates thousands: exactly three digits after it, then a non-digit or the
+# end of the value ("1.234.567", "12.000"); anything else is a decimal point ("12.5").
+_THOUSANDS_DOT_RE = re.compile(r"\.(?=\d{3}(?:\D|$))")
 
 
 def undo_label(tipo_atto: str) -> str:
@@ -89,10 +92,24 @@ def to_markdown(text: str) -> str:
     return re.sub(r"\n{2,}", "\n\n", re.sub(r"(?<!\n)\n(?!\n)", "\n\n", text.strip()))
 
 
+def parse_number(value: str) -> float:
+    """An Italian number as the generators want it, tolerant of both separators.
+
+    A comma is always the decimal point, and every dot before it separates thousands. With
+    no comma, a dot followed by exactly three digits (and nothing else that is a digit) is a
+    thousands separator, so "12.000" is twelve thousand; any other dot is a decimal point, so
+    "12.5" is twelve and a half. Raises ``ValueError`` when the text is not a number at all.
+    """
+    text = value.strip()
+    if "," in text:
+        return float(text.replace(".", "").replace(",", "."))
+    return float(_THOUSANDS_DOT_RE.sub("", text))
+
+
 def _coerce(value: str, tipo: str) -> Any:
     if tipo == "numero":
         try:
-            return float(value.replace(".", "").replace(",", "."))
+            return parse_number(value)
         except ValueError:
             # The string goes through: the generator's own error reaches the panel as a
             # "Base non disponibile" status, which says more than a guess would.
@@ -210,9 +227,11 @@ def draft_message(session: DocSession, action: str, message: str = "",
         blocks.append(f"Istruzione dell'utente: {message}")
     reference = session.reference
     if reference:
+        limit = f"{MAX_REFERENCE_CHARS:,}".replace(",", ".")
+        cut = f", troncato ai primi {limit} caratteri" if reference.get("troncato") else ""
         blocks.append(
             f"Atto di riferimento disponibile: {reference['name']} "
-            f"({reference['chars']} caratteri): leggilo con leggi_atto_riferimento "
+            f"({reference['chars']} caratteri{cut}): leggilo con leggi_atto_riferimento "
             "prima di comporre.")
     if draft.base:
         aperti = (draft.base["aperti"] if "aperti" in draft.base
@@ -316,15 +335,15 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
         reference = session.reference
         if reference is None:
             return NO_REFERENCE, None
-        if session.consent != "document" and not session.reference_consented:
-            # Once per session (design §5.3): the block names the file, and "annulla" leaves
-            # the drafting to go on without the reference.
+        if not session.reference_consented:
+            # Once per reference (design §5.3, controller ruling): a file of the firm that has
+            # nothing to do with the open document gets its own decision, so the consent given
+            # for the document never carries over to it. The block names the file, and
+            # "annulla" leaves the drafting to go on without the reference.
             decision = await deps.consent(p.ConsentSummary(
                 scope="reference", chars=reference["chars"], endpoint_host=deps.endpoint_host,
                 model=deps.model, zdr=deps.zdr, name=reference["name"]))
-            if decision == "document":
-                session.consent = "document"
-            elif decision == "once":
+            if decision in ("document", "once"):
                 session.reference_consented = True
             else:
                 return CONSENT_DENIED, None
@@ -370,6 +389,8 @@ async def run_draft(session: DocSession, args: dict, deps: AgentDeps, emit: Emit
     elif action == "answer":
         if session.draft is None:
             raise ValueError("nessuna redazione in corso")
+        if not isinstance(args.get("answers"), dict):
+            raise ValueError("risposte mancanti")
         new_answers = _strings(args.get("answers"))
         session.draft.answers.update(new_answers)
         session.draft.questions = []

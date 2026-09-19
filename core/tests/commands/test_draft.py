@@ -3,13 +3,16 @@ import pytest
 
 from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps
+from librelex_core.agent.prompt import load_recipe
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import DocSession
+from librelex_core.agent.state import DocSession, DraftState
 from librelex_core.commands.draft import (
     PROFILE,
     base_text,
     coerce_args,
+    draft_message,
     draft_summary,
+    parse_number,
     placeholders,
     run_draft,
     to_markdown,
@@ -37,6 +40,38 @@ def _emit_list():
     return events, emit
 
 
+def _hand_built_session(**state) -> DocSession:
+    """A session carrying a drafting nobody ran: the message builder needs no server."""
+    session = DocSession("d1")
+    session.draft = DraftState(
+        tipo_atto="decreto_ingiuntivo_ordinario",
+        template={"tipo_atto": "decreto_ingiuntivo_ordinario",
+                  "descrizione": "Ricorso per decreto ingiuntivo", "categoria": "atti_introduttivi",
+                  "campi_obbligatori": ["creditore"],
+                  "routing": {"tipo": "resource", "tool": None, "parametri_fissi": {},
+                              "resource": "atti://decreto"}},
+        fields={"creditore": "Alfa S.r.l."})
+    for name, value in state.items():
+        setattr(session.draft, name, value)
+    return session
+
+
+def test_draft_message_carries_the_instruction_the_answers_and_the_recipe():
+    session = _hand_built_session(answers={"sede": "Milano"}, done=True)
+    text = draft_message(session, "continue", "aggiungi la provvisoria esecuzione")
+    assert "Istruzione dell'utente: aggiungi la provvisoria esecuzione" in text
+    assert "Risposte alle domande precedenti:\n- sede: Milano" in text
+    assert "Redazione già completata in un turno precedente" in text
+    assert text.rstrip().endswith(load_recipe().rstrip().splitlines()[-1])
+
+
+def test_draft_message_says_when_the_reference_was_truncated():
+    session = _hand_built_session()
+    session.reference = {"name": "lungo.odt", "chars": 80000, "text": "x", "troncato": True}
+    assert ("Atto di riferimento disponibile: lungo.odt (80000 caratteri, troncato ai primi "
+            "60.000 caratteri): leggilo") in draft_message(session, "continue")
+
+
 def test_pure_helpers():
     assert placeholders("ILL.MO [SEDE] di [SEDE], Avv. [LEGALE], {campo}") == [
         "[SEDE]", "[LEGALE]", "{campo}"]
@@ -44,6 +79,10 @@ def test_pure_helpers():
     assert base_text({"bozza_ricorso": "B", "riepilogo": {}}) == "B"
     assert base_text({"riepilogo": {"totale": 1}}) is None
     assert to_markdown("A\nB\n\n\nC") == "A\n\nB\n\nC"
+    assert [parse_number(v) for v in ("12.000", "12.5", "12.000,50", "1.234.567", "1500",
+                                     "12,5")] == [12000.0, 12.5, 12000.5, 1234567.0, 1500.0, 12.5]
+    with pytest.raises(ValueError):
+        parse_number("non un numero")
     props = {"importo": {"type": "number"}, "provvisoria_esecuzione": {"type": "boolean"},
              "creditore": {"type": "string"}, "tipo_credito": {"type": "string"}}
     assert coerce_args({"importo": "12.000,50", "provvisoria_esecuzione": "sì",
@@ -152,6 +191,7 @@ async def test_reference_act_is_read_with_consent_once_and_never_grounds():
     events, emit = _emit_list()
     async with LegalToolsClient(server) as tools:
         session = DocSession("d1")
+        session.consent = "document"          # the document's consent never covers the reference
         session.reference = {"name": "ricorso_rossi.docx", "chars": 40,
                              "text": "RICORSO ... come da Cass. n. 99999/2024 ...",
                              "troncato": False}
@@ -207,6 +247,13 @@ async def test_bad_actions_raise_value_error():
             await run_draft(DocSession("d"), {"action": "start"}, deps, emit, "r")
         with pytest.raises(ValueError, match="nessuna redazione"):
             await run_draft(DocSession("d"), {"action": "answer", "answers": {}}, deps, emit, "r")
+        started = _hand_built_session(answers={"sede": "Milano"})
+        with pytest.raises(ValueError, match="risposte mancanti"):
+            await run_draft(started, {"action": "answer"}, deps, emit, "r")
+        with pytest.raises(ValueError, match="risposte mancanti"):
+            await run_draft(started, {"action": "answer", "answers": "sede: Milano"}, deps,
+                            emit, "r")
+        assert started.draft.answers == {"sede": "Milano"}   # no state change
         deps.catalogue = None
         with pytest.raises(ValueError, match="catalogo"):
             await run_draft(DocSession("d"), {"action": "start", "tipo_atto": "x"}, deps, emit, "r")

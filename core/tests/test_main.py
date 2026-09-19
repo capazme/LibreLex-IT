@@ -372,6 +372,10 @@ async def test_draft_dispatch_start_answer_and_bad_action():
         await h.send(p.Command(id="r3", doc_id="d1", name="draft", args={"action": "start"}))
         await h.pump(p.Error)
         assert h.received[-1].code == "bad_request" and "tipo_atto" in h.received[-1].message
+        await h.send(p.Command(id="r4", doc_id="d1", name="draft",
+                               args={"action": "start", "tipo_atto": "boh"}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "template_not_found"
 
     await h.run(scenario)
 

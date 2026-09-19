@@ -373,9 +373,14 @@ class CoreServer:
                     msg.id, msg.doc_id, doc, DRAFT_PROFILE,
                     lambda s, d: run_draft(s, msg.args, d, self.send, msg.id),
                     extra_summary=draft_summary)
+            except TemplateNotFound as e:
+                # Same code as the template_info route: the act the panel asked for is not
+                # in the catalogue, and the server's message names the alternatives.
+                await self.send(
+                    p.Error(request_id=msg.id, code="template_not_found", message=str(e)))
             except ValueError as e:
-                # Missing tipo_atto, no drafting in progress, catalogue unavailable: the
-                # panel's request was malformed, not the core (design §4.3).
+                # Missing tipo_atto, missing answers, no drafting in progress, catalogue
+                # unavailable: the panel's request was malformed, not the core (design §4.3).
                 await self.send(
                     p.Error(request_id=msg.id, code="bad_request", message=str(e)))
             return
