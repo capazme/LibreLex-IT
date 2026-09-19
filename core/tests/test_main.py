@@ -1,11 +1,14 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 import asyncio
 
+import pytest
+
 from librelex_core import PROTOCOL_VERSION, __version__
 from librelex_core import protocol as p
+from librelex_core.agent.state import MAX_REFERENCE_CHARS
 from librelex_core.config import Config
 from librelex_core.document import FakeDocument
-from librelex_core.main import CoreServer, MemoryTransport
+from librelex_core.main import STDIO_LINE_LIMIT, CoreServer, MemoryTransport, StdioTransport
 from librelex_core.mcp.client import LegalToolsClient
 from tests.conftest import make_fake_legal_server
 from tests.fakes import ScriptedLLM, text_turn, tool_turn
@@ -361,6 +364,7 @@ async def test_draft_dispatch_start_answer_and_bad_action():
         assert final.summary["ended_by"] == "questions"
         assert final.summary["partizioni"][0]["titolo"].startswith("Base: ")
         assert final.summary["segnaposto_aperti"] == ["[SEDE]"] and "usage_totals" in final.summary
+        assert final.summary["base_errore"] is None
         assert h.doc.inserts[0]["bookmark"] == "LibreLex.atto.decreto_ingiuntivo_ordinario"
         await h.send(p.Command(id="r2", doc_id="d1", name="draft", args={
             "action": "answer", "answers": {"sede": "Milano"}}))
@@ -388,7 +392,7 @@ async def test_template_commands_and_set_reference():
         await h.pump(p.HelloOk)
         await h.send(p.Command(id="r1", doc_id="d1", name="list_templates"))
         await h.pump(p.Final)
-        assert h.received[-1].summary["totale"] == 3 and h.received[-1].text == "Catalogo: 3 modelli."  # noqa: E501
+        assert h.received[-1].summary["totale"] == 5 and h.received[-1].text == "Catalogo: 5 modelli."  # noqa: E501
         await h.send(p.Command(id="r2", doc_id="d1", name="template_info",
                                args={"tipo_atto": "precetto_ordinario"}))
         await h.pump(p.Final)
@@ -405,8 +409,94 @@ async def test_template_commands_and_set_reference():
             "name": "ricorso_rossi.docx", "chars": 80, "troncato": False}
         session = h.server._session("d1")
         assert session.reference["text"].startswith("RICORSO ")
+        session.reference_consented, session.reference_denied = True, True
+        await h.send(p.Command(
+            id="r4b", doc_id="d1", name="set_reference",
+            args={"name": "lungo.odt", "text": "x" * (MAX_REFERENCE_CHARS + 10)}))
+        await h.pump(p.Final)
+        # the number the consent block shows is the text that will actually be sent
+        assert h.received[-1].summary["riferimento"] == {
+            "name": "lungo.odt", "chars": MAX_REFERENCE_CHARS, "troncato": True}
+        assert len(session.reference["text"]) == MAX_REFERENCE_CHARS
+        assert session.reference_consented is False and session.reference_denied is False
         await h.send(p.Command(id="r5", doc_id="d1", name="set_reference", args={"text": ""}))
         await h.pump(p.Final)
         assert session.reference is None and h.received[-1].summary == {"riferimento": None}
+
+    await h.run(scenario)
+
+
+async def test_a_line_over_the_stdio_limit_is_reported_and_the_server_keeps_serving():
+    """A reference act longer than the reader's line limit made `readline()` raise and killed
+    the process; now the message is refused and the next one is served (final review,
+    finding 1)."""
+    inbox: asyncio.Queue[str | None] = asyncio.Queue()
+    outbox: asyncio.Queue[str] = asyncio.Queue()
+
+    class OverLimit(MemoryTransport):
+        async def readline(self) -> str | None:
+            line = await super().readline()
+            if line == "OVERSIZED":
+                # what asyncio.StreamReader.readline() raises over its limit
+                raise ValueError("Separator is found, but chunk is longer than limit")
+            return line
+
+    server = CoreServer(Config())
+    task = asyncio.create_task(server.run(OverLimit(inbox, outbox)))
+    await inbox.put("OVERSIZED")
+    msg = p.parse_core_line(await asyncio.wait_for(outbox.get(), 5))
+    assert isinstance(msg, p.Error) and msg.code == "protocol"
+    assert msg.message == "riga troppo lunga (oltre 4 MiB): messaggio scartato"
+    await inbox.put(p.dump_line(HELLO))
+    ok = p.parse_core_line(await asyncio.wait_for(outbox.get(), 5))
+    assert isinstance(ok, p.HelloOk)
+    await inbox.put(p.dump_line(p.Shutdown()))
+    await asyncio.wait_for(task, 5)
+
+
+async def test_stdio_transport_reads_a_long_line_and_refuses_one_over_its_limit():
+    """The 64 KiB default of asyncio.StreamReader is far below a 60,000 character reference
+    act plus its JSON escaping; over the limit the reader raises, and the line it could not
+    deliver is dropped from its buffer (final review, finding 1)."""
+    assert STDIO_LINE_LIMIT == 4 * 1024 * 1024
+    wide = StdioTransport()
+    wide._reader = wide._make_reader()          # what _open() attaches to stdin
+    long_line = "x" * 100_000                   # over asyncio's default, under ours
+    wide._reader.feed_data((long_line + "\n").encode())
+    assert await asyncio.wait_for(wide.readline(), 5) == long_line + "\n"
+    narrow = StdioTransport(limit=1024)
+    narrow._reader = narrow._make_reader()
+    narrow._reader.feed_data(("y" * 4000 + "\n").encode())
+    with pytest.raises(ValueError):
+        await asyncio.wait_for(narrow.readline(), 5)
+    narrow._reader.feed_data(b"dopo\n")        # the oversized line is gone, not the reader
+    assert await asyncio.wait_for(narrow.readline(), 5) == "dopo\n"
+
+
+async def test_a_cancelled_draft_turn_keeps_the_partitions_already_inserted():
+    """The insertions of a cancelled turn are in the document: the Final must report them,
+    with the drafting state (final review, finding 4)."""
+    llm = ScriptedLLM([tool_turn(
+        ("insert_markdown", {"where": "end", "markdown": "## Premesse in fatto\n\nTesto."}),
+        ("insert_markdown", {"where": "end", "markdown": "## Motivi\n\nAltro testo."}))])
+    h = Harness(FakeDocument([""]), llm=llm)
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(id="r1", doc_id="d1", name="draft", args={
+            "action": "start", "tipo_atto": "atto_di_citazione",
+            "fields": {"attore": "A", "convenuto": "B", "oggetto": "O"}}))
+        await h.pump(p.DocCall)            # the first insertion is served
+        h.hold = True
+        await h.pump(p.DocCall)            # the second one stays pending
+        await h.send(p.Cancel(id="r1", doc_id="d1"))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.cancelled is True and final.request_id == "r1"
+        assert final.summary["stopped"] == "cancelled" and final.summary["ended_by"] is None
+        assert final.summary["tipo_atto"] == "atto_di_citazione"
+        assert [pt["titolo"] for pt in final.summary["partizioni"]] == ["Premesse in fatto"]
+        assert final.summary["completata"] is False
 
     await h.run(scenario)

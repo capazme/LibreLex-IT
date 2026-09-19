@@ -83,8 +83,11 @@ class DraftState:
 
     ``template`` is the catalogue ``info()`` result the lawyer picked; ``fields`` the values the
     lawyer filled in. ``base`` records a deterministic direct-tool result already inserted into
-    the document (its placeholders still to fill via ``replace_text``); ``partitions`` the
-    narrative sections inserted so far, so a later turn can resume after the last one.
+    the document (its placeholders still to fill via ``replace_text``), or, with
+    ``inserted`` false, one that carried no act text and only reaches the model as data;
+    ``base_errore`` is why the generator produced nothing at all, for the panel and for the
+    user message; ``partitions`` the narrative sections inserted so far, so a later turn can
+    resume after the last one.
     """
 
     tipo_atto: str
@@ -93,6 +96,7 @@ class DraftState:
     notes: str = ""
     answers: dict[str, str] = field(default_factory=dict)
     base: dict[str, Any] | None = None
+    base_errore: str | None = None
     partitions: list[dict[str, Any]] = field(default_factory=list)
     questions: list[dict[str, Any]] = field(default_factory=list)
     done: bool = False
@@ -110,6 +114,10 @@ class DocSession:
     # model until reference_consented flips true, and never echoed back in Status/Log/errors.
     reference: dict[str, Any] | None = None
     reference_consented: bool = False
+    # A refusal is a decision about the file, not about one tool call: it is remembered until
+    # another reference act is loaded, so a model that insists is answered without asking the
+    # lawyer again (final review, finding 6).
+    reference_denied: bool = False
 
     def begin_turn(self, user_message: str) -> Turn:
         turn = Turn(messages=[{"role": "user", "content": user_message}])

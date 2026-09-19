@@ -14,13 +14,21 @@ def test_field_type_applies_the_date_name_heuristic_with_or_without_a_schema():
     assert field_type("data_fattura", {"type": "string"}) == "data"          # schema, no match
 
 
+def test_field_type_reads_the_dal_al_suffixes_as_dates():
+    assert field_type("interessi_dal", None) == "data"
+    assert field_type("interessi_al", None) == "data"
+    assert field_type("importo_capitale", None) == "testo"                   # no suffix, no date
+    assert field_type("canone_al", {"type": "number"}) == "numero"           # the schema wins
+
+
 async def test_list_flattens_the_catalogue_and_searches():
     server, calls = make_fake_legal_server()
     async with LegalToolsClient(server) as tools:
         cat = TemplateCatalogue(tools)
         out = await cat.list()
-        assert out["totale"] == 3 and [m["tipo_atto"] for m in out["modelli"]] == [
-            "decreto_ingiuntivo_ordinario", "atto_di_citazione", "precetto_ordinario"]
+        assert out["totale"] == 5 and [m["tipo_atto"] for m in out["modelli"]] == [
+            "decreto_ingiuntivo_ordinario", "atto_di_citazione", "precetto_ordinario",
+            "sollecito_ordinario", "preventivo_causa"]
         assert out["modelli"][0]["categoria"] == "atti_introduttivi"
         await cat.list()                                    # cached
         assert calls["modelli"].count(("catalogo", {})) == 1

@@ -46,6 +46,13 @@ TOO_MANY_QUESTIONS = "ERRORE: al massimo otto domande, le altre sono state scart
 QUESTIONS_SENT = "Domande inviate all'utente: attendi le risposte nel prossimo turno."
 DRAFT_DONE = "Redazione registrata come completata."
 NO_REFERENCE = "ERRORE: nessun atto di riferimento caricato"
+BASE_BAD_RESPONSE = "risposta non valida del generatore"
+# The four states of the deterministic base, as the user message tells them (design §3.2,
+# §4.3): failed, absent, inserted, data only.
+BASE_FAILED = ("Generazione della base fallita ({motivo}): componi dal modello seguendo la "
+               "struttura indicata.")
+BASE_NONE = "Il modello d'atto non prevede un generatore: componi dal modello."
+BASE_DATA_ONLY = "Nessun testo base inserito: il generatore ha restituito solo dati (vedi sotto)."
 
 # "[...]" of the deterministic generators and "{...}" of the published templates; the length
 # cap keeps a stray bracket in the act's prose from becoming a placeholder.
@@ -54,6 +61,8 @@ _YES = ("sì", "si", "s", "true", "1", "yes")
 # A dot that separates thousands: exactly three digits after it, then a non-digit or the
 # end of the value ("1.234.567", "12.000"); anything else is a decimal point ("12.5").
 _THOUSANDS_DOT_RE = re.compile(r"\.(?=\d{3}(?:\D|$))")
+# What a lawyer types around an amount in the panel and a generator cannot parse.
+_CURRENCY_RE = re.compile(r"€|\beuro\b|\beur\b", re.IGNORECASE)
 
 
 def undo_label(tipo_atto: str) -> str:
@@ -73,14 +82,30 @@ def placeholders(text: str) -> list[str]:
 
 
 def base_text(result: dict) -> str | None:
-    """The act text of a generator result: ``testo``, else the first ``bozza*`` key."""
-    testo = result.get("testo")
-    if isinstance(testo, str) and testo.strip():
-        return testo
-    for key, value in result.items():
-        if key.startswith("bozza") and isinstance(value, str) and value.strip():
+    """The act text of a generator result, or None when it carries none.
+
+    The generators of mcp-legal-it do not agree on one name: 16 return ``testo``,
+    ``decreto_ingiuntivo`` returns ``bozza_ricorso``, ``sollecito_pagamento``
+    ``testo_lettera`` and the three ``preventivo_*`` ``testo_preventivo``. Order (controller
+    ruling): ``testo``, then the other ``testo*`` keys sorted, then the ``bozza*`` keys
+    sorted; the first one holding a non-empty string wins.
+    """
+    for key in _text_keys(result):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def _text_keys(result: dict) -> list[str]:
+    """The keys that may carry the act text, in the order ``base_text`` tries them."""
+    others = sorted(k for k in result if k.startswith("testo") and k != "testo")
+    return ["testo", *others, *sorted(k for k in result if k.startswith("bozza"))]
+
+
+def _without_text(result: dict) -> dict:
+    """The generator's data alone: everything that is not one of the act-text keys."""
+    return {k: v for k, v in result.items() if not k.startswith(("testo", "bozza"))}
 
 
 def to_markdown(text: str) -> str:
@@ -98,9 +123,11 @@ def parse_number(value: str) -> float:
     A comma is always the decimal point, and every dot before it separates thousands. With
     no comma, a dot followed by exactly three digits (and nothing else that is a digit) is a
     thousands separator, so "12.000" is twelve thousand; any other dot is a decimal point, so
-    "12.5" is twelve and a half. Raises ``ValueError`` when the text is not a number at all.
+    "12.5" is twelve and a half. A currency symbol or name the lawyer typed in the panel
+    ("€ 12.000", "12.000 euro") is dropped with every space. Raises ``ValueError`` when what
+    is left is not a number.
     """
-    text = value.strip()
+    text = "".join(_CURRENCY_RE.sub("", value).split())
     if "," in text:
         return float(text.replace(".", "").replace(",", "."))
     return float(_THOUSANDS_DOT_RE.sub("", text))
@@ -166,6 +193,9 @@ async def insert_base(session: DocSession, deps: AgentDeps, emit: Emit,
     try:
         text = await deps.tools.call(tool, **args)
     except ToolError as e:
+        # The panel and the model both need to know: a missing base is not an empty template
+        # but a generator that refused (final review, finding 3).
+        draft.base_errore = e.message
         await emit(p.Status(request_id=request_id, text=f"Base non disponibile: {e.message}"))
         return
     try:
@@ -173,11 +203,18 @@ async def insert_base(session: DocSession, deps: AgentDeps, emit: Emit,
     except json.JSONDecodeError:
         result = None
     if not isinstance(result, dict):
+        draft.base_errore = BASE_BAD_RESPONSE
         await emit(p.Status(request_id=request_id,
                             text=f"Base non disponibile: {tool} non ha risposto in JSON"))
         return
     base = base_text(result)
     if base is None:
+        # Deterministic data without an act text (a calculator-shaped result): nothing goes
+        # into the document, but the data still reaches the model (final review, finding 2).
+        draft.base = {"from_id": None, "to_id": None, "placeholders": [], "tool": tool,
+                      "result": _without_text(result), "inserted": False}
+        await emit(p.Status(request_id=request_id, text=(
+            f"Nessun testo base da {tool}: passo i dati al modello")))
         return
     inserted = await deps.doc.insert_markdown(
         "end", to_markdown(base), BASE_UNDO.format(tipo_atto=draft.tipo_atto),
@@ -186,8 +223,7 @@ async def insert_base(session: DocSession, deps: AgentDeps, emit: Emit,
     draft.base = {
         "from_id": inserted.from_id, "to_id": inserted.to_id,
         "placeholders": open_placeholders, "tool": tool,
-        "result": {k: v for k, v in result.items()
-                   if k != "testo" and not k.startswith("bozza")},
+        "result": _without_text(result), "inserted": True,
     }
     draft.partitions.append({"titolo": f"Base: {template.get('descrizione', '')}",
                              "from_id": inserted.from_id, "to_id": inserted.to_id})
@@ -233,15 +269,19 @@ def draft_message(session: DocSession, action: str, message: str = "",
             f"Atto di riferimento disponibile: {reference['name']} "
             f"({reference['chars']} caratteri{cut}): leggilo con leggi_atto_riferimento "
             "prima di comporre.")
-    if draft.base:
+    if draft.base_errore:
+        blocks.append(BASE_FAILED.format(motivo=draft.base_errore))
+    elif draft.base is None:
+        blocks.append(BASE_NONE)
+    elif not draft.base.get("inserted", True):
+        blocks.append(BASE_DATA_ONLY)
+    else:
         aperti = (draft.base["aperti"] if "aperti" in draft.base
                   else draft.base["placeholders"])
         blocks.append(
             f"Base deterministica già nel documento (paragrafi {draft.base['from_id']}-"
             f"{draft.base['to_id']}), segnaposto ancora aperti: "
             + (", ".join(aperti) if aperti else "nessuno"))
-    else:
-        blocks.append("Nessuna base deterministica: componi dal modello.")
     if draft.partitions:
         blocks.append("Partizioni già inserite:\n" + "\n".join(
             f"- {part['titolo']} ({part['from_id']}-{part['to_id']})"
@@ -335,6 +375,11 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
         reference = session.reference
         if reference is None:
             return NO_REFERENCE, None
+        if session.reference_denied:
+            # Already refused for this file: the decision holds until another reference act
+            # is loaded, so a model that asks again is answered without disturbing the
+            # lawyer a second time (final review, finding 6).
+            return CONSENT_DENIED, None
         if not session.reference_consented:
             # Once per reference (design §5.3, controller ruling): a file of the firm that has
             # nothing to do with the open document gets its own decision, so the consent given
@@ -346,6 +391,7 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
             if decision in ("document", "once"):
                 session.reference_consented = True
             else:
+                session.reference_denied = True
                 return CONSENT_DENIED, None
         return wrap_data(f"atto di riferimento ({reference['name']})", reference["text"]), None
 
@@ -403,27 +449,42 @@ async def run_draft(session: DocSession, args: dict, deps: AgentDeps, emit: Emit
 
     draft = session.draft
     assert draft is not None
-    deps.hooks, deps.hook_tools = hooks_for(session, deps)
-    deps.registry = ToolRegistry(deps.specs, PROFILE, extra_tools=deps.hook_tools)
-    outcome = await run_turn_with(
-        deps, session, draft_message(session, action, message, new_answers), PROFILE, emit,
-        request_id, undo_label(draft.tipo_atto))
     known = {part["from_id"] for part in draft.partitions}
-    for entry in outcome.inserted:
+
+    def record(entry: dict) -> None:
+        """One insertion, the moment the loop makes it (design §4.5)."""
         if entry["from_id"] in known:
-            continue
+            return
         known.add(entry["from_id"])
         draft.partitions.append({"titolo": entry.get("titolo", ""),
                                  "from_id": entry["from_id"], "to_id": entry["to_id"]})
-    if draft.base:
-        try:
-            draft.base["aperti"] = [ph for ph in draft.base["placeholders"]
-                                    if await deps.doc.find_text(ph)]
-        except DocumentError:
-            # The document is unreachable: keep what the previous turn knew rather than
-            # telling the panel every placeholder is filled.
-            draft.base.setdefault("aperti", list(draft.base["placeholders"]))
+
+    deps.on_inserted = record
+    deps.hooks, deps.hook_tools = hooks_for(session, deps)
+    deps.registry = ToolRegistry(deps.specs, PROFILE, extra_tools=deps.hook_tools)
+    # The scan runs before the message as well as after the turn: a turn cancelled after a
+    # replace_text left `aperti` stale, and the next turn repairs it (final review, finding 4).
+    await _rescan_placeholders(draft, deps)
+    outcome = await run_turn_with(
+        deps, session, draft_message(session, action, message, new_answers), PROFILE, emit,
+        request_id, undo_label(draft.tipo_atto))
+    for entry in outcome.inserted:      # safety net: `record` has already seen them all
+        record(entry)
+    await _rescan_placeholders(draft, deps)
     return outcome
+
+
+async def _rescan_placeholders(draft: DraftState, deps: AgentDeps) -> None:
+    """Which placeholders of the base are still in the document (design §4.4)."""
+    if not draft.base or not draft.base["placeholders"]:
+        return
+    try:
+        draft.base["aperti"] = [ph for ph in draft.base["placeholders"]
+                                if await deps.doc.find_text(ph)]
+    except DocumentError:
+        # The document is unreachable: keep what the previous turn knew rather than telling
+        # the panel every placeholder is filled.
+        draft.base.setdefault("aperti", list(draft.base["placeholders"]))
 
 
 def draft_summary(session: DocSession, outcome: TurnOutcome) -> dict[str, Any]:
@@ -435,5 +496,6 @@ def draft_summary(session: DocSession, outcome: TurnOutcome) -> dict[str, Any]:
     return {"tipo_atto": draft.tipo_atto, "domande": draft.questions,
             "partizioni": draft.partitions,
             "segnaposto_aperti": list(base.get("aperti", [])),
+            "base_errore": draft.base_errore,
             "completata": draft.done, "riepilogo": draft.riepilogo,
             "ended_by": outcome.ended_by}

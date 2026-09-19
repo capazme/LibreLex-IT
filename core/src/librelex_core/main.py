@@ -38,6 +38,13 @@ NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text", "list_templates",
 # Model-driven commands still to come (spec §6.3).
 NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
+# asyncio.StreamReader defaults to 64 KiB per line, which a set_reference carrying a 60,000
+# character act crosses as soon as JSON escaping is counted: readline() then raises and,
+# uncaught, killed the core (final review, finding 1). 4 MiB leaves room for every message
+# the protocol allows.
+STDIO_LINE_LIMIT = 4 * 1024 * 1024
+LINE_TOO_LONG = (f"riga troppo lunga (oltre {STDIO_LINE_LIMIT // (1024 * 1024)} MiB): "
+                 "messaggio scartato")
 
 
 class LineTransport(Protocol):
@@ -57,13 +64,20 @@ class MemoryTransport:
 
 
 class StdioTransport:
-    def __init__(self) -> None:
+    """One JSON message per line over stdin/stdout, up to ``limit`` bytes per line."""
+
+    def __init__(self, limit: int = STDIO_LINE_LIMIT) -> None:
+        self._limit = limit
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
+    def _make_reader(self) -> asyncio.StreamReader:
+        """The reader ``_open`` attaches to stdin, with this transport's line limit."""
+        return asyncio.StreamReader(limit=self._limit)
+
     async def _open(self) -> None:
         loop = asyncio.get_running_loop()
-        self._reader = asyncio.StreamReader()
+        self._reader = self._make_reader()
         await loop.connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(self._reader), sys.stdin)
         transport, protocol = await loop.connect_write_pipe(
@@ -205,16 +219,25 @@ class CoreServer:
                      "tool_calls": outcome.tool_calls,
                      "usage_totals": session.usage.model_dump(), **extra}))
 
-    def _arm_cancel_final(self, request_id: str, session: DocSession, before: p.Usage) -> None:
+    def _arm_cancel_final(
+        self, request_id: str, session: DocSession, before: p.Usage,
+        extra_summary: Callable[[DocSession, TurnOutcome], dict] | None = None,
+    ) -> None:
         """Make the Final of a cancelled model turn carry the usage of the interrupted turn.
 
         ``run_turn`` adds the turn's tokens to the session totals in its ``finally``, so the
         delta is known even though the outcome is lost with the cancellation (spec §8.4).
+        The command's own state goes in too: what a drafting wrote into the document before
+        the cancellation is on the session, and the panel must see it (final review,
+        finding 4). The lost outcome is stood in for by an empty one, so the summary reports
+        no orderly end.
         """
+        extra = extra_summary(session, TurnOutcome()) if extra_summary is not None else {}
         self._cancel_finals[request_id] = p.Final(
             request_id=request_id, text="Annullato.", cancelled=True,
             usage=_usage_since(before, session.usage),
-            summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump()})
+            summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump(),
+                     **extra})
 
     async def _model_turn(
         self, request_id: str, doc_id: str, doc: BridgeDocument, profile: str,
@@ -231,7 +254,7 @@ class CoreServer:
         try:
             outcome = await run(session, deps)
         except asyncio.CancelledError:
-            self._arm_cancel_final(request_id, session, before)
+            self._arm_cancel_final(request_id, session, before, extra_summary)
             raise
         extra = extra_summary(session, outcome) if extra_summary is not None else {}
         await self._send_turn_final(request_id, session, outcome, extra)
@@ -241,7 +264,16 @@ class CoreServer:
         self._transport = transport
         try:
             while True:
-                line = await transport.readline()
+                try:
+                    line = await transport.readline()
+                except ValueError:
+                    # asyncio.StreamReader.readline() over its limit: it has already dropped
+                    # the oversized line from its buffer (up to and including the newline, or
+                    # the whole buffer when the newline has not arrived yet), so the reader
+                    # stays usable. The message is refused and the server keeps serving; a
+                    # tail read as a further line can only be another protocol error.
+                    await self.send(p.Error(code="protocol", message=LINE_TOO_LONG))
+                    continue
                 if line is None:
                     break
                 if not line.strip():
@@ -378,6 +410,11 @@ class CoreServer:
                 # in the catalogue, and the server's message names the alternatives.
                 await self.send(
                     p.Error(request_id=msg.id, code="template_not_found", message=str(e)))
+            except ValidationError as e:
+                # A pydantic ValidationError is a ValueError: caught first, it is reported as
+                # what it is (a core-side bug) instead of as a malformed panel request.
+                await self.send(p.Error(request_id=msg.id, code="internal",
+                                        message=f"{type(e).__name__}: {e}"))
             except ValueError as e:
                 # Missing tipo_atto, missing answers, no drafting in progress, catalogue
                 # unavailable: the panel's request was malformed, not the core (design §4.3).
@@ -451,13 +488,19 @@ class CoreServer:
         §5.2); it never appears in a Status/Log/error, only in this Final's short summary."""
         session = self._session(msg.doc_id)
         text = str(msg.args.get("text") or "")
+        # A new reference act is a new decision: both the consent given and the refusal
+        # recorded for the previous one are dropped (design §5.3, final review finding 6).
+        session.reference_consented = False
+        session.reference_denied = False
         if text:
             name = str(msg.args.get("name") or "atto di riferimento")
-            chars = len(text)
-            troncato = chars > MAX_REFERENCE_CHARS
-            session.reference = {"name": name, "chars": chars,
-                                 "text": text[:MAX_REFERENCE_CHARS], "troncato": troncato}
-            session.reference_consented = False
+            troncato = len(text) > MAX_REFERENCE_CHARS
+            kept = text[:MAX_REFERENCE_CHARS]
+            # The number the panel and the consent block show is the text that will actually
+            # be sent, not the file the lawyer picked (final review, minor 10).
+            chars = len(kept)
+            session.reference = {"name": name, "chars": chars, "text": kept,
+                                 "troncato": troncato}
             await self.send(p.Final(
                 request_id=msg.id, text=f"Atto di riferimento: {name} ({chars} caratteri).",
                 summary={"riferimento": {"name": name, "chars": chars, "troncato": troncato}}))

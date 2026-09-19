@@ -16,8 +16,15 @@ DATA_RULE = (
 )
 
 
+# A zero-width space inside the opening marker: the text still reads the same to the model,
+# but no "<<<" carried by the data itself can open or close a block (final review, finding 5).
+_NEUTRALISED = "<<​<"
+
+
 def wrap_data(label: str, text: str) -> str:
-    return f"<<<DATI: {label}>>>\n{text}\n<<<FINE DATI>>>"
+    """Wrap data in the delimiters of ``DATA_RULE``, neutralising the ones inside it."""
+    return (f"<<<DATI: {label.replace('<<<', _NEUTRALISED)}>>>\n"
+            f"{text.replace('<<<', _NEUTRALISED)}\n<<<FINE DATI>>>")
 
 
 SYSTEM_PROMPT = f"""Sei l'assistente di redazione integrato in LibreOffice Writer per avvocati \

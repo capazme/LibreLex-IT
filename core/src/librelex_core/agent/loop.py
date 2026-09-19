@@ -72,6 +72,9 @@ class AgentDeps:
     specs: list[ToolSpec] = field(default_factory=list)
     hooks: dict[str, Hook] = field(default_factory=dict)
     hook_tools: list[dict] = field(default_factory=list)
+    # Called with every insertion the moment it reaches the document, so a command keeps what
+    # a cancelled turn already wrote (design §4.5, final review finding 4).
+    on_inserted: Callable[[dict], None] | None = None
 
 
 @dataclass
@@ -124,6 +127,23 @@ def _title(markdown: str) -> str:
     return ""
 
 
+_TRUE_VALUES = ("true", "1", "sì", "si")
+
+
+def _as_bool(value: Any) -> bool:
+    """A model's boolean argument: only an explicit true counts.
+
+    Providers send booleans as JSON booleans, as numbers or as strings; ``bool("false")`` is
+    True, which would turn a declined ``all`` into a replace-everything (final review,
+    minor 13).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value == 1
+    return str(value).strip().lower() in _TRUE_VALUES
+
+
 def _characters(value: Any) -> int:
     """Characters of document text carried by a read result (what consent is asked for)."""
     items = value if isinstance(value, list) else [value]
@@ -135,6 +155,7 @@ async def run_turn(
     tools: LegalToolsClient | None, doc: DocumentClient, registry: ToolRegistry, emit: Emit,
     request_id: str, limits: LimitsConfig, consent: Consent, endpoint_host: str, model: str,
     zdr: bool, undo_label: str, *, hooks: dict[str, Hook] | None = None,
+    on_inserted: Callable[[dict], None] | None = None,
 ) -> TurnOutcome:
     turn = session.begin_turn(user_message)
     grounding = Grounding()
@@ -202,7 +223,7 @@ async def run_turn(
         elif name == "replace_text":
             replaced = await doc.replace_text(
                 query, text_to_ground, undo_label,
-                paragraph_id=args.get("paragraph_id"), all=bool(args.get("all", False)))
+                paragraph_id=args.get("paragraph_id"), all=_as_bool(args.get("all", False)))
             if replaced.count == 0:
                 return f"Nessuna occorrenza di «{query}»."
             replaced_count = replaced.count
@@ -218,7 +239,12 @@ async def run_turn(
         # of the document (it can touch a range already covered by an earlier insertion), so
         # it is counted separately in `outcome.replaced` instead of `outcome.inserted`.
         if name != "replace_text":
-            outcome.inserted.append({**inserted.model_dump(), "titolo": _title(markdown)})
+            entry = {**inserted.model_dump(), "titolo": _title(markdown)}
+            outcome.inserted.append(entry)
+            if on_inserted is not None:
+                # Reported now, not at the end of the turn: a cancellation between two
+                # insertions must not lose the first one (final review, finding 4).
+                on_inserted(entry)
         # A reference the source could not verify gets no comment and no Status from
         # comment_problems: say it explicitly, to the model and to the panel, so the
         # §6.6 promise does not degrade silently when mcp-legal-it is down (review
@@ -393,4 +419,4 @@ async def run_turn_with(
     return await run_turn(
         session, user_message, profile, deps.llm, deps.tools, deps.doc, deps.registry, emit,
         request_id, deps.limits, deps.consent, deps.endpoint_host, deps.model, deps.zdr,
-        undo_label, hooks=deps.hooks)
+        undo_label, hooks=deps.hooks, on_inserted=deps.on_inserted)

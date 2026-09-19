@@ -39,8 +39,9 @@ ROUTING_GENERATORS = (
     "procura_alle_liti", "relata_notifica_pec", "sfratto_morosita", "sollecito_pagamento",
 )
 # The 15 names of every tool_calcolo listed in modelli_atti.json (mcp-legal-it, 2026-09-19),
-# plus calcolo_hash and calcolo_tempo_trascorso (the two of Appendix B the catalogue does not
-# name). CALCULATORS (spec Appendix B, used by the review profile) is a subset of this tuple.
+# plus calcolo_tempo_trascorso and termini_processuali_civili (the two of Appendix B the
+# catalogue does not name, kept for the review profile). CALCULATORS (spec Appendix B, used
+# by the review profile) is a subset of this tuple.
 CATALOGUE_CALCULATORS = (
     "calcolo_hash", "calcolo_tempo_trascorso", "calcolo_valore_catastale", "compenso_ctu",
     "conta_giorni", "contributo_unificato", "interessi_legali", "interessi_mora",

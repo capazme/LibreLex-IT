@@ -17,9 +17,10 @@ class TemplateNotFound(Exception):
 
 def field_type(name: str, schema: dict | None) -> str:
     # The schema decides when the routing tool declares one (boolean -> sino, integer/number ->
-    # numero); the "name contains data" heuristic applies both when the schema doesn't resolve
-    # to one of those types and when there is no schema at all (resource routing, or a field the
-    # tool doesn't declare) -- design §4.1 ruling.
+    # numero); the name heuristic applies both when the schema doesn't resolve to one of those
+    # types and when there is no schema at all (resource routing, or a field the tool doesn't
+    # declare) -- design §4.1 ruling. Besides "data", the catalogue names the ends of a period
+    # with the "_dal"/"_al" suffixes ("interessi_dal"): those are dates too.
     if schema:
         t = schema.get("type")
         types = t if isinstance(t, list) else [t]
@@ -27,7 +28,8 @@ def field_type(name: str, schema: dict | None) -> str:
             return "sino"
         if "integer" in types or "number" in types:
             return "numero"
-    return "data" if "data" in name.lower() else "testo"
+    lowered = name.lower()
+    return "data" if "data" in lowered or lowered.endswith(("_dal", "_al")) else "testo"
 
 
 class TemplateCatalogue:

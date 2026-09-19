@@ -32,7 +32,8 @@ def _assert_well_formed(messages):
         assert answers == [c["id"] for c in msg["tool_calls"]]
 
 
-async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None, session=None):
+async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None, session=None,
+               on_inserted=None):
     events = []
 
     async def emit(m):
@@ -44,7 +45,7 @@ async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None,
     consent = consent or doc.ask_consent
     outcome = await run_turn(session, "domanda", turns_profile, llm, tools, doc, registry, emit,
                              "r1", limits or LimitsConfig(), consent, "fake.local", "fake-model",
-                             True, "LibreLex: chat")
+                             True, "LibreLex: chat", on_inserted=on_inserted)
     return outcome, events, session
 
 
@@ -376,3 +377,43 @@ async def test_inserted_entries_carry_a_title():
         outcome, _, _ = await _run(llm, FakeDocument([""]), tools, "draft")
     assert [i["titolo"] for i in outcome.inserted] == [
         "Premesse in fatto", "Riga senza titolo che è davvero molto lunga e va oltre i ses"]
+
+
+async def test_every_insertion_is_reported_as_it_happens():
+    """`on_inserted` fires per insertion, before the turn ends: what a cancelled turn already
+    wrote into the document is not lost (final review, finding 4)."""
+    server, _ = make_fake_legal_server()
+    seen: list[dict] = []
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("insert_markdown", {"where": "end", "markdown": "## Premesse\n\nTesto"}),
+                      ("replace_text", {"query": "Testo", "replacement": "Altro"}),
+                      ("insert_markdown", {"where": "end", "markdown": "## Motivi\n\nTesto"})),
+            text_turn("ok")])
+        outcome, _, _ = await _run(llm, FakeDocument([""]), tools, "draft",
+                                   on_inserted=seen.append)
+    # replace_text is not a partition: it is not reported here either
+    assert [e["titolo"] for e in seen] == ["Premesse", "Motivi"]
+    assert seen == outcome.inserted and all(e["from_id"] for e in seen)
+
+
+async def test_replace_text_all_accepts_only_an_explicit_true():
+    """A model that sends all="false" (a string, as some providers do) must not replace
+    every occurrence (final review, minor 13)."""
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument(["[X] e ancora [X]."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[X]", "replacement": "A", "all": "false"})),
+            text_turn("fatto")])
+        outcome, _, _ = await _run(llm, doc, tools, "draft")
+    assert (await doc.read_paragraphs())[0].text == "A e ancora [X]."
+    assert outcome.replaced == 1
+    doc2 = FakeDocument(["[X] e ancora [X]."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[X]", "replacement": "A", "all": "sì"})),
+            text_turn("fatto")])
+        outcome, _, _ = await _run(llm, doc2, tools, "draft")
+    assert (await doc2.read_paragraphs())[0].text == "A e ancora A."
+    assert outcome.replaced == 2
