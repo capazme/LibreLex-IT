@@ -339,30 +339,39 @@ async def test_chat_without_llm_config_and_research_dispatch():
     await h2.run(scenario2)
 
 
-async def test_draft_dispatch_runs_a_model_turn_and_refuses_an_empty_message():
-    llm = ScriptedLLM([tool_turn(("insert_markdown", {"where": "end", "markdown": "# Atto"})),
-                       text_turn("Inserita l'intestazione.")])
+async def test_draft_dispatch_start_answer_and_bad_action():
+    llm = ScriptedLLM([tool_turn(("chiedi_dati",
+                                  {"domande": [{"campo": "sede", "domanda": "Sede?"}]})),
+                       tool_turn(("redazione_completata", {"riepilogo": "Nulla da calcolare."}))])
     h = Harness(FakeDocument([""]), llm=llm)
 
     async def scenario(h: Harness):
         await h.send(HELLO)
         await h.pump(p.HelloOk)
-        await h.send(p.Command(id="r1", doc_id="d1", name="draft", args={"message": "  "}))
+        await h.send(p.Command(id="r0", doc_id="d1", name="draft", args={"message": "vecchio"}))
         await h.pump(p.Error)
         assert h.received[-1].code == "bad_request"
-        await h.send(p.Command(id="r2", doc_id="d1", name="draft",
-                               args={"message": "decreto ingiuntivo"}))
+        await h.send(p.Command(id="r1", doc_id="d1", name="draft", args={
+            "action": "start", "tipo_atto": "decreto_ingiuntivo_ordinario",
+            "fields": {"creditore": "Alfa", "debitore": "Beta", "importo": "12000"}}))
         await h.pump(p.Final)
         final = h.received[-1]
-        assert final.text == "Inserita l'intestazione." and final.summary["tool_calls"] == 1
-        assert final.summary["inserted"] == [{"from_id": "p:1", "to_id": "p:1"}]
-        assert "usage_totals" in final.summary
-        assert h.doc.inserts[0]["undo_label"] == "LibreLex: redazione da modello"
-        assert "Messaggio dell'utente: decreto ingiuntivo" in llm.calls[0][0][1]["content"]
-        # review is the only command still to come
-        await h.send(p.Command(id="r3", doc_id="d1", name="review"))
+        assert final.summary["tipo_atto"] == "decreto_ingiuntivo_ordinario"
+        assert final.summary["domande"][0]["campo"] == "sede"
+        assert final.summary["ended_by"] == "questions"
+        assert final.summary["partizioni"][0]["titolo"].startswith("Base: ")
+        assert final.summary["segnaposto_aperti"] == ["[SEDE]"] and "usage_totals" in final.summary
+        assert h.doc.inserts[0]["bookmark"] == "LibreLex.atto.decreto_ingiuntivo_ordinario"
+        await h.send(p.Command(id="r2", doc_id="d1", name="draft", args={
+            "action": "answer", "answers": {"sede": "Milano"}}))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.summary["completata"] is True
+        assert final.summary["riepilogo"] == "Nulla da calcolare."
+        assert final.summary["ended_by"] == "done"
+        await h.send(p.Command(id="r3", doc_id="d1", name="draft", args={"action": "start"}))
         await h.pump(p.Error)
-        assert h.received[-1].code == "not_implemented"
+        assert h.received[-1].code == "bad_request" and "tipo_atto" in h.received[-1].message
 
     await h.run(scenario)
 

@@ -21,6 +21,7 @@ from librelex_core.commands.draft import run_draft
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
 from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.show_text import TextUnavailable, run_show_text
+from librelex_core.commands.templates import TemplateCatalogue
 from librelex_core.commands.verify_document import run_verify
 from librelex_core.config import Config, ConfigError, load_config
 from librelex_core.document import FakeDocument
@@ -134,10 +135,12 @@ async def _model_turn(
         doc = FakeDocument([""], title="documento vuoto")
     async with factory(cfg) as tools:
         endpoint = getattr(llm, "endpoint", None)
+        specs = await tools.tool_specs()
         deps = AgentDeps(
-            llm, tools, doc, ToolRegistry(await tools.tool_specs(), profile), cfg.limits,
+            llm, tools, doc, ToolRegistry(specs, profile), cfg.limits,
             _cli_consent, getattr(endpoint, "host", "") or getattr(llm, "host", ""),
-            getattr(llm, "model", cfg.llm.model), cfg.llm.zero_data_retention)
+            getattr(llm, "model", cfg.llm.model), cfg.llm.zero_data_retention,
+            catalogue=TemplateCatalogue(tools), specs=specs)
         outcome = await run(DocSession("cli"), deps)
     print()
     u = outcome.usage
@@ -175,6 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("message")
     ch.add_argument("--file", type=Path, default=None,
                     help="text/markdown file used as the open document (blank-line paragraphs)")
+    # Task 5 of the guided drafting plan replaces this subcommand with the stateful flow;
+    # for now it continues a drafting the CLI has no way to start.
     dr = sub.add_parser("draft", help="one drafting turn from an mcp-legal-it template")
     dr.add_argument("message")
     dr.add_argument("--file", type=Path, default=None,
@@ -203,7 +208,8 @@ def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_f
         if args.cmd == "draft":
             return asyncio.run(_model_turn(
                 cfg, tools_factory, llm_factory, args.file, DRAFT_PROFILE,
-                lambda s, d: run_draft(s, args.message, d, _chat_emit, "cli")))
+                lambda s, d: run_draft(s, {"action": "continue", "message": args.message}, d,
+                                       _chat_emit, "cli")))
         return asyncio.run(_show(cfg, tools_factory, args.reference))
     except (ConfigError, IncompatibleServer, UnparsedReference, TextUnavailable, LLMError) as e:
         print(f"errore: {e}", file=sys.stderr)

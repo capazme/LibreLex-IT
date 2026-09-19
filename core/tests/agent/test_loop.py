@@ -112,7 +112,8 @@ async def test_insert_markdown_verifies_unseen_references_and_comments_problems(
     assert calls["verifica"] == [["Cass. n. 99999/2024"]]   # art. 2043 was grounded by cite_law
     assert doc.inserts[0]["author"] == "LibreLex"
     assert doc.inserts[0]["undo_label"] == "LibreLex: chat"
-    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1"}]
+    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1",
+                                "titolo": "Come da art. 2043 c.c. e Cass. n. 99999/2024."}]
     assert outcome.flagged == ["Cass. n. 99999/2024"]
     assert len(doc.comments) == 1 and doc.comments[0]["paragraph_id"] == "p:1"
     tool_msgs = [m["content"] for m in session.messages_for_model("S") if m["role"] == "tool"]
@@ -152,7 +153,9 @@ async def test_a_comment_that_cannot_be_added_still_records_the_insertion():
                        {"where": "cursor", "markdown": "Vedi Cass. n. 99999/2024."})),
             text_turn("ok")])
         outcome, _, session = await _run(llm, doc, tools, "research")
-    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1"}] and outcome.flagged == []
+    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1",
+                                "titolo": "Vedi Cass. n. 99999/2024."}]
+    assert outcome.flagged == []
     tool_msgs = [m["content"] for m in session.messages_for_model("S") if m["role"] == "tool"]
     assert tool_msgs[0].startswith("Inserito nei paragrafi p:1-p:1.")
     assert "commenti di verifica non applicati" in tool_msgs[0]
@@ -325,3 +328,51 @@ async def test_leggi_risorsa_reads_a_catalogue_resource_and_refuses_other_scheme
     assert "# Catalogo modelli atti (fake)" in tool_msgs[0]["content"]
     assert tool_msgs[1]["content"] == "ERRORE: URI non ammesso (solo legal://)"
     assert outcome.tool_calls == 2
+
+
+async def test_hooks_run_as_internal_tools_and_can_end_the_turn():
+    server, _ = make_fake_legal_server()
+    seen = []
+
+    async def ask(args):
+        seen.append(args)
+        return "Domande inviate.", "questions"
+
+    hook_tool = {"type": "function", "function": {
+        "name": "chiedi_dati", "description": "d",
+        "parameters": {"type": "object", "properties": {"domande": {"type": "array"}}}}}
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([tool_turn(("chiedi_dati", {"domande": [{"campo": "x"}]})),
+                           text_turn("mai raggiunto")])
+        specs = await tools.tool_specs()
+        registry = ToolRegistry(specs, "draft", extra_tools=[hook_tool])
+        assert "chiedi_dati" in registry.names and registry.kind("chiedi_dati") == "internal"
+        session = DocSession("d1")
+        events = []
+
+        async def emit(m):
+            events.append(m)
+
+        doc = FakeDocument(["x"])
+        outcome = await run_turn(session, "domanda", "draft", llm, tools, doc, registry, emit,
+                                 "r1", LimitsConfig(), doc.ask_consent, "h", "m", True, "u",
+                                 hooks={"chiedi_dati": ask})
+    assert seen == [{"domande": [{"campo": "x"}]}]
+    assert outcome.ended_by == "questions" and outcome.stopped is None and outcome.text == ""
+    assert len(llm.turns) == 1                       # the second scripted turn was never asked
+    tool_msg = session.turns[0].messages[-1]
+    assert tool_msg["role"] == "tool" and tool_msg["content"] == "Domande inviate."
+
+
+async def test_inserted_entries_carry_a_title():
+    server, _ = make_fake_legal_server()
+    lunga = ("Riga senza titolo che è davvero molto lunga e va oltre i sessanta caratteri")
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("insert_markdown",
+                       {"where": "end", "markdown": "## Premesse in fatto\n\nTesto"}),
+                      ("insert_markdown", {"where": "end", "markdown": lunga})),
+            text_turn("ok")])
+        outcome, _, _ = await _run(llm, FakeDocument([""]), tools, "draft")
+    assert [i["titolo"] for i in outcome.inserted] == [
+        "Premesse in fatto", "Riga senza titolo che è davvero molto lunga e va oltre i ses"]

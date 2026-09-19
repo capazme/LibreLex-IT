@@ -29,11 +29,15 @@ from librelex_core.citations.verifier import Verdict
 from librelex_core.config import LimitsConfig
 from librelex_core.document import DocumentClient, DocumentError, InsertedRange
 from librelex_core.llm.client import ToolCallRequest
-from librelex_core.mcp.client import LegalToolsClient, ToolError
+from librelex_core.mcp.client import LegalToolsClient, ToolError, ToolSpec
 from librelex_core.protocol import Usage
 
 Emit = Callable[[Any], Awaitable[None]]
 Consent = Callable[[p.ConsentSummary], Awaitable[str]]
+# A hook is a command-supplied tool executed inside the loop: it answers the model with its
+# result text and, with a stop reason, ends the turn after the tool results are appended
+# (guided drafting design §4.4, §4.5). A hook result never grounds.
+Hook = Callable[[dict], Awaitable[tuple[str, str | None]]]
 
 BAD_ARGUMENTS = "ERRORE: argomenti non validi"
 UNKNOWN_TOOL = "ERRORE: strumento non disponibile in questo profilo"
@@ -62,6 +66,12 @@ class AgentDeps:
     endpoint_host: str
     model: str
     zdr: bool
+    # Guided drafting (design §4.1, §4.3): the act catalogue, the raw tool specs the command
+    # needs to rebuild its registry with the hook tools, and the hooks themselves.
+    catalogue: Any | None = None
+    specs: list[ToolSpec] = field(default_factory=list)
+    hooks: dict[str, Hook] = field(default_factory=dict)
+    hook_tools: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +79,9 @@ class TurnOutcome:
     text: str = ""
     usage: Usage = field(default_factory=Usage)
     stopped: str | None = None
+    # A hook asked to end the turn (questions sent, drafting completed): unlike `stopped`,
+    # which reports an interruption, this is an orderly end (design §4.4).
+    ended_by: str | None = None
     inserted: list[dict] = field(default_factory=list)
     replaced: int = 0
     flagged: list[str] = field(default_factory=list)
@@ -102,6 +115,15 @@ def _unverified_text(refs: list[str]) -> str:
     return f"{what} (fonte non disponibile): {', '.join(refs)}."
 
 
+def _title(markdown: str) -> str:
+    """Title of an insertion (design §4.5): the first heading, else the first line, 60 chars."""
+    for line in markdown.splitlines():
+        line = line.strip()
+        if line:
+            return line.lstrip("#").strip()[:60]
+    return ""
+
+
 def _characters(value: Any) -> int:
     """Characters of document text carried by a read result (what consent is asked for)."""
     items = value if isinstance(value, list) else [value]
@@ -112,7 +134,7 @@ async def run_turn(
     session: DocSession, user_message: str, profile: str, llm: Any,
     tools: LegalToolsClient | None, doc: DocumentClient, registry: ToolRegistry, emit: Emit,
     request_id: str, limits: LimitsConfig, consent: Consent, endpoint_host: str, model: str,
-    zdr: bool, undo_label: str,
+    zdr: bool, undo_label: str, *, hooks: dict[str, Hook] | None = None,
 ) -> TurnOutcome:
     turn = session.begin_turn(user_message)
     grounding = Grounding()
@@ -120,6 +142,8 @@ async def run_turn(
     usage = Usage()
     streamed: list[str] = []
     turn_consented = False
+    hooks = hooks or {}
+    stop_reason: str | None = None
     schemas = {t["function"]["name"]: (t["function"].get("parameters") or {})
                for t in registry.tools}
 
@@ -194,7 +218,7 @@ async def run_turn(
         # of the document (it can touch a range already covered by an earlier insertion), so
         # it is counted separately in `outcome.replaced` instead of `outcome.inserted`.
         if name != "replace_text":
-            outcome.inserted.append(inserted.model_dump())
+            outcome.inserted.append({**inserted.model_dump(), "titolo": _title(markdown)})
         # A reference the source could not verify gets no comment and no Status from
         # comment_problems: say it explicitly, to the model and to the panel, so the
         # §6.6 promise does not degrade silently when mcp-legal-it is down (review
@@ -265,6 +289,7 @@ async def run_turn(
         return wrap_data(name, _as_json(result))
 
     async def execute(call: ToolCallRequest) -> str:
+        nonlocal stop_reason
         try:
             args = json.loads(call.arguments or "{}")
         except json.JSONDecodeError:
@@ -279,6 +304,13 @@ async def run_turn(
                 return await document_tool(call.name, args)
             if call.name == "leggi_risorsa":
                 return await resource_tool(str(args.get("uri", "")))
+            if call.name in hooks:
+                # Hooks answer the model like an internal tool, but their result is the
+                # command's, never a source: it is not grounded (design §4.4, §5.3).
+                content, reason = await hooks[call.name](args)
+                if reason is not None:
+                    stop_reason = reason
+                return content
             try:
                 return run_internal_tool(call.name, args)
             except KeyError:            # an internal tool listed but no longer implemented
@@ -333,6 +365,11 @@ async def run_turn(
                     break
                 outcome.tool_calls += len(result.tool_calls)
                 await run_tool_calls(result.tool_calls)
+                if stop_reason:
+                    # An orderly end asked for by a hook: the tool results are in the history,
+                    # so the next turn resumes from a well-formed conversation (design §4.4).
+                    outcome.ended_by = stop_reason
+                    break
             else:
                 outcome.stopped = "iterations"
     except TimeoutError:
@@ -356,4 +393,4 @@ async def run_turn_with(
     return await run_turn(
         session, user_message, profile, deps.llm, deps.tools, deps.doc, deps.registry, emit,
         request_id, deps.limits, deps.consent, deps.endpoint_host, deps.model, deps.zdr,
-        undo_label)
+        undo_label, hooks=deps.hooks)

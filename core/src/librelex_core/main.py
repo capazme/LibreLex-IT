@@ -16,8 +16,10 @@ from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, LimitReached, check_ceiling
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
+from librelex_core.commands.draft import ACTIONS as DRAFT_ACTIONS
+from librelex_core.commands.draft import BAD_ACTION as DRAFT_BAD_ACTION
 from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
-from librelex_core.commands.draft import run_draft
+from librelex_core.commands.draft import draft_summary, run_draft
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
 from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.research import PROFILE as RESEARCH_PROFILE
@@ -183,7 +185,9 @@ class CoreServer:
         host = getattr(endpoint, "host", "") or getattr(llm, "host", "")
         return AgentDeps(llm, tools, doc, ToolRegistry(specs, profile), self.config.limits,
                          doc.ask_consent, host, getattr(llm, "model", self.config.llm.model),
-                         self.config.llm.zero_data_retention)
+                         self.config.llm.zero_data_retention,
+                         catalogue=self._catalogue(tools) if tools is not None else None,
+                         specs=specs)
 
     async def _prepare_turn(self, request_id: str, doc_id: str, doc: BridgeDocument,
                             profile: str) -> tuple[DocSession, AgentDeps]:
@@ -193,13 +197,13 @@ class CoreServer:
         return session, await self._agent_deps(request_id, doc, profile)
 
     async def _send_turn_final(self, request_id: str, session: DocSession,
-                               outcome: TurnOutcome) -> None:
+                               outcome: TurnOutcome, extra: dict) -> None:
         await self.send(p.Final(
             request_id=request_id, text=outcome.text, usage=outcome.usage,
             summary={"stopped": outcome.stopped, "inserted": outcome.inserted,
                      "flagged": outcome.flagged, "unverified": outcome.unverified,
                      "tool_calls": outcome.tool_calls,
-                     "usage_totals": session.usage.model_dump()}))
+                     "usage_totals": session.usage.model_dump(), **extra}))
 
     def _arm_cancel_final(self, request_id: str, session: DocSession, before: p.Usage) -> None:
         """Make the Final of a cancelled model turn carry the usage of the interrupted turn.
@@ -215,9 +219,13 @@ class CoreServer:
     async def _model_turn(
         self, request_id: str, doc_id: str, doc: BridgeDocument, profile: str,
         run: Callable[[DocSession, AgentDeps], Awaitable[TurnOutcome]],
+        extra_summary: Callable[[DocSession, TurnOutcome], dict] | None = None,
     ) -> None:
         """One model turn: session and deps, the command's runner, the Final; a cancellation
-        arms the Final that reports the tokens already spent (spec §8.4)."""
+        arms the Final that reports the tokens already spent (spec §8.4).
+
+        ``extra_summary`` lets a stateful command (the guided drafting) merge its own state
+        into the Final's summary once the outcome is known."""
         session, deps = await self._prepare_turn(request_id, doc_id, doc, profile)
         before = session.usage
         try:
@@ -225,7 +233,8 @@ class CoreServer:
         except asyncio.CancelledError:
             self._arm_cancel_final(request_id, session, before)
             raise
-        await self._send_turn_final(request_id, session, outcome)
+        extra = extra_summary(session, outcome) if extra_summary is not None else {}
+        await self._send_turn_final(request_id, session, outcome, extra)
 
     # --- main loop -----------------------------------------------------------
     async def run(self, transport: LineTransport) -> None:
@@ -355,15 +364,20 @@ class CoreServer:
                 lambda s, d: run_research(s, msg.args.get("question"), d, self.send, msg.id))
             return
         if msg.name == "draft":
-            message = str(msg.args.get("message") or "").strip()
-            if not message:
-                await self.send(p.Error(
-                    request_id=msg.id, code="bad_request",
-                    message=("indica il tipo di atto da redigere, o rispondi alle domande "
-                             "del modello")))
+            if msg.args.get("action") not in DRAFT_ACTIONS:
+                await self.send(p.Error(request_id=msg.id, code="bad_request",
+                                        message=DRAFT_BAD_ACTION))
                 return
-            await self._model_turn(msg.id, msg.doc_id, doc, DRAFT_PROFILE,
-                                   lambda s, d: run_draft(s, message, d, self.send, msg.id))
+            try:
+                await self._model_turn(
+                    msg.id, msg.doc_id, doc, DRAFT_PROFILE,
+                    lambda s, d: run_draft(s, msg.args, d, self.send, msg.id),
+                    extra_summary=draft_summary)
+            except ValueError as e:
+                # Missing tipo_atto, no drafting in progress, catalogue unavailable: the
+                # panel's request was malformed, not the core (design §4.3).
+                await self.send(
+                    p.Error(request_id=msg.id, code="bad_request", message=str(e)))
             return
         if msg.name == "set_reference":
             await self._set_reference(msg)

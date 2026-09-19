@@ -1,10 +1,20 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
-import json
+import pytest
 
+from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession
-from librelex_core.commands.draft import PROFILE, UNDO_LABEL, draft_prompt, run_draft
+from librelex_core.commands.draft import (
+    PROFILE,
+    base_text,
+    coerce_args,
+    draft_summary,
+    placeholders,
+    run_draft,
+    to_markdown,
+)
+from librelex_core.commands.templates import TemplateCatalogue
 from librelex_core.config import LimitsConfig
 from librelex_core.document import FakeDocument
 from librelex_core.mcp.client import LegalToolsClient
@@ -13,133 +23,190 @@ from tests.fakes import ScriptedLLM, text_turn, tool_turn
 
 
 async def _deps(llm, doc, tools):
-    registry = ToolRegistry(await tools.tool_specs(), PROFILE)
-    return AgentDeps(llm, tools, doc, registry, LimitsConfig(), doc.ask_consent, "fake.local",
-                     "m", True)
+    specs = await tools.tool_specs()
+    return AgentDeps(llm, tools, doc, ToolRegistry(specs, PROFILE), LimitsConfig(),
+                     doc.ask_consent, "fake.local", "m", True, catalogue=TemplateCatalogue(tools),
+                     specs=specs)
 
 
-def test_draft_prompt_carries_the_message_and_the_procedure():
-    text = draft_prompt("decreto ingiuntivo per fattura n. 12/2025 di 12.000 euro")
-    assert text.startswith("Redazione guidata da modello.")
-    assert "Messaggio dell'utente: decreto ingiuntivo per fattura n. 12/2025 di 12.000 euro" in text
-    for needle in ("genera_modello_atto", "read_paragraphs", "insert_markdown",
-                   'where="end"', "cite_law", "fermati", "parentesi quadre",
-                   "già inserito", "dati già noti"):
-        assert needle in text, needle
-    assert PROFILE == "draft" and UNDO_LABEL == "LibreLex: redazione da modello"
-
-
-async def test_first_turn_collects_data_and_stops_without_writing():
-    server, calls = make_fake_legal_server()
-    doc = FakeDocument(["Fattura n. 12 del 3 marzo 2025, Euro 12.000, Alfa S.r.l."])
+def _emit_list():
     events = []
 
     async def emit(m):
         events.append(m)
-
-    async with LegalToolsClient(server) as tools:
-        llm = ScriptedLLM([
-            tool_turn(("genera_modello_atto", {"tipo_atto": "cerca",
-                                               "parametri": {"query": "ingiuntivo"}})),
-            tool_turn(("genera_modello_atto", {"tipo_atto": "decreto_ingiuntivo_ordinario"}),
-                      ("read_paragraphs", {})),
-            text_turn("Per procedere mi servono: 1) il debitore; 2) la sede del giudice.")])
-        session = DocSession("d1")
-        out = await run_draft(session, "decreto ingiuntivo per la fattura del documento",
-                              await _deps(llm, doc, tools), emit, "r1")
-    assert out.text.startswith("Per procedere mi servono")
-    assert out.inserted == [] and doc.inserts == []
-    assert calls["modelli"] == [("cerca", {"query": "ingiuntivo"}),
-                                ("decreto_ingiuntivo_ordinario", {})]
-    user = llm.calls[0][0][1]
-    assert user["role"] == "user" and user["content"] == draft_prompt(
-        "decreto ingiuntivo per la fattura del documento")
-    # the draft profile exposes the generators and the calculators, not the case-law tools
-    names = {t["function"]["name"] for t in llm.calls[0][1]}
-    assert {"genera_modello_atto", "decreto_ingiuntivo", "contributo_unificato",
-            "interessi_mora", "read_paragraphs", "insert_markdown"} <= names
-    assert not {"cerca_giurisprudenza", "leggi_sentenza", "replace_selection",
-                "add_comment"} & names
-    # the template result went to the model as data, with its instructions
-    tool_msgs = [m for m in llm.calls[2][0] if m.get("role") == "tool"]
-    assert any("<<<DATI: genera_modello_atto>>>" in m["content"]
-               and "tool_diretto" in m["content"] for m in tool_msgs)
+    return events, emit
 
 
-async def test_second_turn_generates_computes_and_inserts_section_by_section():
+def test_pure_helpers():
+    assert placeholders("ILL.MO [SEDE] di [SEDE], Avv. [LEGALE], {campo}") == [
+        "[SEDE]", "[LEGALE]", "{campo}"]
+    assert base_text({"testo": "T", "bozza_ricorso": "B"}) == "T"
+    assert base_text({"bozza_ricorso": "B", "riepilogo": {}}) == "B"
+    assert base_text({"riepilogo": {"totale": 1}}) is None
+    assert to_markdown("A\nB\n\n\nC") == "A\n\nB\n\nC"
+    props = {"importo": {"type": "number"}, "provvisoria_esecuzione": {"type": "boolean"},
+             "creditore": {"type": "string"}, "tipo_credito": {"type": "string"}}
+    assert coerce_args({"importo": "12.000,50", "provvisoria_esecuzione": "sì",
+                        "creditore": "Alfa", "extra": "x", "tipo_credito": "cambiale"},
+                       {"tipo_credito": "ordinario"}, props) == {
+        "importo": 12000.5, "provvisoria_esecuzione": True, "creditore": "Alfa",
+        "tipo_credito": "ordinario"}
+
+
+async def test_start_inserts_the_base_then_the_model_asks_questions_and_stops():
     server, calls = make_fake_legal_server()
     doc = FakeDocument([""])
-    events = []
-
-    async def emit(m):
-        events.append(m)
-
+    events, emit = _emit_list()
     async with LegalToolsClient(server) as tools:
-        deps_llm = ScriptedLLM([
-            text_turn("Mi serve il nome del debitore.")])
+        llm = ScriptedLLM([tool_turn(("chiedi_dati", {"domande": [
+            {"campo": "sede", "domanda": "Sede del tribunale?", "esempio": "Milano"},
+            {"campo": "data_fattura", "domanda": "Data della fattura?", "tipo": "data"}]}))])
         session = DocSession("d1")
-        await run_draft(session, "decreto ingiuntivo, creditore Alfa S.r.l., 12.000 euro",
-                        await _deps(deps_llm, doc, tools), emit, "r1")
-        llm = ScriptedLLM([
-            tool_turn(("decreto_ingiuntivo", {"creditore": "Alfa S.r.l.", "debitore": "Beta S.p.A.",
-                                              "importo": 12000.0}),
-                      ("contributo_unificato", {"valore_causa": 12000.0,
-                                                "tipo_procedimento": "monitorio"})),
-            tool_turn(("insert_markdown", {"where": "end", "markdown":
-                       "# RICORSO PER DECRETO INGIUNTIVO\n\n(artt. 633 e ss. c.p.c.)\n\n"
-                       "**Alfa S.r.l.** contro **Beta S.p.A.**"})),
-            tool_turn(("insert_markdown", {"where": "end", "markdown":
-                       "## Conclusioni\n\nSi chiede il pagamento di Euro 12.000,00, oltre "
-                       "contributo unificato di Euro 129,50 (DPR 115/2002)."})),
-            text_turn("Inserite intestazione e conclusioni; resta da indicare la sede.")])
-        out = await run_draft(session, "il debitore è Beta S.p.A.",
-                              await _deps(llm, doc, tools), emit, "r2")
-    assert out.text.endswith("resta da indicare la sede.")
-    assert [i["where"] for i in doc.inserts] == ["end", "end"]
-    assert all(i["undo_label"] == UNDO_LABEL and i["author"] == "LibreLex" for i in doc.inserts)
-    assert len(out.inserted) == 2 and out.flagged == [] and out.unverified == []
+        deps = await _deps(llm, doc, tools)
+        out = await run_draft(session, {"action": "start",
+                                        "tipo_atto": "decreto_ingiuntivo_ordinario",
+                                        "fields": {"creditore": "Alfa S.r.l.",
+                                                   "debitore": "Beta S.p.A.",
+                                                   "importo": "12.000"},
+                                        "notes": "fattura n. 12 del 3 marzo 2025"},
+                              deps, emit, "r1")
+    # the base was generated with the fixed parameter and inserted before the model ran
     assert calls["generatori"] == [("decreto_ingiuntivo", "Alfa S.r.l.", "Beta S.p.A.", 12000.0)]
-    assert calls["calcoli"] == [("contributo_unificato", 12000.0, "monitorio")]
-    # the second turn sees the first one: same session, the answer follows the question
-    history = llm.calls[0][0]
-    assert [m["role"] for m in history[:4]] == ["system", "user", "assistant", "user"]
-    assert history[2]["content"] == "Mi serve il nome del debitore."
-    assert history[3]["content"] == draft_prompt("il debitore è Beta S.p.A.")
-    # whether the references of the markdown count as grounded depends on how the extractor
-    # canonicalises "artt. 633 e ss. c.p.c." and "DPR 115/2002"; either way the fake verifies
-    # them as "verificata", so nothing is flagged (asserted above), and no assertion is made
-    # on calls["verifica"]
-    payload = json.loads("".join(m["content"].split("<<<DATI: decreto_ingiuntivo>>>\n")[1]
-                                 .split("\n<<<FINE DATI>>>")[0]
-                         for m in llm.calls[1][0] if m.get("role") == "tool"
-                         and "decreto_ingiuntivo" in m["content"]))
-    assert payload["giudice_competente"] == "Tribunale"
+    assert doc.inserts[0]["undo_label"] == "LibreLex: base decreto_ingiuntivo_ordinario"
+    assert doc.inserts[0]["bookmark"] == "LibreLex.atto.decreto_ingiuntivo_ordinario"
+    assert doc.inserts[0]["author"] == "LibreLex" and doc.inserts[0]["where"] == "end"
+    assert doc.inserts[0]["markdown"].startswith("RICORSO PER DECRETO INGIUNTIVO\n\n(Artt. 633")
+    draft = session.draft
+    assert draft.base["placeholders"] == ["[SEDE]"] and draft.base["tool"] == "decreto_ingiuntivo"
+    assert draft.base["result"]["giudice_competente"] == "Tribunale"
+    assert draft.partitions[0]["titolo"] == "Base: Ricorso per decreto ingiuntivo — credito ordinario"  # noqa: E501
+    # the model saw the state, not a bare message
+    user = llm.calls[0][0][1]["content"]
+    for needle in ("Redazione guidata: Ricorso per decreto ingiuntivo", "- creditore: Alfa S.r.l.",
+                   "Note dell'utente: fattura n. 12", "Base deterministica già nel documento",
+                   "[SEDE]", "<<<DATI: modello d'atto>>>", "<<<DATI: risultato di decreto_ingiuntivo>>>",  # noqa: E501
+                   "# Ricetta di redazione", "Nessuna base"):
+        assert (needle in user) != (needle == "Nessuna base"), needle
+    names = {t["function"]["name"] for t in llm.calls[0][1]}
+    assert {"chiedi_dati", "redazione_completata", "leggi_atto_riferimento", "replace_text",
+            "decreto_ingiuntivo", "contributo_unificato"} <= names
+    # the questions ended the turn and reached the summary
+    assert out.ended_by == "questions" and out.text == ""
+    summary = draft_summary(session, out)
+    assert summary["domande"] == [
+        {"campo": "sede", "domanda": "Sede del tribunale?", "esempio": "Milano", "tipo": "testo"},
+        {"campo": "data_fattura", "domanda": "Data della fattura?", "esempio": "", "tipo": "data"}]
+    assert summary["segnaposto_aperti"] == ["[SEDE]"] and summary["completata"] is False
+    assert any(isinstance(e, p.Status) and "base deterministica" in e.text for e in events)
 
 
-async def test_generator_echo_does_not_ground_a_reference_the_model_invented():
-    """Finding 1 (final-review fix wave): decreto_ingiuntivo echoes its free-text parameters
-    verbatim into "bozza" (spec §6.6 item 1). A reference the model made up and passed as a
-    parameter must not come back "already seen": it still has to be verified, and flagged,
-    like any reference the model writes on insert."""
-    server, calls = make_fake_legal_server(
-        verdicts={"Cass. n. 99999/2024": ("inesistente", "nessuna decisione")})
+async def test_answer_fills_placeholders_inserts_partitions_and_completes():
+    server, calls = make_fake_legal_server()
     doc = FakeDocument([""])
-    events = []
-
-    async def emit(m):
-        events.append(m)
-
+    events, emit = _emit_list()
     async with LegalToolsClient(server) as tools:
-        llm = ScriptedLLM([
-            tool_turn(("decreto_ingiuntivo",
-                       {"creditore": "Alfa S.r.l. (cfr. Cass. n. 99999/2024)",
-                        "debitore": "Beta S.p.A.", "importo": 12000.0})),
-            tool_turn(("insert_markdown", {"where": "end", "markdown":
-                       "Come da Cass. n. 99999/2024, si chiede..."})),
-            text_turn("Inserito.")])
         session = DocSession("d1")
-        out = await run_draft(session, "decreto ingiuntivo",
-                              await _deps(llm, doc, tools), emit, "r1")
-    assert calls["verifica"] == [["Cass. n. 99999/2024"]]
-    assert out.flagged == ["Cass. n. 99999/2024"]
-    assert len(doc.comments) == 1
+        llm1 = ScriptedLLM([tool_turn(("chiedi_dati", {"domande": [
+            {"campo": "sede", "domanda": "Sede?"}]}))])
+        await run_draft(session, {"action": "start", "tipo_atto": "decreto_ingiuntivo_ordinario",
+                                  "fields": {"creditore": "Alfa", "debitore": "Beta",
+                                             "importo": "12000"}},
+                        await _deps(llm1, doc, tools), emit, "r1")
+        llm2 = ScriptedLLM([
+            tool_turn(("contributo_unificato",
+                       {"valore_causa": 12000, "tipo_procedimento": "monitorio"})),
+            tool_turn(("replace_text", {"query": "[SEDE]", "replacement": "MILANO"}),
+                      ("insert_markdown",
+                       {"where": "end",
+                        "markdown": "## Premesse in fatto\n\nAlfa ha emesso la fattura."}),
+                      ("insert_markdown",
+                       {"where": "end",
+                        "markdown": "## Conclusioni\n\nEuro 129,50 di contributo unificato "
+                                    "(DPR 115/2002)."})),
+            tool_turn(("redazione_completata",
+                       {"riepilogo": "Calcoli: contributo unificato 129,50.\n"
+                                     "Allegati: procura, fattura."})),
+        ])
+        out = await run_draft(session, {"action": "answer", "answers": {"sede": "Milano"}},
+                              await _deps(llm2, doc, tools), emit, "r2")
+    user = llm2.calls[0][0][-1]["content"]
+    assert "Risposte appena ricevute:\n- sede: Milano" in user
+    assert calls["calcoli"] == [("contributo_unificato", 12000.0, "monitorio")]
+    paragraphs = [x.text for x in await doc.read_paragraphs()]
+    assert any("MILANO" in t for t in paragraphs) and not any("[SEDE]" in t for t in paragraphs)
+    draft = session.draft
+    assert [pt["titolo"] for pt in draft.partitions] == [
+        "Base: Ricorso per decreto ingiuntivo — credito ordinario", "Premesse in fatto",
+        "Conclusioni"]
+    assert draft.done is True and draft.riepilogo.startswith("Calcoli:")
+    summary = draft_summary(session, out)
+    assert summary["completata"] is True and summary["segnaposto_aperti"] == []
+    assert summary["ended_by"] == "done" and out.replaced == 1
+    assert [i["undo_label"] for i in doc.inserts][1:] == [
+        "LibreLex: redazione decreto_ingiuntivo_ordinario"] * 3
+
+
+async def test_reference_act_is_read_with_consent_once_and_never_grounds():
+    server, calls = make_fake_legal_server()
+    doc = FakeDocument([""], consent_decisions=["once", "once"])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        session.reference = {"name": "ricorso_rossi.docx", "chars": 40,
+                             "text": "RICORSO ... come da Cass. n. 99999/2024 ...",
+                             "troncato": False}
+        llm = ScriptedLLM([
+            tool_turn(("leggi_atto_riferimento", {})),
+            tool_turn(("leggi_atto_riferimento", {})),
+            tool_turn(("insert_markdown",
+                       {"where": "end", "markdown": "## Diritto\n\nCass. n. 99999/2024."})),
+            text_turn("fatto")])
+        deps = await _deps(llm, doc, tools)
+        await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                  "fields": {"attore": "A", "convenuto": "B", "oggetto": "O"}},
+                        deps, emit, "r1")
+    assert len(doc.consent_requests) == 1                     # once per session
+    req = doc.consent_requests[0]
+    assert req.scope == "reference" and req.name == "ricorso_rossi.docx" and req.chars == 40
+    tool_msgs = [m for m in llm.calls[2][0] if m.get("role") == "tool"]
+    assert "<<<DATI: atto di riferimento (ricorso_rossi.docx)>>>" in tool_msgs[0]["content"]
+    assert calls["verifica"] == [["Cass. n. 99999/2024"]]    # not grounded by the reference
+    assert ("Atto di riferimento disponibile: ricorso_rossi.docx (40 caratteri)"
+            in llm.calls[0][0][1]["content"])
+    assert doc.inserts == [] or doc.inserts[0]["where"] == "end"   # no base: resource routing
+    assert session.draft.base is None
+    assert "Nessuna base deterministica" in llm.calls[0][0][1]["content"]
+
+
+async def test_reference_denied_and_missing():
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument([""], consent_decisions=["deny"])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        llm = ScriptedLLM([tool_turn(("leggi_atto_riferimento", {})), text_turn("senza")])
+        await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                  "fields": {"attore": "A"}}, await _deps(llm, doc, tools),
+                        emit, "r1")
+        msg = [m for m in llm.calls[1][0] if m.get("role") == "tool"][0]["content"]
+        assert msg == "ERRORE: nessun atto di riferimento caricato"
+        session.reference = {"name": "x.odt", "chars": 3, "text": "abc", "troncato": False}
+        llm2 = ScriptedLLM([tool_turn(("leggi_atto_riferimento", {})), text_turn("senza")])
+        await run_draft(session, {"action": "continue", "message": "vai"},
+                        await _deps(llm2, doc, tools), emit, "r2")
+        msg = [m for m in llm2.calls[1][0] if m.get("role") == "tool"][-1]["content"]
+        assert msg.startswith("ERRORE: invio del testo")
+
+
+async def test_bad_actions_raise_value_error():
+    server, _ = make_fake_legal_server()
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        deps = await _deps(ScriptedLLM([]), FakeDocument([""]), tools)
+        with pytest.raises(ValueError, match="tipo_atto"):
+            await run_draft(DocSession("d"), {"action": "start"}, deps, emit, "r")
+        with pytest.raises(ValueError, match="nessuna redazione"):
+            await run_draft(DocSession("d"), {"action": "answer", "answers": {}}, deps, emit, "r")
+        deps.catalogue = None
+        with pytest.raises(ValueError, match="catalogo"):
+            await run_draft(DocSession("d"), {"action": "start", "tipo_atto": "x"}, deps, emit, "r")

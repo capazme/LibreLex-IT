@@ -173,9 +173,11 @@ def concise(spec: ToolSpec, overrides: dict[str, str]) -> str:
 class ToolRegistry:
     """The merged `tools` array for one profile (spec §6.2): legal tools of the profile
     (from ``specs``, with concise descriptions), then its document tools, then the internal
-    tools, each group sorted by name for a deterministic, byte-stable result."""
+    tools (plus any ``extra_tools`` of the command), each group sorted by name for a
+    deterministic, byte-stable result."""
 
-    def __init__(self, specs: list[ToolSpec], profile: str):
+    def __init__(self, specs: list[ToolSpec], profile: str,
+                 extra_tools: list[dict] | None = None):
         self.profile = profile
         chosen = PROFILES[profile]
         overrides = load_overrides()
@@ -194,7 +196,12 @@ class ToolRegistry:
         document_names = sorted(n for n in chosen.document if n in DOCUMENT_TOOLS)
         document_tools = [DOCUMENT_TOOLS[n] for n in document_names]
 
-        internal_tools = sorted(INTERNAL_TOOLS, key=lambda t: t["function"]["name"])
+        # `extra_tools` are the hooks a command adds for its own turns (chiedi_dati,
+        # redazione_completata, leggi_atto_riferimento of the guided drafting, design §3.3):
+        # they belong to the internal group and are sorted with it, so the array stays
+        # byte-stable across the turns of one drafting.
+        internal_tools = sorted(INTERNAL_TOOLS + list(extra_tools or ()),
+                                key=lambda t: t["function"]["name"])
         internal_names = [t["function"]["name"] for t in internal_tools]
 
         self.tools: list[dict] = legal_tools + document_tools + internal_tools
