@@ -365,3 +365,35 @@ async def test_draft_dispatch_runs_a_model_turn_and_refuses_an_empty_message():
         assert h.received[-1].code == "not_implemented"
 
     await h.run(scenario)
+
+
+async def test_template_commands_and_set_reference():
+    h = Harness(FakeDocument(["x"]))
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        await h.send(p.Command(id="r1", doc_id="d1", name="list_templates"))
+        await h.pump(p.Final)
+        assert h.received[-1].summary["totale"] == 3 and h.received[-1].text == "Catalogo: 3 modelli."  # noqa: E501
+        await h.send(p.Command(id="r2", doc_id="d1", name="template_info",
+                               args={"tipo_atto": "precetto_ordinario"}))
+        await h.pump(p.Final)
+        assert h.received[-1].summary["routing"]["tool"] == "atto_di_precetto"
+        assert h.received[-1].text == "Modello precetto_ordinario: 6 campi."
+        await h.send(p.Command(id="r3", doc_id="d1", name="template_info",
+                               args={"tipo_atto": "boh"}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "template_not_found"
+        await h.send(p.Command(id="r4", doc_id="d1", name="set_reference",
+                               args={"name": "ricorso_rossi.docx", "text": "RICORSO " * 10}))
+        await h.pump(p.Final)
+        assert h.received[-1].summary["riferimento"] == {
+            "name": "ricorso_rossi.docx", "chars": 80, "troncato": False}
+        session = h.server._session("d1")
+        assert session.reference["text"].startswith("RICORSO ")
+        await h.send(p.Command(id="r5", doc_id="d1", name="set_reference", args={"text": ""}))
+        await h.pump(p.Final)
+        assert session.reference is None and h.received[-1].summary == {"riferimento": None}
+
+    await h.run(scenario)

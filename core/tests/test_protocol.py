@@ -62,3 +62,15 @@ def test_large_payload_roundtrip():
     big = "x" * 1_000_000
     back = p.parse_core_line(p.dump_line(p.Delta(request_id="r", text=big)))
     assert back.text == big
+
+
+def test_new_commands_and_reference_consent_scope():
+    for name in ("list_templates", "template_info", "set_reference"):
+        p.parse_extension_line(json.dumps({"type": "command", "id": "r", "doc_id": "d",
+                                           "name": name, "args": {}}))
+    s = p.ConsentSummary(scope="reference", chars=10, endpoint_host="h", model="m", zdr=True,
+                         name="ricorso.docx")
+    assert json.loads(p.dump_line(p.ConsentRequest(request_id="r", call_id="k", summary=s)))[
+        "summary"]["name"] == "ricorso.docx"
+    assert p.ConsentSummary(scope="selection", chars=1, endpoint_host="h", model="m",
+                            zdr=False).name is None

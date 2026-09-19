@@ -10,6 +10,9 @@ from librelex_core.protocol import Usage
 
 HISTORY_BUDGET_TOKENS = 40_000
 INTERRUPTED_TOOL_RESULT = "ERRORE: turno interrotto"
+# Guided Drafting design §4.2: an inserted reference act is truncated to this many characters
+# before it ever reaches the session (or the model); it never appears in a Status/Log/error.
+MAX_REFERENCE_CHARS = 60_000
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -75,11 +78,38 @@ class Turn:
 
 
 @dataclass
+class DraftState:
+    """Guided drafting state carried across turns of the ``draft`` command (design §4.2).
+
+    ``template`` is the catalogue ``info()`` result the lawyer picked; ``fields`` the values the
+    lawyer filled in. ``base`` records a deterministic direct-tool result already inserted into
+    the document (its placeholders still to fill via ``replace_text``); ``partitions`` the
+    narrative sections inserted so far, so a later turn can resume after the last one.
+    """
+
+    tipo_atto: str
+    template: dict[str, Any]
+    fields: dict[str, str]
+    notes: str = ""
+    answers: dict[str, str] = field(default_factory=dict)
+    base: dict[str, Any] | None = None
+    partitions: list[dict[str, Any]] = field(default_factory=list)
+    questions: list[dict[str, Any]] = field(default_factory=list)
+    done: bool = False
+    riepilogo: str = ""
+
+
+@dataclass
 class DocSession:
     doc_id: str
     turns: list[Turn] = field(default_factory=list)
     consent: Literal["none", "document"] = "none"
     usage: Usage = field(default_factory=Usage)
+    draft: DraftState | None = None
+    # A reference act the lawyer pasted in for style/structure (design §5.2); never sent to the
+    # model until reference_consented flips true, and never echoed back in Status/Log/errors.
+    reference: dict[str, Any] | None = None
+    reference_consented: bool = False
 
     def begin_turn(self, user_message: str) -> Turn:
         turn = Turn(messages=[{"role": "user", "content": user_message}])

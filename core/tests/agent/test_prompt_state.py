@@ -57,3 +57,23 @@ def test_ceiling():
     with pytest.raises(LimitReached, match="401000"):
         check_ceiling(s, 400_000)
     check_ceiling(DocSession("d2"), 400_000)
+
+
+def test_recipe_loads_with_the_seven_rules_and_no_header():
+    from librelex_core.agent.prompt import load_recipe
+    text = load_recipe()
+    assert text.startswith("# Ricetta di redazione")
+    assert "<!--" not in text
+    for needle in ("CATALOGO", "ANCORAGGIO", "CALCOLI", "COMPLETEZZA", "FORMULE LEGALI",
+                   "RISERVATEZZA", "chiedi_dati", "replace_text", "redazione_completata",
+                   "leggi_atto_riferimento", "senza markdown"):
+        assert needle in text, needle
+    assert load_recipe() is load_recipe()          # cached: byte-stable across turns
+
+
+def test_draft_state_and_reference_live_on_the_session():
+    from librelex_core.agent.state import DraftState
+    s = DocSession("d1")
+    assert s.draft is None and s.reference is None and s.reference_consented is False
+    s.draft = DraftState(tipo_atto="x", template={"campi_obbligatori": []}, fields={"a": "1"})
+    assert s.draft.answers == {} and s.draft.partitions == [] and s.draft.done is False

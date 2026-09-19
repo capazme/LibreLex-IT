@@ -13,7 +13,7 @@ from librelex_core import PROTOCOL_VERSION, __version__
 from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps, TurnOutcome
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import DocSession, LimitReached, check_ceiling
+from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, LimitReached, check_ceiling
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
 from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
@@ -23,6 +23,7 @@ from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.research import PROFILE as RESEARCH_PROFILE
 from librelex_core.commands.research import run_research
 from librelex_core.commands.show_text import TextUnavailable, run_show_text
+from librelex_core.commands.templates import TemplateCatalogue, TemplateNotFound
 from librelex_core.commands.verify_document import run_verify
 from librelex_core.config import Config, load_config
 from librelex_core.document import BridgeDocument, DocumentError
@@ -31,7 +32,7 @@ from librelex_core.mcp.client import IncompatibleServer, LegalToolsClient, ToolS
 
 # Commands that need a live mcp-legal-it connection; list_citations is a local,
 # deterministic pipeline and must keep working even against an incompatible server.
-NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text")
+NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text", "list_templates", "template_info")
 # Model-driven commands still to come (spec §6.3).
 NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
@@ -102,6 +103,7 @@ class CoreServer:
                 config.mcp_legal_it, timeout_s=config.limits.tool_timeout_s))
         self._tools: LegalToolsClient | None = None
         self._tools_lock = asyncio.Lock()
+        self._templates: TemplateCatalogue | None = None
         self._llm_factory = llm_factory or (lambda: LLMClient(config.llm))
         self._llm: Any | None = None
         self._doc_sessions: dict[str, DocSession] = {}   # one session per doc_id (spec §6.8)
@@ -149,6 +151,12 @@ class CoreServer:
         if session is None:
             session = self._doc_sessions[doc_id] = DocSession(doc_id)
         return session
+
+    def _catalogue(self, tools: LegalToolsClient) -> TemplateCatalogue:
+        """One TemplateCatalogue per server process, lazily built with the tools client."""
+        if self._templates is None:
+            self._templates = TemplateCatalogue(tools)
+        return self._templates
 
     async def _announce(self, request_id: str, tools: LegalToolsClient) -> None:
         if not self._announced:
@@ -357,6 +365,9 @@ class CoreServer:
             await self._model_turn(msg.id, msg.doc_id, doc, DRAFT_PROFILE,
                                    lambda s, d: run_draft(s, message, d, self.send, msg.id))
             return
+        if msg.name == "set_reference":
+            await self._set_reference(msg)
+            return
         tools: LegalToolsClient | None = None
         if msg.name in NEEDS_TOOLS:
             try:
@@ -394,10 +405,47 @@ class CoreServer:
                                         author=author)
             await self.send(p.Final(
                 request_id=msg.id, text=f"Inserito {out['riferimento']}.", summary=out))
+        elif msg.name == "list_templates":
+            assert tools is not None
+            out = await self._catalogue(tools).list(msg.args.get("query"))
+            await self.send(p.Final(
+                request_id=msg.id, text=f"Catalogo: {out['totale']} modelli.", summary=out))
+        elif msg.name == "template_info":
+            assert tools is not None
+            try:
+                info = await self._catalogue(tools).info(
+                    str(msg.args.get("tipo_atto") or ""), await tools.tool_specs())
+            except TemplateNotFound as e:
+                await self.send(
+                    p.Error(request_id=msg.id, code="template_not_found", message=str(e)))
+            else:
+                await self.send(p.Final(
+                    request_id=msg.id, text=f"Modello {info['tipo_atto']}: "
+                    f"{len(info['campi'])} campi.", summary=info))
         else:   # a name accepted by the protocol but not routed here
             await self.send(p.Error(
                 request_id=msg.id, code="not_implemented",
                 message=f"comando {msg.name} non disponibile in questa versione"))
+
+    async def _set_reference(self, msg: p.Command) -> None:
+        """No mcp-legal-it needed: the reference act is stored on the session as-is (design
+        §5.2); it never appears in a Status/Log/error, only in this Final's short summary."""
+        session = self._session(msg.doc_id)
+        text = str(msg.args.get("text") or "")
+        if text:
+            name = str(msg.args.get("name") or "atto di riferimento")
+            chars = len(text)
+            troncato = chars > MAX_REFERENCE_CHARS
+            session.reference = {"name": name, "chars": chars,
+                                 "text": text[:MAX_REFERENCE_CHARS], "troncato": troncato}
+            session.reference_consented = False
+            await self.send(p.Final(
+                request_id=msg.id, text=f"Atto di riferimento: {name} ({chars} caratteri).",
+                summary={"riferimento": {"name": name, "chars": chars, "troncato": troncato}}))
+        else:
+            session.reference = None
+            await self.send(p.Final(request_id=msg.id, text="Atto di riferimento rimosso.",
+                                    summary={"riferimento": None}))
 
 
 def main() -> None:
