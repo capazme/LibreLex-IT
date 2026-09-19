@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/capazme/LibreLex-IT/discussions
+    about: Usage questions, "is this possible", feedback on the drafting workflow.
+  - name: Security vulnerability
+    url: https://github.com/capazme/LibreLex-IT/security/advisories/new
+    about: Private report, never a public issue. See SECURITY.md.
+  - name: Legal sources, calculators, act templates
+    url: https://github.com/capazme/mcp-legal-it/issues
+    about: The sources and the calculators live in mcp-legal-it; report a wrong norm text or a missing template there.

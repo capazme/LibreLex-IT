@@ -1,0 +1,72 @@
+name: Bug report
+description: Something does not work as documented
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Never paste a real client document, real names or real case
+        data**: rebuild the problem on invented text. Never paste an API key.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+      placeholder: |
+        1. Open a Writer document containing "art. 2043 c.c." and "Cass. civ., sez. III, 12 marzo 2024, n. 6789"
+        2. Press "Verifica citazioni"
+        3. Expected: both references listed in Citazioni. Got: only the norm, the judgment is missing.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LibreLex-IT version
+      description: Tools > Extension Manager, or `extension/description.xml` if you build from source.
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: input
+    id: libreoffice
+    attributes:
+      label: LibreOffice version and OS
+      description: Help > About LibreOffice.
+      placeholder: "26.2.1.2 on macOS 26.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Verifica / Elenca / Mostra testo / Inserisci norma (no model)
+        - Invia / Ricerca (chat)
+        - Redigi da modello (drafting)
+        - Install / build (.oxt, dev_install.sh)
+        - Consent, privacy or configuration
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Model preset, if a model was involved
+      description: The `preset` and `model` from `[llm]`, **without** the API key.
+      placeholder: "openrouter, anthropic/claude-sonnet-4.5, zero_data_retention = true"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: >
+        Relevant lines of `~/Library/Application Support/LibreLex/core-stderr.log`
+        (`~/.config/librelex/` on Linux, `%APPDATA%\LibreLex` on Windows). The log holds no
+        document text by design; check anyway before pasting.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Data check
+      options:
+        - label: This report contains no real client data, no personal data of third parties and no API key.
+          required: true
