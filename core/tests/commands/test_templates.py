@@ -1,9 +1,17 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
 import pytest
 
-from librelex_core.commands.templates import TemplateCatalogue, TemplateNotFound
+from librelex_core.commands.templates import TemplateCatalogue, TemplateNotFound, field_type
 from librelex_core.mcp.client import LegalToolsClient
 from tests.conftest import make_fake_legal_server
+
+
+def test_field_type_applies_the_date_name_heuristic_with_or_without_a_schema():
+    assert field_type("data_udienza", None) == "data"                        # no schema
+    assert field_type("attore", None) == "testo"                             # no schema
+    assert field_type("provvisoria_esecuzione", {"type": "boolean"}) == "sino"
+    assert field_type("importo", {"type": "number"}) == "numero"
+    assert field_type("data_fattura", {"type": "string"}) == "data"          # schema, no match
 
 
 async def test_list_flattens_the_catalogue_and_searches():
