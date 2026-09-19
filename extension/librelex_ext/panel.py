@@ -321,6 +321,13 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                 ctrl.setText("")
         elif cmd == "research":
             self.session.research(self.window.getControl("Input").getText().strip())
+        elif cmd == "draft":
+            ctrl = self.window.getControl("Input")
+            message = ctrl.getText().strip()
+            busy = self.session.state == "busy"
+            self.session.draft(message)
+            if message and not busy and self.session.state != "stopped":
+                ctrl.setText("")            # same rule as "send": clear only what was taken
         elif cmd.startswith("consent_"):        # consent_document/consent_once/consent_deny
             self.session.answer_consent(cmd[len("consent_"):])
         elif cmd == "insert_norm":

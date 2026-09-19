@@ -16,6 +16,8 @@ from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession, LimitReached, check_ceiling
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
+from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
+from librelex_core.commands.draft import run_draft
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
 from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.research import PROFILE as RESEARCH_PROFILE
@@ -31,7 +33,7 @@ from librelex_core.mcp.client import IncompatibleServer, LegalToolsClient, ToolS
 # deterministic pipeline and must keep working even against an incompatible server.
 NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text")
 # Model-driven commands still to come (spec §6.3).
-NOT_IMPLEMENTED = ("draft", "review")
+NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
 
 
@@ -202,6 +204,21 @@ class CoreServer:
             usage=_usage_since(before, session.usage),
             summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump()})
 
+    async def _model_turn(
+        self, request_id: str, doc_id: str, doc: BridgeDocument, profile: str,
+        run: Callable[[DocSession, AgentDeps], Awaitable[TurnOutcome]],
+    ) -> None:
+        """One model turn: session and deps, the command's runner, the Final; a cancellation
+        arms the Final that reports the tokens already spent (spec §8.4)."""
+        session, deps = await self._prepare_turn(request_id, doc_id, doc, profile)
+        before = session.usage
+        try:
+            outcome = await run(session, deps)
+        except asyncio.CancelledError:
+            self._arm_cancel_final(request_id, session, before)
+            raise
+        await self._send_turn_final(request_id, session, outcome)
+
     # --- main loop -----------------------------------------------------------
     async def run(self, transport: LineTransport) -> None:
         self._transport = transport
@@ -311,14 +328,9 @@ class CoreServer:
             self._cancel_finals.pop(request_id, None)
 
     async def _chat_body(self, msg: p.Chat, doc: BridgeDocument) -> None:
-        session, deps = await self._prepare_turn(msg.id, msg.doc_id, doc, CHAT_PROFILE)
-        before = session.usage
-        try:
-            outcome = await run_chat(session, msg.message, msg.context, deps, self.send, msg.id)
-        except asyncio.CancelledError:
-            self._arm_cancel_final(msg.id, session, before)
-            raise
-        await self._send_turn_final(msg.id, session, outcome)
+        await self._model_turn(
+            msg.id, msg.doc_id, doc, CHAT_PROFILE,
+            lambda s, d: run_chat(s, msg.message, msg.context, d, self.send, msg.id))
 
     async def _command_body(self, msg: p.Command, doc: BridgeDocument) -> None:
         async def emit(m: Any) -> None:
@@ -330,15 +342,20 @@ class CoreServer:
                 message=f"comando {msg.name} non disponibile in questa versione"))
             return
         if msg.name == "research":
-            session, deps = await self._prepare_turn(msg.id, msg.doc_id, doc, RESEARCH_PROFILE)
-            before = session.usage
-            try:
-                outcome = await run_research(session, msg.args.get("question"), deps,
-                                             self.send, msg.id)
-            except asyncio.CancelledError:
-                self._arm_cancel_final(msg.id, session, before)
-                raise
-            await self._send_turn_final(msg.id, session, outcome)
+            await self._model_turn(
+                msg.id, msg.doc_id, doc, RESEARCH_PROFILE,
+                lambda s, d: run_research(s, msg.args.get("question"), d, self.send, msg.id))
+            return
+        if msg.name == "draft":
+            message = str(msg.args.get("message") or "").strip()
+            if not message:
+                await self.send(p.Error(
+                    request_id=msg.id, code="bad_request",
+                    message=("indica il tipo di atto da redigere, o rispondi alle domande "
+                             "del modello")))
+                return
+            await self._model_turn(msg.id, msg.doc_id, doc, DRAFT_PROFILE,
+                                   lambda s, d: run_draft(s, message, d, self.send, msg.id))
             return
         tools: LegalToolsClient | None = None
         if msg.name in NEEDS_TOOLS:

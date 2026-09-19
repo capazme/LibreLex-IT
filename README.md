@@ -5,7 +5,8 @@ official sources through [mcp-legal-it](https://github.com/capazme/mcp-legal-it)
 
 Status: M1 complete (verify citations, list citations, show the text of a reference and
 insert a norm from the sidebar); M2 complete (chat, Ricerca, in-panel consent and usage line
-in the sidebar, see "Chat e ricerca").
+in the sidebar, see "Chat e ricerca"); M3 complete (template-guided drafting, "Redigi da
+modello").
 Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 
 ## Install (macOS, LibreOffice 26.2+)
@@ -43,11 +44,11 @@ zero_data_retention = true     # OpenRouter: routes only to providers that do no
   no `api_key` needed; document text still goes through the consent dialog, labelled as local.
 
 Without a configured `[llm]` the deterministic commands (verify, list, show text, insert norm)
-keep working: only chat and *Ricerca* answer with a configuration error.
+keep working: only chat, *Ricerca* and *Redigi da modello* answer with a configuration error.
 
-### Asking: Invia and Ricerca
+### Asking: Invia, Ricerca and Redigi da modello
 
-Type the question in the Azioni input box, then press one of the two buttons; the answer
+Type the question in the Azioni input box, then press one of the three buttons; the answer
 streams into Risposte as the model writes it, and *Annulla* (the button in the Documento
 section) stops it, keeping the partial text with an `[annullato]` note.
 
@@ -56,6 +57,14 @@ section) stops it, keeping the partial text with an `[annullato]` note.
 - **Ricerca**: the same turn restricted to case law (`cerca_*`/`leggi_*` plus `cite_law`),
   for questions like "qual è l'orientamento sulla responsabilità del custode?". It reads and
   inserts, but never comments or replaces.
+- **Redigi da modello**: template-guided drafting. Name the act in the input box ("decreto
+  ingiuntivo per la fattura n. 12/2025 di 12.000 euro") and press the button: the model looks
+  the template up in mcp-legal-it, reads the document (with consent), asks in Risposte for the
+  data it still needs, and stops. Type the answers in the same box and press the button again:
+  it computes the amounts (interests, revaluation, contributo unificato, fees) with the
+  calculators and inserts the act at the end of the document one section at a time, each as a
+  redline, leaving `[...]` where nobody supplied a value. The session keeps the thread until the
+  document is closed, so "continua" resumes a drafting cut by the iteration limit.
 
 Text written into the document is grounded: a reference the model did not read from a source
 is verified before the insertion and commented when it turns out to be non-existent or
@@ -80,7 +89,7 @@ answering it is the one thing to do while a turn is running.
 
 ### Token cost per turn
 
-After every chat or research turn the bottom right of Azioni shows the usage line, for example
+After every chat, research or drafting turn the bottom right of Azioni shows the usage line, for example
 `Turno: 12.480 + 320 token · sessione: 41.900 token`, with `· costo: $0.04` when the provider
 reports it. The turn count is the whole request, not just the question: the system prompt, the
 tool schemas (about 7k token of them), the earlier turns and every tool result of the current

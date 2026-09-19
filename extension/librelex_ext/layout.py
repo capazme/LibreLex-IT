@@ -65,6 +65,8 @@ TOOLTIPS: dict[str, str] = {
     "ConsentDocument": "Consente l'invio del testo per tutte le richieste di questo documento",
     "ConsentOnce": "Consente l'invio del testo solo per questa richiesta",
     "ConsentDeny": "Nega l'invio e interrompe la richiesta",
+    "Draft": ("Redige l'atto indicato qui sopra dal modello di mcp-legal-it, una sezione per "
+              "volta come revisione; premilo di nuovo per rispondere alle domande del modello"),
     "Cancel": "Interrompe la richiesta in corso",
     "Clear": "Svuota le risposte",
     "Settings": "Percorso del file di configurazione e del log",
@@ -133,6 +135,11 @@ def build(kind: str, width: int) -> list[Control]:
         button("InsertNorm", "Inserisci norma", right)
         y += BUTTON_H + GAP
 
+        # M3: one full-width row, the label is too long for a column; the input box above
+        # is where the act is named and where the model's questions are answered
+        button("Draft", "Redigi da modello", MARGIN, inner)
+        y += BUTTON_H + GAP
+
         # Consent block (spec §8.2): it keeps its slot in the table at all times, so showing
         # it never moves the controls under it; set_consent only flips the four visibilities.
         controls.append(Control("FixedText", "ConsentText", MARGIN, y, inner, CONSENT_TEXT_H,
@@ -188,11 +195,11 @@ CONTROLS: dict[str, list[Control]] = build_all(WIDTH)
 ACTIONS = {"VerifyDocument": "verify_document", "VerifySelection": "verify_selection",
            "InsertNorm": "insert_norm", "ShowText": "show_text",
            "ListCitations": "list_citations", "Send": "send", "Research": "research",
-           "Cancel": "cancel", "Clear": "clear", "Settings": "settings",
+           "Draft": "draft", "Cancel": "cancel", "Clear": "clear", "Settings": "settings",
            "ConsentDocument": "consent_document", "ConsentOnce": "consent_once",
            "ConsentDeny": "consent_deny"}
 
 # controls disabled while a request is running; the consent buttons are deliberately absent,
 # since answering a consent_request is the one thing the user does while the core is busy
 BUSY_DISABLED = ("VerifyDocument", "VerifySelection", "InsertNorm", "ShowText", "ListCitations",
-                 "Send", "Research")
+                 "Send", "Research", "Draft")

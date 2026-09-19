@@ -23,7 +23,7 @@ from librelex_ext.layout import (
 EXPECTED = {
     "Actions": {"Notice", "DocumentLabel", "ListCitations", "VerifyDocument", "VerifySelection",
                 "Cancel", "ReferenceLabel", "Input", "Send", "Research", "ShowText", "InsertNorm",
-                "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
+                "Draft", "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
                 "Status", "Settings", "Usage"},
     "Citations": {"CitationsHint", "Citations"},
     "Answers": {"Clear", "Transcript"},
@@ -118,3 +118,16 @@ def test_new_buttons_are_wired_and_only_the_right_ones_are_busy_disabled():
     assert TOOLTIPS["Research"].startswith("Cerca precedenti sulla domanda scritta qui sopra")
     for name in (*ACTIONS, "Citations"):                       # every command has a tooltip
         assert name in TOOLTIPS
+
+
+def test_draft_button_is_a_full_width_row_between_the_reference_buttons_and_the_consent():
+    width = WIDTH
+    by = {c.name: c for c in build("Actions", width)}
+    draft = by["Draft"]
+    assert draft.kind == "Button" and draft.props["Label"] == "Redigi da modello"
+    assert draft.x == MARGIN and draft.w == width - 2 * MARGIN
+    assert draft.y == by["ShowText"].y + by["ShowText"].h + GAP
+    assert by["ConsentText"].y == draft.y + draft.h + GAP
+    assert ACTIONS["Draft"] == "draft" and "Draft" in BUSY_DISABLED
+    assert TOOLTIPS["Draft"].startswith("Redige l'atto indicato qui sopra")
+    assert TOOLTIPS["Draft"].endswith("per rispondere alle domande del modello")

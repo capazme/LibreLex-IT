@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from librelex_core.agent.internal_tools import INTERNAL_TOOLS, run_internal_tool
-from librelex_core.agent.profiles import CALCULATORS, PROFILES
+from librelex_core.agent.profiles import (
+    CALCULATORS,
+    CASE_LAW,
+    GENERATORS,
+    GROUNDING_SOURCES,
+    NORM_SOURCES,
+    PROFILES,
+)
 from librelex_core.agent.registry import (
     DOCUMENT_TOOLS,
     ToolRegistry,
@@ -29,8 +36,25 @@ def test_profiles_match_spec_6_3():
         "cerca_pronuncia_costituzionale", "leggi_pronuncia_costituzionale", "cite_law"}
     assert PROFILES["research"].document == (
         "read_selection", "read_paragraphs", "insert_markdown")
-    assert len(CALCULATORS) == 8 and set(CALCULATORS) <= set(PROFILES["draft"].legal) <= ALLOWLIST
+    assert GENERATORS == ("decreto_ingiuntivo", "atto_di_precetto", "sollecito_pagamento",
+                          "procura_alle_liti", "relata_notifica_pec", "attestazione_conformita",
+                          "sfratto_morosita", "nota_precisazione_credito", "dichiarazione_553_cpc")
+    assert len(CALCULATORS) == 8
+    assert PROFILES["draft"].legal == (
+        "genera_modello_atto", "lista_categorie_atti", "cite_law", "fetch_act_index",
+        "verifica_citazioni") + GENERATORS + CALCULATORS
+    assert set(PROFILES["draft"].legal) <= ALLOWLIST
+    assert PROFILES["draft"].document == ("read_paragraphs", "insert_markdown")
     assert PROFILES["review"].document == ("read_selection", "replace_selection", "add_comment")
+
+
+def test_grounding_sources_are_exactly_the_source_reading_tools():
+    """Finding 1 (final-review fix wave): grounding may only come from tools that read a
+    source, not from tools that echo the model's own parameters (spec §6.6 item 1)."""
+    assert NORM_SOURCES == ("cite_law", "fetch_act_index", "fetch_full_act", "cerca_brocardi")
+    assert GROUNDING_SOURCES == frozenset(NORM_SOURCES + CASE_LAW)
+    assert len(GROUNDING_SOURCES) == 15
+    assert GROUNDING_SOURCES <= ALLOWLIST
 
 
 def test_overrides_cover_the_allowlist_and_are_concise():

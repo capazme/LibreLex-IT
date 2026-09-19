@@ -15,8 +15,9 @@ from librelex_core.mcp.client import (
 from tests.conftest import make_fake_legal_server
 
 
-def test_allowlist_has_26_names():
-    assert len(ALLOWLIST) == 26 and "cite_law" in ALLOWLIST and "verifica_citazioni" in ALLOWLIST
+def test_allowlist_has_35_names():
+    assert len(ALLOWLIST) == 35 and "cite_law" in ALLOWLIST and "verifica_citazioni" in ALLOWLIST
+    assert "decreto_ingiuntivo" in ALLOWLIST
 
 
 def test_version_tuple():

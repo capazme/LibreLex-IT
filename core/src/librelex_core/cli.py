@@ -6,16 +6,18 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from librelex_core import protocol as p
-from librelex_core.agent.loop import AgentDeps
+from librelex_core.agent.loop import AgentDeps, TurnOutcome
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
+from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
+from librelex_core.commands.draft import run_draft
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
 from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.show_text import TextUnavailable, run_show_text
@@ -118,8 +120,12 @@ async def _show(cfg: Config, factory: ToolsFactory, reference: str) -> int:
     return 0
 
 
-async def _chat(cfg: Config, factory: ToolsFactory, llm_factory: LLMFactory,
-                message: str, path: Path | None) -> int:
+async def _model_turn(
+    cfg: Config, factory: ToolsFactory, llm_factory: LLMFactory, path: Path | None, profile: str,
+    run: Callable[[DocSession, AgentDeps], Awaitable[TurnOutcome]],
+) -> int:
+    """One model turn against an in-memory document: build deps for `profile`, run the
+    command's `run`, then print the usage/insertions summary shared by chat and draft."""
     llm = llm_factory(cfg)
     if path is not None:
         blocks = [b.strip() for b in path.read_text(encoding="utf-8").split("\n\n") if b.strip()]
@@ -129,11 +135,10 @@ async def _chat(cfg: Config, factory: ToolsFactory, llm_factory: LLMFactory,
     async with factory(cfg) as tools:
         endpoint = getattr(llm, "endpoint", None)
         deps = AgentDeps(
-            llm, tools, doc, ToolRegistry(await tools.tool_specs(), CHAT_PROFILE), cfg.limits,
+            llm, tools, doc, ToolRegistry(await tools.tool_specs(), profile), cfg.limits,
             _cli_consent, getattr(endpoint, "host", "") or getattr(llm, "host", ""),
             getattr(llm, "model", cfg.llm.model), cfg.llm.zero_data_retention)
-        outcome = await run_chat(DocSession("cli"), message, p.DocContext(title=doc.title),
-                                 deps, _chat_emit, "cli")
+        outcome = await run(DocSession("cli"), deps)
     print()
     u = outcome.usage
     line = f"[{u.input_tokens} + {u.output_tokens} token"
@@ -170,6 +175,10 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("message")
     ch.add_argument("--file", type=Path, default=None,
                     help="text/markdown file used as the open document (blank-line paragraphs)")
+    dr = sub.add_parser("draft", help="one drafting turn from an mcp-legal-it template")
+    dr.add_argument("message")
+    dr.add_argument("--file", type=Path, default=None,
+                    help="text/markdown file used as the open document (blank-line paragraphs)")
     return parser
 
 
@@ -187,7 +196,14 @@ def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_f
         if args.cmd == "list":
             return asyncio.run(_list(cfg, args.file))
         if args.cmd == "chat":
-            return asyncio.run(_chat(cfg, tools_factory, llm_factory, args.message, args.file))
+            return asyncio.run(_model_turn(
+                cfg, tools_factory, llm_factory, args.file, CHAT_PROFILE,
+                lambda s, d: run_chat(s, args.message, p.DocContext(title=d.doc.title), d,
+                                      _chat_emit, "cli")))
+        if args.cmd == "draft":
+            return asyncio.run(_model_turn(
+                cfg, tools_factory, llm_factory, args.file, DRAFT_PROFILE,
+                lambda s, d: run_draft(s, args.message, d, _chat_emit, "cli")))
         return asyncio.run(_show(cfg, tools_factory, args.reference))
     except (ConfigError, IncompatibleServer, UnparsedReference, TextUnavailable, LLMError) as e:
         print(f"errore: {e}", file=sys.stderr)

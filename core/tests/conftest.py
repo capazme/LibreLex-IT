@@ -112,6 +112,102 @@ def make_fake_legal_server(verdicts: dict[str, tuple[str, str]] | None = None,
             return f"Errore: pronuncia n. {numero}/{anno} non trovata"
         return "# Corte costituzionale, sentenza n. 1/2020\n\nEpigrafe...\n\nRitenuto in fatto..."
 
+    calls.update({"modelli": [], "generatori": [], "calcoli": []})
+
+    _CATALOGO = {
+        "decreto_ingiuntivo_ordinario": {
+            "categoria": "atti_introduttivi",
+            "descrizione": "Ricorso per decreto ingiuntivo — credito ordinario",
+            "routing": {"tipo": "tool_diretto", "tool": "decreto_ingiuntivo",
+                        "parametri_fissi": {"tipo_credito": "ordinario"}},
+            "campi_obbligatori": ["creditore", "debitore", "importo"],
+            "campi_opzionali": ["provvisoria_esecuzione"],
+            "tool_calcolo": ["contributo_unificato", "parcella_avvocato_civile"],
+            "riferimenti_normativi": ["artt. 633-656 c.p.c.", "DPR 115/2002"],
+            "avvertenze": ["Bozza indicativa, richiede completamento con dati specifici del caso"],
+        },
+        "atto_di_citazione": {
+            "categoria": "atti_introduttivi",
+            "descrizione": "Atto di citazione ordinario",
+            "routing": {"tipo": "resource", "resource": "atti://citazione", "fase": 3},
+            "campi_obbligatori": ["attore", "convenuto", "oggetto"],
+            "campi_opzionali": [],
+            "tool_calcolo": ["contributo_unificato"],
+            "riferimenti_normativi": ["art. 163 c.p.c."],
+            "avvertenze": [],
+        },
+    }
+
+    @server.tool()
+    async def genera_modello_atto(tipo_atto: str, parametri: dict | None = None) -> dict:
+        """Fake template lookup: mirrors the catalogo / cerca / lookup modes of mcp-legal-it."""
+        parametri = parametri or {}
+        calls["modelli"].append((tipo_atto, parametri))
+        if tipo_atto == "catalogo":
+            return {"totale_tipi": len(_CATALOGO), "categorie": ["atti_introduttivi"],
+                    "catalogo": {"atti_introduttivi": [
+                        {"tipo_atto": k, "descrizione": v["descrizione"], "tier": 1}
+                        for k, v in _CATALOGO.items()]}}
+        if tipo_atto == "cerca":
+            query = str(parametri.get("query", "")).lower()
+            hits = [{"tipo_atto": k, "descrizione": v["descrizione"],
+                     "categoria": v["categoria"], "tier": 1}
+                    for k, v in _CATALOGO.items() if query in (k + v["descrizione"]).lower()]
+            return {"query": query, "risultati": hits, "totale": len(hits)}
+        entry = _CATALOGO.get(tipo_atto)
+        if entry is None:
+            return {"errore": f"Tipo atto '{tipo_atto}' non trovato nel catalogo",
+                    "suggerimenti": [], "nota": "Usare tipo_atto='catalogo' per l'elenco completo"}
+        out = {"tipo_atto": tipo_atto, **{k: v for k, v in entry.items() if k != "routing"},
+               "campi_mancanti": [c for c in entry["campi_obbligatori"] if c not in parametri]}
+        routing = entry["routing"]
+        if routing["tipo"] == "tool_diretto":
+            out.update(tool_diretto=routing["tool"], parametri_fissi=routing["parametri_fissi"],
+                       istruzioni=f"Chiamare il tool `{routing['tool']}` con i parametri indicati.")
+        else:
+            out.update(resource_modello=routing["resource"], disponibile_da_fase=routing["fase"],
+                       istruzioni=(f"Resource `{routing['resource']}` non ancora disponibile; "
+                                   "comporre l'atto manualmente seguendo la struttura e i campi "
+                                   "indicati, e chiamare i tool di calcolo indicati."))
+        return out
+
+    @server.tool()
+    async def lista_categorie_atti() -> dict:
+        """Fake category list."""
+        calls["modelli"].append(("categorie", {}))
+        return {"categorie": [{"nome": "atti_introduttivi", "totale": len(_CATALOGO)}],
+                "totale_atti": len(_CATALOGO)}
+
+    @server.tool()
+    async def decreto_ingiuntivo(creditore: str, debitore: str, importo: float,
+                                 tipo_credito: str = "ordinario",
+                                 provvisoria_esecuzione: bool = False) -> dict:
+        """Fake generator: the shape of the real one (bozza, giudice, contributo unificato)."""
+        calls["generatori"].append(("decreto_ingiuntivo", creditore, debitore, importo))
+        giudice = "Giudice di Pace" if importo <= 10000 else "Tribunale"
+        return {"tipo_atto": "ricorso_decreto_ingiuntivo", "giudice_competente": giudice,
+                "importo": importo, "contributo_unificato": 129.5,
+                "bozza": (f"RICORSO PER DECRETO INGIUNTIVO\n(Artt. 633 e ss. c.p.c.)\n\n"
+                          f"ILL.MO SIG. {giudice.upper()} DI [SEDE]\n\n{creditore} vanta un "
+                          f"credito di Euro {importo:,.2f} nei confronti di {debitore}.")}
+
+    @server.tool()
+    async def contributo_unificato(valore_causa: float, tipo_procedimento: str = "cognizione",
+                                   grado: str = "primo") -> dict:
+        """Fake calculator: a flat amount per band, enough to see it quoted in the draft."""
+        calls["calcoli"].append(("contributo_unificato", valore_causa, tipo_procedimento))
+        return {"valore_causa": valore_causa, "tipo_procedimento": tipo_procedimento,
+                "contributo_unificato": 129.5 if valore_causa <= 26000 else 259.0,
+                "riferimento": "DPR 115/2002, art. 13"}
+
+    @server.tool()
+    async def interessi_mora(capitale: float, data_inizio: str, data_fine: str) -> dict:
+        """Fake calculator: 12% simple interest on the period, no calendar."""
+        calls["calcoli"].append(("interessi_mora", capitale, data_inizio, data_fine))
+        return {"capitale": capitale, "data_inizio": data_inizio, "data_fine": data_fine,
+                "tasso": 12.0, "interessi": round(capitale * 0.12, 2),
+                "totale": round(capitale * 1.12, 2), "riferimento": "D.Lgs. 231/2002"}
+
     return server, calls
 
 
