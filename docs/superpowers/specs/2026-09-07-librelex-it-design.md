@@ -224,8 +224,8 @@ LibreLex-IT/
   and a control table computed from the panel width
   (`layout.build(kind, width)`, minimum 170 dialog units, re-applied on
   `getHeightForWidth` through `XUnitConversion`); the buttons of later
-  milestones (Invia, Ricerca, Redigi da modello, Rivedi selezione) are not
-  created until their milestone.
+  milestones (Invia, Ricerca, Rivedi selezione) are not created until their
+  milestone.
 - Consent block (M2): the `consent_request` of §8.2 is answered inside the
   Azioni panel, by a grey multi-line label over the three choices ("Per questo
   documento", "Solo stavolta", "Annulla") placed between the button grid and
