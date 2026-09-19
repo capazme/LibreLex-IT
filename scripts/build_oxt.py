@@ -47,8 +47,12 @@ def ext_files():
 def core_files():
     for name in CORE_FILES:
         yield CORE / name, f"core/{name}"
-    for p in sorted((CORE / "src").rglob("*.py")):
-        if "__pycache__" in p.parts:
+    # Every file of the package, not only *.py: the core reads its data files (the tool
+    # description overrides in agent/tool_overrides.toml) from this tree at runtime.
+    for p in sorted((CORE / "src").rglob("*")):
+        if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc":
+            continue
+        if p.name in EXT_EXCLUDE_FILES:
             continue
         yield p, "core/" + p.relative_to(CORE).as_posix()
 
