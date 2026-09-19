@@ -92,10 +92,11 @@ answering it is the one thing to do while a turn is running.
 After every chat, research or drafting turn the bottom right of Azioni shows the usage line, for example
 `Turno: 12.480 + 320 token · sessione: 41.900 token`, with `· costo: $0.04` when the provider
 reports it. The turn count is the whole request, not just the question: the system prompt, the
-tool schemas (about 7k token of them), the earlier turns and every tool result of the current
-one (the norm texts, the document paragraphs, a judgment can be 8k token) are resent at each
-model call, and a turn that uses tools calls the model once per round. A turn inside a long
-thread therefore costs several times the first one. The core keeps this bounded by shortening
+tool schemas (about 11k token of them: the chat profile exposes every allowlisted tool), the
+earlier turns and every tool result of the current one (the norm texts, the document
+paragraphs, a judgment can be 8k token) are resent at each model call, and a turn that uses
+tools calls the model once per round. A turn inside a long thread therefore costs several
+times the first one. The core keeps this bounded by shortening
 the tool results of past turns to a one-line placeholder, and by dropping the oldest turns
 once the history exceeds its budget. *Svuota* in Risposte empties the panel, not the
 conversation: the history lives in the core and goes away when the document is closed. Past

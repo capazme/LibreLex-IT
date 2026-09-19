@@ -353,7 +353,7 @@ a v2 command "Aggiorna citazioni" will re-check every such bookmark.
 Three sources, merged into one OpenAI `tools` array per turn:
 
 1. **Legal tools** from mcp-legal-it via `fastmcp.Client`, filtered by the
-   allowlist in Appendix B (35 tools). Parameter schemas pass through
+   allowlist in Appendix B (55 tools). Parameter schemas pass through
    unchanged. Descriptions are replaced by concise ones from
    `tool_overrides.yaml` (2 to 3 lines each; the original description of
    `cerca_giurisprudenza` alone is 2,500 characters), falling back to the
@@ -363,14 +363,14 @@ Three sources, merged into one OpenAI `tools` array per turn:
 3. **Internal tools**: `estrai_citazioni` (local extractor, no network) and
    `data_odierna`.
 
-Measured cost of the allowlist: ~7,500 tokens of descriptions per request
-before schema overhead, versus >50,000 for all 221 tools.
+Measured cost of the allowlist: about 11,000 tokens of descriptions and schemas
+for the chat profile, versus >50,000 for all 221 tools.
 
 ### 6.3 Tool profiles per command
 
 | Command | Legal tools | Document tools |
 |---------|-------------|----------------|
-| `chat` (free) | all 35 | all |
+| `chat` (free) | all 55 | all |
 | `research` | cerca_giurisprudenza, cerca_giurisprudenza_unificata, leggi_sentenza, giurisprudenza_su_norma, orientamento_su_norma, cerca_giurisprudenza_amministrativa, leggi_provvedimento_amm, cerca_giurisprudenza_cgue, leggi_sentenza_cgue, cerca_pronuncia_costituzionale, leggi_pronuncia_costituzionale, cite_law | read_selection, read_paragraphs, insert_markdown |
 | `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, fetch_full_act, verifica_citazioni, the 20 generators the catalogue routes to, the 17 calculators it names (Appendix B) | read_paragraphs, insert_markdown, replace_text |
 | `review` | cite_law, verifica_citazioni, the 8 calculators | read_selection, replace_selection, add_comment, replace_text |
@@ -867,9 +867,9 @@ Calculators (17): `calcolo_hash`, `calcolo_tempo_trascorso`, `calcolo_valore_cat
 `parcella_avvocato_civile`, `pignoramento_stipendio`, `rivalutazione_monetaria`,
 `scadenza_processuale`, `scadenze_impugnazioni`, `spese_mediazione`,
 `termini_processuali_civili`, `valutazione_data_breach`, `variazioni_istat`. Two of these
-(`calcolo_hash`, `calcolo_tempo_trascorso`) are not named by any template's `tool_calcolo` in
-the catalogue; they stay in the allowlist because the `review` profile (§6.3) names them
-directly.
+(`calcolo_tempo_trascorso`, `termini_processuali_civili`) are not named by any template's
+`tool_calcolo` in the catalogue; they stay in the allowlist because the `review` profile
+(§6.3) names them directly.
 
 ## Appendix C · Verdict → action mapping (verification pipeline)
 
