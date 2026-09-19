@@ -63,8 +63,12 @@ async def _cli_consent(summary: p.ConsentSummary) -> str:
     """Consent in the dev CLI: the file was passed on the command line, so sending it is
     what the user asked for; the panel is where the real dialog of spec §8.2 lives."""
     zdr = "sì" if summary.zdr else "no"
-    print(f"[consenso] {summary.chars} caratteri ({summary.scope}) verso {summary.model} su "
-          f"{summary.endpoint_host}, zero-data-retention: {zdr}", file=sys.stderr)
+    if summary.scope == "reference" and summary.name:
+        what = f'atto di riferimento "{summary.name}": {summary.chars} caratteri'
+    else:
+        what = f"{summary.chars} caratteri ({summary.scope})"
+    print(f"[consenso] {what} verso {summary.model} su {summary.endpoint_host}, "
+          f"zero-data-retention: {zdr}", file=sys.stderr)
     return "document"
 
 
@@ -193,10 +197,13 @@ async def _template(cfg: Config, factory: ToolsFactory, tipo_atto: str) -> int:
     return 0
 
 
-def _parse_kv(pairs: list[str]) -> dict[str, str]:
-    """``--campo``/``--risposta`` values ("NOME=VALORE") as a dict, split on the first "="."""
+def _parse_kv(parser: argparse.ArgumentParser, pairs: list[str]) -> dict[str, str]:
+    """``--campo``/``--risposta`` values ("NOME=VALORE") as a dict, split on the first "=";
+    a value with no "=" is a usage error (`parser.error`, exit 2), not a silently empty one."""
     out: dict[str, str] = {}
     for item in pairs:
+        if "=" not in item:
+            parser.error("--campo/--risposta richiedono NOME=VALORE")
         name, _, value = item.partition("=")
         out[name.strip()] = value
     return out
@@ -291,7 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_factory,
          llm_factory: LLMFactory = _default_llm) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     try:
         cfg = load_config(args.config)
         if args.cmd == "check-mcp":
@@ -313,7 +321,8 @@ def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_f
         if args.cmd == "draft":
             return asyncio.run(_draft(
                 cfg, tools_factory, llm_factory, args.file, args.tipo_atto,
-                _parse_kv(args.campo), args.note, args.riferimento, _parse_kv(args.risposta)))
+                _parse_kv(parser, args.campo), args.note, args.riferimento,
+                _parse_kv(parser, args.risposta)))
         return asyncio.run(_show(cfg, tools_factory, args.reference))
     except (ConfigError, IncompatibleServer, UnparsedReference, TextUnavailable, LLMError,
             TemplateNotFound) as e:
