@@ -362,14 +362,14 @@ Three sources, merged into one OpenAI `tools` array per turn:
 3. **Internal tools**: `estrai_citazioni` (local extractor, no network) and
    `data_odierna`.
 
-Measured cost of the allowlist: ~6,000 tokens of descriptions per request
+Measured cost of the allowlist: ~7,500 tokens of descriptions per request
 before schema overhead, versus >50,000 for all 221 tools.
 
 ### 6.3 Tool profiles per command
 
 | Command | Legal tools | Document tools |
 |---------|-------------|----------------|
-| `chat` (free) | all 26 | all |
+| `chat` (free) | all 35 | all |
 | `research` | cerca_giurisprudenza, cerca_giurisprudenza_unificata, leggi_sentenza, giurisprudenza_su_norma, orientamento_su_norma, cerca_giurisprudenza_amministrativa, leggi_provvedimento_amm, cerca_giurisprudenza_cgue, leggi_sentenza_cgue, cerca_pronuncia_costituzionale, leggi_pronuncia_costituzionale, cite_law | read_selection, read_paragraphs, insert_markdown |
 | `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, verifica_citazioni, the 9 act generators, the 8 calculators | read_paragraphs, insert_markdown |
 | `review` | cite_law, verifica_citazioni, the 8 calculators | read_selection, replace_selection, add_comment |
@@ -408,7 +408,10 @@ The rule that distinguishes LibreLex-IT from generic copilots:
 
 1. During a turn the core records every legal reference that appeared in a
    tool result (articles from `cite_law`/`fetch_*`, decisions from
-   `leggi_*`/`cerca_*`), as canonical strings.
+   `leggi_*`/`cerca_*`), as canonical strings. Only source-reading tools ground
+   (cite_law, fetch_*, cerca_brocardi, the case-law tools); the act generators,
+   the calculators, genera_modello_atto and verifica_citazioni echo the
+   model's own parameters and never count as grounding.
 2. When the model calls `insert_markdown` or `replace_selection`, the core
    runs the extractor on the incoming markdown.
 3. References already grounded pass. References never seen in the turn are
@@ -452,9 +455,16 @@ partition per `insert_markdown` call (heading and parties, facts, law with
 `cite_law`, conclusions with the computed sums, exhibits), `[...]` where no value
 was supplied. Every later press of the button sends the same procedure with the
 lawyer's new message; the session history (§6.5, §6.8) is the drafting state, so
-nothing is persisted in the core or in the extension. Grounding on write (§6.6)
-applies to every section. The generators the `genera_modello_atto` catalogue
-routes to (27 of its 100 acts) are allowlisted for this (Appendix B).
+nothing is persisted in the core or in the extension. Because older turns keep
+only their prose (§6.5), the procedure makes the model restate the template and
+the known data when it asks its questions, and re-read the document to resume
+from the first missing partition after an interrupted turn. Grounding on write
+(§6.6) applies to every section. The nine court-act generators the
+genera_modello_atto catalogue routes to are allowlisted for this (Appendix B):
+they cover 16 of the 27 routed acts; the privacy generators
+(genera_informativa_*, genera_dpa, genera_registro_trattamenti, genera_dpia,
+genera_notifica_data_breach) and the preventivi stay out of v1, and the
+procedure tells the model to use a direct tool only when it is available.
 
 ## 7. Deterministic pipelines
 
@@ -831,8 +841,9 @@ Case law: `cerca_giurisprudenza`, `cerca_giurisprudenza_unificata`,
 
 Act templates: `genera_modello_atto`, `lista_categorie_atti`.
 
-Act generators (9, added 2026-09-19 for M3: the catalogue of genera_modello_atto routes to
-them): decreto_ingiuntivo, atto_di_precetto, sollecito_pagamento, procura_alle_liti,
+Act generators (9, added 2026-09-19 for M3: the nine court-act generators of the catalogue,
+16 of its 27 routed acts; privacy generators and preventivi excluded in v1):
+decreto_ingiuntivo, atto_di_precetto, sollecito_pagamento, procura_alle_liti,
 relata_notifica_pec, attestazione_conformita, sfratto_morosita, nota_precisazione_credito,
 dichiarazione_553_cpc.
 

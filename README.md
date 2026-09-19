@@ -44,7 +44,7 @@ zero_data_retention = true     # OpenRouter: routes only to providers that do no
   no `api_key` needed; document text still goes through the consent dialog, labelled as local.
 
 Without a configured `[llm]` the deterministic commands (verify, list, show text, insert norm)
-keep working: only chat and *Ricerca* answer with a configuration error.
+keep working: only chat, *Ricerca* and *Redigi da modello* answer with a configuration error.
 
 ### Asking: Invia, Ricerca and Redigi da modello
 
@@ -89,7 +89,7 @@ answering it is the one thing to do while a turn is running.
 
 ### Token cost per turn
 
-After every chat or research turn the bottom right of Azioni shows the usage line, for example
+After every chat, research or drafting turn the bottom right of Azioni shows the usage line, for example
 `Turno: 12.480 + 320 token · sessione: 41.900 token`, with `· costo: $0.04` when the provider
 reports it. The turn count is the whole request, not just the question: the system prompt, the
 tool schemas (about 7k token of them), the earlier turns and every tool result of the current
