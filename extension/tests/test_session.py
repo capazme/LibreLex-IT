@@ -64,8 +64,9 @@ class FakeAdapter:
     def find_text(self, query, paragraph_id=None):
         return [{"anchor": {"paragraph_id": "p:0", "start": 0, "end": 1}, "text": query}]
 
-    def insert_markdown(self, where, markdown, undo_label, bookmark=None, author=None):
-        self.calls.append(("insert_markdown", where, bookmark, author))
+    def insert_markdown(self, where, markdown, undo_label, bookmark=None, author=None,
+                        act_styles=False):
+        self.calls.append(("insert_markdown", where, bookmark, author, act_styles))
         return {"from_id": "p:1", "to_id": "p:2"}
 
     def replace_selection(self, markdown, undo_label):
@@ -204,6 +205,11 @@ def test_dispatch_maps_actions_and_wraps_results():
     assert dispatch_doc_call(a, "insert_markdown", {
         "where": "cursor", "markdown": "x", "undo_label": "u", "bookmark": None,
         "author": "LibreLex"}) == {"from_id": "p:1", "to_id": "p:2"}
+    assert a.calls[-1] == ("insert_markdown", "cursor", None, "LibreLex", False)
+    dispatch_doc_call(a, "insert_markdown", {
+        "where": "cursor", "markdown": "x", "undo_label": "u", "bookmark": None,
+        "author": "LibreLex"}, act_styles=True)
+    assert a.calls[-1] == ("insert_markdown", "cursor", None, "LibreLex", True)
     assert dispatch_doc_call(a, "replace_text", {
         "query": "[SEDE]", "replacement": "Roma", "undo_label": "u", "all": True}) == {
         "count": 1, "anchors": [{"paragraph_id": "p:0", "start": 3, "end": 7}]}

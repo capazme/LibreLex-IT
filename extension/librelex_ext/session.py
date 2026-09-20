@@ -75,8 +75,12 @@ class NullView:
     def set_answer_values(self, answers: dict) -> None: ...
 
 
-def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
-    """Map a wire doc_call onto the adapter and wrap the result as the core expects."""
+def dispatch_doc_call(adapter: Any, action: str, args: dict, act_styles: bool = False) -> dict:
+    """Map a wire doc_call onto the adapter and wrap the result as the core expects.
+
+    ``act_styles`` (design §5.3) is forwarded only to ``insert_markdown``: it is the caller's
+    decision (a drafting insertion vs. an ordinary one), never something the wire args carry.
+    """
     if action == "get_document_info":
         return adapter.get_document_info()
     if action == "read_selection":
@@ -88,7 +92,8 @@ def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
         return {"occurrences": adapter.find_text(args["query"], args.get("paragraph_id"))}
     if action == "insert_markdown":
         return adapter.insert_markdown(args["where"], args["markdown"], args["undo_label"],
-                                       args.get("bookmark"), args.get("author"))
+                                       args.get("bookmark"), args.get("author"),
+                                       act_styles=act_styles)
     if action == "replace_selection":
         return adapter.replace_selection(args["markdown"], args["undo_label"])
     if action == "replace_text":
