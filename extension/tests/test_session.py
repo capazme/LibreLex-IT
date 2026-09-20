@@ -969,7 +969,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                                 "tipo": "testo"}],
                     "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"}],
                     "segnaposto_aperti": ["[SEDE]"], "completata": False, "riepilogo": "",
-                    "ended_by": "questions"}}})
+                    "allegati": [], "ended_by": "questions"}}})
     assert s.transcript[-3:] == ["LibreLex: Mi servono", "", "Inserito nei paragrafi p:1-p:9"]
     assert view.questions == [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
                                "tipo": "testo"}]
@@ -989,7 +989,8 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                     "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"},
                                   {"titolo": "Conclusioni", "from_id": "p:10", "to_id": "p:12"}],
                     "segnaposto_aperti": [], "completata": True,
-                    "riepilogo": "Calcoli: CU 129,50.", "ended_by": "done"}}})
+                    "riepilogo": "Calcoli: CU 129,50.", "allegati": [],
+                    "ended_by": "done"}}})
     assert view.questions == [] and view.partitions == ["✓ Base: Ricorso", "✓ Conclusioni"]
     assert view.draft_status == (
         "Passo 4 di 4 · Redazione completata: Verifica citazioni, poi Nuova redazione", True)
@@ -1187,7 +1188,7 @@ def test_cancelled_draft_turn_merges_into_the_view_without_resetting_it():
                     "partizioni": [{"titolo": "Base: Ricorso", "from_id": "p:1",
                                    "to_id": "p:9"}],
                     "segnaposto_aperti": [], "completata": False, "riepilogo": "",
-                    "ended_by": None, "base_errore": None}}})
+                    "allegati": [], "ended_by": None, "base_errore": None}}})
     assert "[annullato]" in view.lines
     assert view.partitions == ["✓ Base: Ricorso"]
     assert s.draft_view["partitions"] == [
@@ -1206,7 +1207,7 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
         "summary": {"tool_calls": 1, "inserted": [], "flagged": [], "unverified": [],
                     "usage_totals": {"input_tokens": 5, "output_tokens": 1}, "tipo_atto": "x",
                     "domande": [], "partizioni": [], "segnaposto_aperti": [],
-                    "completata": False, "riepilogo": "", "ended_by": None,
+                    "completata": False, "riepilogo": "", "allegati": [], "ended_by": None,
                     "base_errore": "strumento decreto_ingiuntivo non disponibile"}}})
     line = "Base non generata: strumento decreto_ingiuntivo non disponibile"
     status = f"Passo 4 di 4 · {line}"
@@ -1227,7 +1228,7 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
                     "domande": [], "partizioni": [{"titolo": "Base", "from_id": "p:1",
                                                    "to_id": "p:9"}],
                     "segnaposto_aperti": [], "completata": False, "riepilogo": "",
-                    "ended_by": None}}})
+                    "allegati": [], "ended_by": None}}})
     assert s.draft_view["base_errore"] is None
     assert fresh.draft_status == (
         "Passo 4 di 4 · Turno concluso: Riprendi per continuare o Nuova redazione", True)
@@ -1478,6 +1479,12 @@ def test_attachments_are_sent_as_a_whole_set_and_committed_on_the_final():
     assert s.draft_view["attachments"][0]["troncato"] is True      # the extension's own cut
     assert view.attachments == ["Doc. 1 · fattura_12.pdf (60.000 caratteri, troncato)"]
     assert s.transcript[-1] == "Allegati: 1 documenti (60000 caratteri)."
+    # F7: the attachment text itself never lands in anything the panel shows or logs, only
+    # names and counts do.
+    big = "F" * 100
+    assert not any(big in line for line in s.transcript)
+    assert not any(big in line for line in s.draft_view["log"])
+    assert not any(big in line for line in view.attachments)
     assert s.add_attachment("delibera.docx", "D" * 10, "writer") is True
     docs = bridge.sent[-1]["args"]["documenti"]
     assert [d["name"] for d in docs] == ["fattura_12.pdf", "delibera.docx"]   # the whole set
@@ -1504,6 +1511,71 @@ def test_attachment_limits_are_refused_before_any_request():
                             "troncato": False}]
     assert s.add_attachment("altro.pdf", "y" * 60_000, "pdf") is False
     assert view.draft_status[0] == "Allegati: al massimo 300.000 caratteri in totale"
+
+
+def test_add_and_remove_attachment_are_refused_while_the_core_is_starting():
+    """F6: the single ``pending`` slot would drop one of two attachment requests queued behind
+
+    the hello, so ``add_attachment``/``remove_attachment`` must refuse outright rather than
+    silently losing the first one.
+    """
+    s, adapter, view, bridges = make()
+    s.chat("leggi")                          # queues the hello, state becomes "starting"
+    assert s.state == "starting"
+    n = len(bridges[0].sent)
+    assert s.add_attachment("fattura.pdf", "F" * 5, "pdf") is False
+    assert view.draft_status[0] == "Attendi l'avvio del core"
+    assert len(bridges[0].sent) == n
+    s._attachment_texts = [{"name": "x.pdf", "text": "x", "kind": "pdf", "troncato": False}]
+    assert s.remove_attachment(0) is False
+    assert view.draft_status[0] == "Attendi l'avvio del core"
+    assert len(bridges[0].sent) == n
+
+
+def test_draft_turn_final_carrying_allegati_still_reaches_the_draft_merge():
+    """F1/F2 (critical): the core puts "allegati" in EVERY draft-turn Final, next to
+
+    "partizioni" and "usage_totals". Before the fix, the ``elif "allegati" in summary``
+    branch in ``_on_final`` intercepted every such Final before it ever reached
+    ``_merge_draft_turn``, so a real drafting with attachments already committed never
+    updated questions/partitions/step at all.
+    """
+    s, view, bridge = _ready_session_with_template()
+    assert s.add_attachment("fattura.pdf", "F" * 10, "pdf") is True
+    _final(s, bridge.sent[-1]["id"], "Allegati: 1 documenti (10 caratteri).",
+           {"allegati": [{"n": 1, "name": "fattura.pdf", "chars": 10, "kind": "pdf",
+                          "troncato": False}]})
+    assert s.add_attachment("delibera.docx", "D" * 20, "writer") is True
+    _final(s, bridge.sent[-1]["id"], "Allegati: 2 documenti (30 caratteri).",
+           {"allegati": [{"n": 1, "name": "fattura.pdf", "chars": 10, "kind": "pdf",
+                          "troncato": False},
+                         {"n": 2, "name": "delibera.docx", "chars": 20, "kind": "writer",
+                          "troncato": False}]})
+    assert [a["name"] for a in s._attachment_texts] == ["fattura.pdf", "delibera.docx"]
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                    "importo": "1"}, "")
+    _final(s, bridge.sent[-1]["id"], "Mi servono dati",
+           {"tipo_atto": "decreto_ingiuntivo_ordinario",
+            "domande": [{"campo": "sede", "domanda": "Sede?", "tipo": "testo"}],
+            "partizioni": [{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}],
+            "segnaposto_aperti": [], "completata": False, "riepilogo": "",
+            "allegati": [{"n": 1, "name": "fattura.pdf", "chars": 10},
+                        {"n": 2, "name": "delibera.docx", "chars": 20}],
+            "usage_totals": {"input_tokens": 5, "output_tokens": 1}})
+    assert view.step == 2 and s.draft_view["step"] == 2
+    assert view.questions == [{"campo": "sede", "domanda": "Sede?", "tipo": "testo"}]
+    # the attachment texts sent to the core are untouched by the draft turn
+    assert [a["name"] for a in s._attachment_texts] == ["fattura.pdf", "delibera.docx"]
+    # the committed attachments (kind, troncato) are not overwritten by the draft summary's
+    # own bare {n, name, chars} allegati
+    assert s.draft_view["attachments"] == [
+        {"n": 1, "name": "fattura.pdf", "chars": 10, "kind": "pdf", "troncato": False},
+        {"n": 2, "name": "delibera.docx", "chars": 20, "kind": "writer", "troncato": False}]
+    n = len(bridge.sent)
+    assert s.add_attachment("terzo.txt", "T" * 5, "txt") is True
+    assert len(bridge.sent) == n + 1
+    docs = bridge.sent[-1]["args"]["documenti"]
+    assert [d["name"] for d in docs] == ["fattura.pdf", "delibera.docx", "terzo.txt"]
 
 
 def test_letterheads_choice_is_remembered_and_applied_at_start(tmp_path, monkeypatch):
@@ -1534,6 +1606,81 @@ def test_letterheads_choice_is_remembered_and_applied_at_start(tmp_path, monkeyp
     assert s.draft_view["letterhead"] is None and letterheads.load_index()["last"] is None
 
 
+def test_choose_letterhead_ignores_an_out_of_range_index(tmp_path, monkeypatch):
+    """F3: a ListBox reports -1 when nothing is selected, and an index past the end of the
+
+    entries is equally not a valid row; neither may touch the chosen letterhead or the
+    on-disk index.
+    """
+    monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "config.toml"))
+    from librelex_ext import letterheads
+    folder = letterheads.templates_dir()
+    folder.mkdir(parents=True)
+    (folder / "SAPG Legal.ott").write_bytes(b"x")
+    letterheads.register_letterhead("SAPG Legal", "SAPG Legal.ott", default=True)
+    s, view, _bridge = _ready_session()
+    s.set_letterheads(letterheads.list_letterheads())
+    before_choice = s.draft_view["letterhead"]
+    index_path = folder / letterheads.INDEX_NAME
+    before_bytes = index_path.read_bytes()
+    s.choose_letterhead(-1)
+    assert s.draft_view["letterhead"] == before_choice
+    assert index_path.read_bytes() == before_bytes
+    s.choose_letterhead(99)
+    assert s.draft_view["letterhead"] == before_choice
+    assert index_path.read_bytes() == before_bytes
+
+
+def test_draft_start_resets_the_log_before_the_letterhead_so_a_failure_survives():
+    """F4: the log used to be reset right after ``_apply_letterhead``, which wiped out the
+
+    failure line ``_apply_letterhead`` had just written; the reset now runs first, so the
+    failure line survives into the fresh log for this drafting.
+    """
+    s, adapter, view, bridges = make()
+
+    def boom(url):
+        raise RuntimeError("modello introvabile")
+
+    adapter.apply_letterhead = boom
+    s.draft_view["template"] = {"tipo_atto": "x", "campi": []}
+    s.draft_start("x", {}, "")
+    expected = ["Carta intestata non applicata: modello introvabile",
+               "Avvio della redazione: x"]
+    assert s.draft_view["log"] == expected
+    assert view.log == expected
+
+
+class _RaisingLogView(FakeView):
+    """A panel whose log control is already gone (a deck being rebuilt): ``append_log``
+
+    raises, as any UNO call on a disposed control would.
+    """
+
+    def append_log(self, line):
+        raise RuntimeError("control disposed")
+
+
+def test_a_draft_log_line_that_raises_does_not_block_the_doc_result():
+    """F5: the reply must reach the core even when writing the drafting log raises; the
+
+    reply now goes out first, and the log write runs under ``suppress(Exception)`` after it.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["template"] = _DECRETO_TEMPLATE
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                   "importo": "1"}, "")
+    _hello(s, bridges)
+    s.bind(_RaisingLogView(), s.handle_event)
+    rid = bridges[0].sent[-1]["id"]
+    s.handle_event(_msg({"type": "doc_call", "request_id": rid, "call_id": "c1",
+                         "action": "insert_markdown",
+                         "args": {"where": "end", "markdown": "### PREMESSO CHE\n\nx",
+                                  "undo_label": "u"}}))
+    assert bridges[0].sent[-1] == {"type": "doc_result", "id": rid, "call_id": "c1", "ok": True,
+                                   "result": {"from_id": "p:1", "to_id": "p:2"}}
+
+
 def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
     s, view, bridge = _ready_session_with_template()
     s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
@@ -1553,7 +1700,8 @@ def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
                              "Sostituito: «[SEDE]»"]
     _final(s, rid, "", {"partizioni": [{"titolo": "Premesse in fatto", "from_id": "p:1"}],
                         "domande": [{"campo": "sede", "domanda": "Sede?", "tipo": "testo"}],
-                        "segnaposto_aperti": [], "completata": False, "usage_totals": {}})
+                        "segnaposto_aperti": [], "completata": False, "allegati": [],
+                        "usage_totals": {}})
     assert s.draft_view["step"] == 2 and view.step == 2
     assert view.draft_status[0] == "Passo 2 di 4 · Rispondi alle 1 domande e premi Continua"
     assert view.expected[3] == "✓ Premesse"
@@ -1562,7 +1710,7 @@ def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
     rid = bridge.sent[-1]["id"]
     _final(s, rid, "", {"partizioni": [{"titolo": "Premesse in fatto", "from_id": "p:1"}],
                         "domande": [], "segnaposto_aperti": ["[X]"], "completata": True,
-                        "riepilogo": "Calcoli: ok", "usage_totals": {}})
+                        "riepilogo": "Calcoli: ok", "allegati": [], "usage_totals": {}})
     assert view.step == 4
     assert view.draft_status[0] == (
         "Passo 4 di 4 · Redazione completata: Verifica citazioni, poi Nuova redazione")
@@ -1575,7 +1723,7 @@ def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
     assert view.step == 3 and view.log[-1] == "Riprendo: aggiungi le conclusioni"
     _final(s, bridge.sent[-1]["id"], "", {"partizioni": [], "domande": [], "segnaposto_aperti": [],
                                           "completata": False, "stopped": "timeout",
-                                          "usage_totals": {}})
+                                          "allegati": [], "usage_totals": {}})
     assert view.step == 4 and view.draft_status[0] == (
         "Passo 4 di 4 · Interrotta: Riprendi per continuare")
     s.new_drafting()
@@ -1595,7 +1743,7 @@ def test_errors_keep_the_step_and_a_failed_start_goes_back_to_step_one():
     _final(s, bridge.sent[-1]["id"], "", {
         "partizioni": [{"titolo": "Base", "from_id": "p:1"}],
         "domande": [{"campo": "s", "domanda": "?", "tipo": "testo"}],
-        "segnaposto_aperti": [], "completata": False, "usage_totals": {}})
+        "segnaposto_aperti": [], "completata": False, "allegati": [], "usage_totals": {}})
     s.draft_answer({"s": "x"})
     _error(s, bridge.sent[-1]["id"], "llm", "giù")
     assert view.step == 3 and s.draft_view["started"] is True       # the drafting is real

@@ -338,10 +338,14 @@ class Session:
         self.draft_view["fields"], self.draft_view["notes"] = fields, notes
         self.draft_view["started"] = True
         self._draft_request = True
+        # The log is reset for the new drafting before anything can write to it (F4): a
+        # letterhead failure logged by _apply_letterhead below must survive, not be wiped by
+        # this reset.
+        self.draft_view["log"] = []
+        self.view.set_log([])
         # design §5.3: the letterhead is applied before the base enters the document; a
         # failure is logged, never raised (the drafting still starts on a plain document).
         self._apply_letterhead()
-        self.draft_view["log"] = []
         self._log(f"Avvio della redazione: {tipo_atto}")
         routing = template.get("routing") or {}
         expected = (["Base"] if routing.get("tipo") == "tool_diretto" else []) + list(
@@ -401,6 +405,11 @@ class Session:
 
     # --- drafting workbench: case documents (design §4) -----------------------
     def add_attachment(self, name: str, text: str, kind: str) -> bool:
+        if self.state == "starting":
+            # The single ``pending`` slot would drop one of two attachment requests queued
+            # behind the hello (F6): refuse instead of silently losing one.
+            self._refuse_draft("Attendi l'avvio del core")
+            return False
         if len(self._attachment_texts) >= MAX_ATTACHMENTS:
             self._refuse_draft("Allegati: al massimo 12 documenti")
             return False
@@ -415,6 +424,9 @@ class Session:
         return self._send_attachments(pending, label=f"Tu: allegato {name}")
 
     def remove_attachment(self, index: int) -> bool:
+        if self.state == "starting":
+            self._refuse_draft("Attendi l'avvio del core")
+            return False
         if not (0 <= index < len(self._attachment_texts)):
             return False
         name = self._attachment_texts[index]["name"]
@@ -442,6 +454,8 @@ class Session:
 
     def choose_letterhead(self, index: int) -> None:
         entries = self.draft_view["letterheads"]
+        if not (0 <= index <= len(entries)):
+            return       # a ListBox reports -1 with no selection: not a valid row
         name = None if index == 0 else entries[index - 1]["name"]
         self.draft_view["letterhead"] = name
         with suppress(OSError):
@@ -686,13 +700,16 @@ class Session:
         except Exception as e:
             reply.update(ok=False, error=f"{type(e).__name__}: {e}"
                          if not isinstance(e, DocumentActionError) else str(e))
-        else:
-            if self._draft_request:
+        succeeded = reply["ok"]
+        # The reply goes out before the drafting log line (F5): a dead panel control (a
+        # closed/rebuilding Redazione deck) must never keep the core waiting on this reply.
+        self.bridge.send(reply)
+        if succeeded and self._draft_request:
+            with suppress(Exception):
                 if action == "insert_markdown":
                     self._log(render_log_insert(args["markdown"]))
                 elif action == "replace_text":
                     self._log(f"Sostituito: «{args['query']}»")
-        self.bridge.send(reply)
 
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
@@ -734,9 +751,13 @@ class Session:
             self.draft_view["reference"] = ref
             self.view.set_reference(render_reference(ref), bool(ref))
             self._append(msg["text"])
-        elif "allegati" in summary:
+        elif ("allegati" in summary and msg.get("request_id") == self._attachments_request_id
+              and "partizioni" not in summary and "usage_totals" not in summary):
             # set_attachments' Final (design §4.3): the pending set the panel sent is what
             # was actually stored; an empty ``allegati`` (the last one removed) clears both.
+            # The core puts "allegati" in EVERY draft-turn Final too, so the request_id (and,
+            # as a belt, the absence of "partizioni"/"usage_totals") is what tells the two
+            # finals apart: a draft turn must still reach _merge_draft_turn below (F1).
             allegati = summary["allegati"] or []
             pending = self._attachments_pending or []
             self._attachment_texts = pending
