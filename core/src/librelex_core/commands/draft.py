@@ -134,6 +134,9 @@ _ALREADY_MARKDOWN_RE = re.compile(r"^(#{1,6}\s|-\s|>\s|\d+\.\s)")
 _COURT_PREFIXES = ("ILL.MO", "TRIBUNALE", "GIUDICE DI PACE", "CORTE", "AL SIG.", "ALL'ILL.MO")
 _PAREN_LINE_RE = re.compile(r"^\(.*\)$")
 _MAX_SECTION_CHARS = 40
+# The "[...]" placeholders of a line ("[LUOGO], [DATA]") are not the section rule's business:
+# a line whose only capitals sit inside them is a data line, not a heading (P.Q.M., PREMESSO CHE).
+_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]]*\]")
 
 
 def _is_court_heading(stripped: str) -> bool:
@@ -141,10 +144,16 @@ def _is_court_heading(stripped: str) -> bool:
 
 
 def _is_short_all_caps(stripped: str) -> bool:
-    """A short, all-capitals line: a section name (PREMESSO CHE, P.Q.M.), not a body line."""
+    """A short, all-capitals line: a section name (PREMESSO CHE, P.Q.M.), not a body line.
+
+    Letters inside "[...]" placeholders are ignored: a line such as "[LUOGO], [DATA]" or
+    "Avv. [LEGALE]" must keep at least one letter of its own, outside the placeholders, before
+    it counts as a section name.
+    """
     if len(stripped) > _MAX_SECTION_CHARS:
         return False
-    letters = [ch for ch in stripped if ch.isalpha()]
+    without_placeholders = _BRACKET_PLACEHOLDER_RE.sub("", stripped)
+    letters = [ch for ch in without_placeholders if ch.isalpha()]
     return bool(letters) and all(ch.isupper() for ch in letters)
 
 
@@ -425,8 +434,11 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
     # Snapshot at hook-building time (design §1's follow-up): `deps.registry` is rebuilt with
     # the hook tools right after this call returns, so a lazy read through `deps` inside the
     # hook would pick up the wrong list; the closure keeps the one that matters here, the
-    # legal/document/internal tool names the model can mangle through a proxy.
-    names = list(deps.registry.names)
+    # legal/document/internal tool names the model can mangle through a proxy. The four hook
+    # tools themselves (leggi_allegato and the rest) are not yet in `deps.registry` at this
+    # point either, so they are added by name: a riepilogo mentioning
+    # "mcp__x__y_leggi_allegato" must still clean down to "leggi_allegato".
+    names = list(deps.registry.names) + [t["function"]["name"] for t in HOOK_TOOLS]
 
     async def chiedi_dati(args: dict) -> tuple[str, str | None]:
         domande = args.get("domande")

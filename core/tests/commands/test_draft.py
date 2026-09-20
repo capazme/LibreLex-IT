@@ -119,6 +119,18 @@ def test_base_to_markdown_marks_the_act_structure():
     assert base_to_markdown("## Già markdown\n\n- punto") == "## Già markdown\n\n- punto"
 
 
+def test_base_to_markdown_ignores_placeholders_in_the_section_rule():
+    """A line whose only capitals sit inside "[...]" placeholders is not a section name: the
+    letters that decide the ``### `` rule are counted with the placeholders removed."""
+    text = ("ATTO DI PRECETTO\n\nSi intima il pagamento.\n\nPREMESSO CHE [X]\n\n"
+            "[LUOGO], [DATA]\nAvv. [LEGALE]")
+    md = base_to_markdown(text)
+    lines = [ln for ln in md.split("\n") if ln]
+    assert "### PREMESSO CHE [X]" in lines
+    assert lines[-1] == "Avv. [LEGALE]" and lines[-2] == "[LUOGO], [DATA]"
+    assert "### [LUOGO], [DATA]" not in md and "### Avv. [LEGALE]" not in md
+
+
 async def test_final_text_and_riepilogo_lose_the_proxy_prefixes():
     server, _ = make_fake_legal_server()
     doc = FakeDocument([""])
@@ -127,12 +139,14 @@ async def test_final_text_and_riepilogo_lose_the_proxy_prefixes():
         session = DocSession("d1")
         llm = ScriptedLLM([
             tool_turn(("redazione_completata", {"riepilogo":
-                       "Calcoli: mcp__trade_dress__swamp_contributo_unificato 129,50."}),
+                       "Calcoli: mcp__trade_dress__swamp_contributo_unificato 129,50. "
+                       "Letto con mcp__trade_dress__swamp_leggi_allegato."}),
                       text="Fatto con mcp__trade_dress__peasant_cite_law.")])
         out = await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
                                         "fields": {"attore": "A"}},
                               await _deps(llm, doc, tools), emit, "r1")
-    assert session.draft.riepilogo == "Calcoli: contributo_unificato 129,50."
+    assert session.draft.riepilogo == ("Calcoli: contributo_unificato 129,50. "
+                                       "Letto con leggi_allegato.")
     assert out.text == "Fatto con cite_law."
 
 
@@ -346,6 +360,7 @@ async def test_the_letter_and_the_preventivo_texts_become_the_base():
                                              "data_sollecito": "2025-09-19"}},
                         await _deps(llm, doc, tools), emit, "r1")
         assert doc.inserts[0]["markdown"].startswith("## SOLLECITO DI PAGAMENTO")
+        assert "### [LUOGO]" not in doc.inserts[0]["markdown"]
         base = session.draft.base
         assert base["tool"] == "sollecito_pagamento" and base["inserted"] is True
         assert base["placeholders"] == ["[LUOGO]", "[DATA]"] and base["result"] == {

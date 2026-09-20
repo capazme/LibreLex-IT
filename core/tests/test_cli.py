@@ -168,3 +168,18 @@ def test_draft_subcommand_too_many_attachments_is_a_usage_error(tmp_path, capsys
         main(args, tools_factory=_factory())
     assert exc.value.code == 2
     assert "--allegato: al massimo 12 documenti" in capsys.readouterr().err
+
+
+def test_draft_subcommand_too_many_attachment_characters_is_a_usage_error(tmp_path, capsys):
+    files = []
+    for i in range(6):
+        f = tmp_path / f"a{i}.txt"
+        f.write_text("x" * 60_000, encoding="utf-8")
+        files.append(str(f))
+    args = ["draft", "--tipo", "decreto_ingiuntivo_ordinario", "--campo", "creditore=Alfa"]
+    for f in files:
+        args += ["--allegato", f]
+    with pytest.raises(SystemExit) as exc:
+        main(args, tools_factory=_factory())
+    assert exc.value.code == 2
+    assert "--allegato: al massimo 300.000 caratteri in totale" in capsys.readouterr().err
