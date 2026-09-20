@@ -6,6 +6,7 @@ marks a default and remembers the lawyer's last choice. Pure: no UNO here.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from librelex_ext import paths
@@ -59,7 +60,10 @@ def load_index(folder: Path | str | None = None) -> dict:
 def save_index(index: dict, folder: Path | str | None = None) -> None:
     path = _folder(folder) / INDEX_NAME
     paths.ensure_private(path)
-    path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    data = json.dumps(index, ensure_ascii=False, indent=2).encode("utf-8")
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
     paths.ensure_private(path)
 
 

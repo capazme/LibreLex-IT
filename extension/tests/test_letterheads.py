@@ -1,4 +1,6 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
+import stat
+
 from librelex_ext import letterheads
 
 
@@ -33,3 +35,12 @@ def test_index_round_trip_listing_and_choice(tmp_path):
         "sapg2.ott", "manca.ott"]
     (tmp_path / "modelli.json").write_text("{not json", encoding="utf-8")
     assert letterheads.load_index(tmp_path) == {"templates": [], "last": None}
+
+
+def test_save_index_creates_modelli_json_with_a_private_mode(tmp_path):
+    """T1-04: modelli.json is created 0600 from the start, like write_template_if_missing."""
+    letterheads.register_letterhead("SAPG Legal", "SAPG Legal.ott", tmp_path, default=True)
+    path = tmp_path / "modelli.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    letterheads.remember_choice("SAPG Legal", tmp_path)     # overwritten: mode still private
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600

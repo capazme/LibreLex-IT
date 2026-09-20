@@ -9,7 +9,14 @@ from librelex_ext import PROTOCOL_VERSION, DocumentActionError
 from librelex_ext.bridge import BridgeError
 from librelex_ext.layout import FIELD_ROWS
 from librelex_ext.render import render_draft_status
-from librelex_ext.session import MAX_REFERENCE_CHARS, Session, dispatch_doc_call
+from librelex_ext.session import (
+    MAX_ATTACHMENT_CHARS,
+    MAX_LOG_LINES,
+    MAX_REFERENCE_CHARS,
+    Session,
+    dispatch_doc_call,
+    drop_role,
+)
 
 
 def load_document_module():
@@ -69,6 +76,10 @@ class FakeAdapter:
         self.calls.append(("insert_markdown", where, bookmark, author, act_styles))
         return {"from_id": "p:1", "to_id": "p:2"}
 
+    def apply_letterhead(self, url):
+        self.calls.append(("apply_letterhead", url))
+        return {"letterhead": url is not None, "created": []}
+
     def replace_selection(self, markdown, undo_label):
         return {"from_id": "p:0", "to_id": "p:0"}
 
@@ -119,57 +130,108 @@ class FakeView:
         self.templates, self.template, self.reference = None, None, None
         self.partitions, self.draft_status, self.questions = None, None, None
         self.field_values, self.answer_values = None, None
+        # drafting workbench (design §3.6): step, log, expected partitions, attachments,
+        # letterheads, summary. ``calls`` records every method call in order (name, args),
+        # used by the replay test to check ``set_step`` lands last.
+        self.step, self.log, self.expected = None, [], None
+        self.attachments, self.letterheads, self.summary = None, None, None
+        self.calls = []
 
     def append(self, text):
+        self.calls.append(("append", text))
         self.lines.append(text)
 
     def set_transcript(self, text):
+        self.calls.append(("set_transcript", text))
         self.transcript = text
 
     def set_status(self, text):
+        self.calls.append(("set_status", text))
         self.status = text
 
     def set_busy(self, busy):
+        self.calls.append(("set_busy", busy))
         self.busy = busy
 
     def set_citations(self, labels):
+        self.calls.append(("set_citations", labels))
         self.citations = labels
 
     def set_progress(self, done, total):
+        self.calls.append(("set_progress", done, total))
         self.progress = (done, total)
 
     def append_stream(self, text):
+        self.calls.append(("append_stream", text))
         self.stream += text
 
     def set_usage(self, text):
+        self.calls.append(("set_usage", text))
         self.usage = text
 
     def set_consent(self, summary):
+        self.calls.append(("set_consent", summary))
         self.consent = summary
 
     def set_templates(self, labels, selected):
+        self.calls.append(("set_templates", labels, selected))
         self.templates = (labels, selected)
 
     def set_template(self, info):
+        self.calls.append(("set_template", info))
         self.template = info
 
     def set_reference(self, text, present):
+        self.calls.append(("set_reference", text, present))
         self.reference = (text, present)
 
     def set_partitions(self, labels):
+        self.calls.append(("set_partitions", labels))
         self.partitions = labels
 
     def set_draft_status(self, text, started):
+        self.calls.append(("set_draft_status", text, started))
         self.draft_status = (text, started)
 
     def set_questions(self, questions):
+        self.calls.append(("set_questions", questions))
         self.questions = questions
 
     def set_field_values(self, fields, notes):
+        self.calls.append(("set_field_values", fields, notes))
         self.field_values = (fields, notes)
 
     def set_answer_values(self, answers):
+        self.calls.append(("set_answer_values", answers))
         self.answer_values = answers
+
+    def set_step(self, step):
+        self.calls.append(("set_step", step))
+        self.step = step
+
+    def set_log(self, lines):
+        self.calls.append(("set_log", lines))
+        self.log = list(lines)
+
+    def append_log(self, line):
+        self.calls.append(("append_log", line))
+        self.log.append(line)
+
+    def set_expected_partitions(self, labels):
+        self.calls.append(("set_expected_partitions", labels))
+        self.expected = labels
+
+    def set_attachments(self, labels):
+        self.calls.append(("set_attachments", labels))
+        self.attachments = labels
+
+    def set_letterheads(self, labels, selected):
+        self.calls.append(("set_letterheads", labels, selected))
+        self.letterheads = (labels, selected)
+
+    def set_summary(self, text):
+        self.calls.append(("set_summary", text))
+        self.summary = text
 
 
 def make(fail_start=False, adapter=None, fail_send=False):
@@ -767,6 +829,71 @@ def _hello(s, bridges):
                                                "protocol": PROTOCOL_VERSION, "warnings": []}})
 
 
+# --- drafting workbench (Task 4): steps, log, attachments, letterhead ---------------------
+
+def _msg(msg):
+    return {"kind": "message", "msg": msg}
+
+
+def _final(s, rid, text, summary):
+    """A ``final`` for request ``rid``. The wire key is ``request_id`` (as every other final
+
+    in this file uses, and as the design doc's Appendix A example shows); ``_on_final`` does
+    not actually gate on it (only ``_on_error`` does), so this is a naming fix over the
+    brief's own pseudo-code, not a behaviour choice.
+    """
+    s.handle_event(_msg({"type": "final", "request_id": rid, "text": text, "cancelled": False,
+                         "usage": None, "summary": summary}))
+
+
+def _error(s, rid, code, message):
+    s.handle_event(_msg({"type": "error", "request_id": rid, "code": code, "message": message}))
+
+
+def _ready_session():
+    """A session whose core is up and idle: ``run_command`` sends at once from here on.
+
+    The brief names this helper without specifying its body; built on ``make()``/``_hello``
+    (already in this file) rather than a new bridge stub.
+    """
+    s, adapter, view, bridges = make()
+    s.run_command("list_citations", {"scope": "document"})
+    _hello(s, bridges)
+    _final(s, bridges[0].sent[-1]["id"], "ok", {})
+    return s, view, bridges[0]
+
+
+_DECRETO_TEMPLATE = {
+    "tipo_atto": "decreto_ingiuntivo_ordinario", "descrizione": "Ricorso per decreto ingiuntivo",
+    "categoria": "atti_introduttivi",
+    "campi": [{"nome": "creditore", "tipo": "testo", "obbligatorio": True, "descrizione": ""},
+              {"nome": "debitore", "tipo": "testo", "obbligatorio": True, "descrizione": ""},
+              {"nome": "importo", "tipo": "numero", "obbligatorio": True, "descrizione": ""}],
+    "routing": {"tipo": "tool_diretto", "tool": "decreto_ingiuntivo", "parametri_fissi": {},
+               "resource": None},
+    "avvertenze": [], "campi_obbligatori": ["creditore", "debitore", "importo"],
+    "campi_opzionali": [], "tool_calcolo": [], "riferimenti_normativi": [], "istruzioni": "",
+}
+
+
+def _ready_session_with_template():
+    """A ready session with ``decreto_ingiuntivo_ordinario`` (tool_diretto routing, three
+
+    mandatory fields) already the chosen template, stored directly the way the rest of this
+    file stores a template_info answer it does not need to drive through the wire.
+    """
+    s, view, bridge = _ready_session()
+    s.draft_view["template"] = _DECRETO_TEMPLATE
+    return s, view, bridge
+
+
+def test_drop_role_sends_acts_to_the_reference_slot_once():
+    assert drop_role("ricorso.docx", False) == "reference"
+    assert drop_role("RICORSO.ODT", False) == "reference"
+    assert drop_role("ricorso.docx", True) == "attachment"
+    assert drop_role("fattura.pdf", False) == "attachment"
+
+
 def test_templates_and_template_info_fill_the_drafting_view():
     s, adapter, view, bridges = make()
     s.templates("  ingiuntivo ")
@@ -824,7 +951,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                             "fields": {"creditore": "Alfa", "importo": "12000"},
                             "notes": "fattura 12"}
     assert s.transcript[-1] == "Tu: avvio redazione x (2 campi)"
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    assert view.draft_status == ("Redazione in corso: il modello lavora sul documento", True)
     s.handle_event({"kind": "message",
                     "msg": {"type": "delta", "request_id": "r1", "text": "Mi servono"}})
     assert view.stream == "LibreLex: Mi servono"
@@ -845,7 +972,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
     assert view.questions == [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
                                "tipo": "testo"}]
     assert view.partitions == ["✓ Base: Ricorso", "… segnaposto aperti: 1"]
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    assert view.draft_status == ("Rispondi alle 1 domande e premi Continua", True)
     s.draft_answer({"sede": "Milano"})
     assert bridges[0].sent[-1]["args"] == {"action": "answer", "answers": {"sede": "Milano"}}
     assert s.transcript[-1] == "Tu: risposte a 1 domande"
@@ -862,7 +989,8 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                     "segnaposto_aperti": [], "completata": True,
                     "riepilogo": "Calcoli: CU 129,50.", "ended_by": "done"}}})
     assert view.questions == [] and view.partitions == ["✓ Base: Ricorso", "✓ Conclusioni"]
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    assert view.draft_status == ("Redazione completata: Verifica citazioni, poi Nuova redazione",
+                                 True)
     assert "LibreLex: Fatto." in view.lines
     assert view.lines[-1] == "Riepilogo della redazione:\nCalcoli: CU 129,50."
     s.draft_answer({"x": "y"})
@@ -945,7 +1073,9 @@ def test_draft_start_leaves_the_drafting_view_untouched_when_the_core_fails_to_s
     s.draft_start("x", {"creditore": "Alfa"}, "")
     assert s.draft_view["started"] is False and s._draft_request is False
     assert s.transcript[-1].startswith("Impossibile avviare il core")
-    assert view.draft_status is None or view.draft_status[0] != "Redazione in corso…"
+    # T1-01: the request never reached _submit's "taken" branch, so draft_status is still the
+    # one ``bind`` set at session creation (not just "not the old busy string")
+    assert view.draft_status == ("Scegli un atto", False)
 
 
 def test_draft_answer_leaves_the_drafting_view_untouched_when_the_core_fails_to_start():
@@ -986,7 +1116,9 @@ def test_draft_continue_leaves_the_drafting_view_untouched_on_a_dead_pipe_to_a_r
     bridges[0].fail_send = True                      # the core dies between two requests
     s.draft_continue("continua")
     assert s._draft_request is False
-    assert view.draft_status != ("Redazione in corso…", True)
+    # T1-01: draft_continue returned before touching draft_status at all, so it is still the
+    # one ``bind`` set at session creation
+    assert view.draft_status == ("Scegli un atto", False)
     assert s.state == "stopped"
     assert not any(line.startswith("Tu: continua") for line in s.transcript)
     assert "Core non raggiungibile" in s.transcript[-1]
@@ -1058,7 +1190,7 @@ def test_cancelled_draft_turn_merges_into_the_view_without_resetting_it():
     assert view.partitions == ["✓ Base: Ricorso"]
     assert s.draft_view["partitions"] == [
         {"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"}]
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    assert view.draft_status == ("Interrotta: Riprendi per continuare", True)
 
 
 def test_base_errore_reports_the_missing_base_in_status_and_transcript():
@@ -1075,14 +1207,13 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
                     "completata": False, "riepilogo": "", "ended_by": None,
                     "base_errore": "strumento decreto_ingiuntivo non disponibile"}}})
     status = "Base non generata: strumento decreto_ingiuntivo non disponibile"
-    draft_status = "Compila i campi obbligatori e premi Avvia redazione"
-    assert view.draft_status == (draft_status, True)
+    assert view.draft_status == (status, True)
     assert status in view.lines
     # M6: the failure is part of the drafting state, so a rebuilt panel is told again
     assert s.draft_view["base_errore"] == "strumento decreto_ingiuntivo non disponibile"
     fresh = FakeView()
     s.bind(fresh, lambda ev: None)
-    assert fresh.draft_status == (draft_status, True)
+    assert fresh.draft_status == (status, True)
     # a later turn that does produce a base clears it
     s.draft_continue("riprova")
     s.handle_event({"kind": "message", "msg": {
@@ -1095,7 +1226,8 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
                     "segnaposto_aperti": [], "completata": False, "riepilogo": "",
                     "ended_by": None}}})
     assert s.draft_view["base_errore"] is None
-    assert fresh.draft_status == (draft_status, True)
+    assert fresh.draft_status == ("Turno concluso: Riprendi per continuare o Nuova redazione",
+                                  True)
 
 
 def test_a_reference_the_extension_cut_is_labelled_troncato():
@@ -1246,7 +1378,9 @@ def test_a_queued_draft_request_that_never_reaches_the_core_is_not_shown_as_star
     bridges2[0].fail_send = True
     _hello(s2, bridges2)
     assert s2._draft_request is False and s2.draft_view["started"] is True
-    assert view2.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    # started stays True and the step stays where draft_continue left it (3): the request
+    # never reached the core, so the line says the core is unreachable, not "Compila i campi"
+    assert view2.draft_status == ("In attesa del core", True)
 
 
 def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
@@ -1282,7 +1416,8 @@ def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
     s3.handle_event({"kind": "message", "msg": {
         "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
     assert s3.draft_view["started"] is True
-    assert view3.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    # the step draft_continue set (3) survives the error: only a failed start moves it back
+    assert view3.draft_status == ("In attesa del core", True)
 
 
 def test_goto_partition_navigates_and_ignores_the_rows_that_are_not_partitions():
@@ -1313,7 +1448,165 @@ def test_a_core_that_dies_mid_drafting_stops_claiming_a_running_turn():
                         partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}])
     s.draft_continue("ancora")
     _hello(s, bridges)
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    assert view.draft_status == ("Redazione in corso: il modello lavora sul documento", True)
     s.handle_event({"kind": "exit", "code": 1})
     assert s._draft_request is False
-    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
+    # exit leaves the step where it was (3): busy is now False, so the line says so
+    assert view.draft_status == ("In attesa del core", True)
+    assert view.log[-1] == "Il core si è chiuso"
+
+
+def test_attachments_are_sent_as_a_whole_set_and_committed_on_the_final():
+    s, view, bridge = _ready_session()
+    assert s.add_attachment("fattura_12.pdf", "F" * 70_000, "pdf") is True
+    sent = bridge.sent[-1]
+    assert sent["name"] == "set_attachments"
+    assert [d["name"] for d in sent["args"]["documenti"]] == ["fattura_12.pdf"]
+    assert len(sent["args"]["documenti"][0]["text"]) == MAX_ATTACHMENT_CHARS
+    assert s.draft_view["attachments"] == []            # nothing committed before the final
+    _final(s, sent["id"], "Allegati: 1 documenti (60000 caratteri).",
+           {"allegati": [{"n": 1, "name": "fattura_12.pdf", "chars": 60_000, "kind": "pdf",
+                          "troncato": False}]})
+    assert s.draft_view["attachments"][0]["troncato"] is True      # the extension's own cut
+    assert view.attachments == ["Doc. 1 · fattura_12.pdf (60.000 caratteri, troncato)"]
+    assert s.transcript[-1] == "Allegati: 1 documenti (60000 caratteri)."
+    assert s.add_attachment("delibera.docx", "D" * 10, "writer") is True
+    docs = bridge.sent[-1]["args"]["documenti"]
+    assert [d["name"] for d in docs] == ["fattura_12.pdf", "delibera.docx"]   # the whole set
+    _final(s, bridge.sent[-1]["id"], "Allegati: 2 documenti (60010 caratteri).",
+           {"allegati": [{"n": 1, "name": "fattura_12.pdf", "chars": 60_000, "kind": "pdf",
+                          "troncato": False},
+                         {"n": 2, "name": "delibera.docx", "chars": 10, "kind": "writer",
+                          "troncato": False}]})
+    assert s.remove_attachment(0) is True
+    assert [d["name"] for d in bridge.sent[-1]["args"]["documenti"]] == ["delibera.docx"]
+    _error(s, bridge.sent[-1]["id"], "bad_request", "allegati non validi")
+    assert [a["name"] for a in s.draft_view["attachments"]] == ["fattura_12.pdf", "delibera.docx"]
+    assert s.remove_attachment(5) is False
+
+
+def test_attachment_limits_are_refused_before_any_request():
+    s, view, bridge = _ready_session()
+    s._attachment_texts = [{"name": f"d{i}", "text": "x", "kind": "writer", "troncato": False}
+                           for i in range(12)]
+    n = len(bridge.sent)
+    assert s.add_attachment("tredici.pdf", "x", "pdf") is False
+    assert view.draft_status[0] == "Allegati: al massimo 12 documenti" and len(bridge.sent) == n
+    s._attachment_texts = [{"name": "big", "text": "x" * 250_000, "kind": "writer",
+                            "troncato": False}]
+    assert s.add_attachment("altro.pdf", "y" * 60_000, "pdf") is False
+    assert view.draft_status[0] == "Allegati: al massimo 300.000 caratteri in totale"
+
+
+def test_letterheads_choice_is_remembered_and_applied_at_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIBRELEX_CONFIG", str(tmp_path / "config.toml"))
+    from librelex_ext import letterheads
+    folder = letterheads.templates_dir()
+    folder.mkdir(parents=True)
+    (folder / "SAPG Legal.ott").write_bytes(b"x")
+    (folder / "SAPG Legaltech.ott").write_bytes(b"x")
+    letterheads.register_letterhead("SAPG Legal", "SAPG Legal.ott", default=True)
+    letterheads.register_letterhead("SAPG Legaltech", "SAPG Legaltech.ott")
+    s, view, _bridge = _ready_session_with_template()     # template_info answered, fields ok
+    s.set_letterheads(letterheads.list_letterheads())
+    assert view.letterheads == (["Nessuna (impaginazione del documento)", "SAPG Legal",
+                                 "SAPG Legaltech"], 1)
+    s.choose_letterhead(2)
+    assert s.draft_view["letterhead"] == "SAPG Legaltech"
+    assert letterheads.load_index()["last"] == "SAPG Legaltech"
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                   "importo": "1"}, "")
+    expected_url = "file://" + str(folder / "SAPG Legaltech.ott").replace(" ", "%20")
+    assert s.adapter.calls[-1] == ("apply_letterhead", expected_url)
+    assert s.draft_view["step"] == 3 and view.step == 3
+    assert s.draft_view["log"] == ["Avvio della redazione: decreto_ingiuntivo_ordinario"]
+    assert view.expected == ["· Base", "· Intestazione", "· Parti", "· Premesse", "· Diritto",
+                             "· Conclusioni", "· Allegati"]
+    s.choose_letterhead(0)
+    assert s.draft_view["letterhead"] is None and letterheads.load_index()["last"] is None
+
+
+def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
+    s, view, bridge = _ready_session_with_template()
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                   "importo": "1"}, "")
+    assert s.adapter.calls[-1] == ("apply_letterhead", None)      # no letterhead chosen
+    rid = bridge.sent[-1]["id"]
+    s.handle_event(_msg({"type": "status", "id": rid, "text": "Chiamo decreto_ingiuntivo"}))
+    s.handle_event(_msg({"type": "doc_call", "request_id": rid, "call_id": "c1",
+                         "action": "insert_markdown",
+                         "args": {"where": "end", "markdown": "### PREMESSO CHE\n\nx",
+                                  "undo_label": "u"}}))
+    s.handle_event(_msg({"type": "doc_call", "request_id": rid, "call_id": "c2",
+                         "action": "replace_text",
+                         "args": {"query": "[SEDE]", "replacement": "MILANO", "undo_label": "u"}}))
+    assert s.adapter.calls[-2][0] == "insert_markdown" and s.adapter.calls[-2][-1] is True
+    assert view.log[-3:] == ["Chiamo decreto_ingiuntivo", "Inserito: PREMESSO CHE",
+                             "Sostituito: «[SEDE]»"]
+    _final(s, rid, "", {"partizioni": [{"titolo": "Premesse in fatto", "from_id": "p:1"}],
+                        "domande": [{"campo": "sede", "domanda": "Sede?", "tipo": "testo"}],
+                        "segnaposto_aperti": [], "completata": False, "usage_totals": {}})
+    assert s.draft_view["step"] == 2 and view.step == 2
+    assert view.draft_status[0] == "Rispondi alle 1 domande e premi Continua"
+    assert view.expected[3] == "✓ Premesse"
+    s.draft_answer({"sede": "Milano"})
+    assert view.step == 3 and view.log[-1] == "Risposte inviate"
+    rid = bridge.sent[-1]["id"]
+    _final(s, rid, "", {"partizioni": [{"titolo": "Premesse in fatto", "from_id": "p:1"}],
+                        "domande": [], "segnaposto_aperti": ["[X]"], "completata": True,
+                        "riepilogo": "Calcoli: ok", "usage_totals": {}})
+    assert view.step == 4
+    assert view.draft_status[0] == "Redazione completata: Verifica citazioni, poi Nuova redazione"
+    assert view.summary == "Riepilogo:\nCalcoli: ok\nSegnaposto aperti: [X]"
+    s.verify_act()
+    assert bridge.sent[-1]["name"] == "verify_citations"
+    _final(s, bridge.sent[-1]["id"], "ok", {"citazioni_uniche": 0, "citazioni_totali": 0,
+                                              "commenti_inseriti": 0, "per_verdetto": {}})
+    s.draft_continue("aggiungi le conclusioni")
+    assert view.step == 3 and view.log[-1] == "Riprendo: aggiungi le conclusioni"
+    _final(s, bridge.sent[-1]["id"], "", {"partizioni": [], "domande": [], "segnaposto_aperti": [],
+                                          "completata": False, "stopped": "timeout",
+                                          "usage_totals": {}})
+    assert view.step == 4 and view.draft_status[0] == "Interrotta: Riprendi per continuare"
+    s.new_drafting()
+    assert view.step == 1 and s.draft_view["partitions"] == [] and s.draft_view["log"] == []
+    assert s.draft_view["template"] is not None and s.draft_view["started"] is False
+
+
+def test_errors_keep_the_step_and_a_failed_start_goes_back_to_step_one():
+    s, view, bridge = _ready_session_with_template()
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                   "importo": "1"}, "")
+    _error(s, bridge.sent[-1]["id"], "template_not_found", "manca")
+    assert view.step == 1 and s.draft_view["started"] is False
+    assert view.log[-1] == "Errore: manca"
+    s.draft_start("decreto_ingiuntivo_ordinario", {"creditore": "A", "debitore": "B",
+                                                   "importo": "1"}, "")
+    _final(s, bridge.sent[-1]["id"], "", {
+        "partizioni": [{"titolo": "Base", "from_id": "p:1"}],
+        "domande": [{"campo": "s", "domanda": "?", "tipo": "testo"}],
+        "segnaposto_aperti": [], "completata": False, "usage_totals": {}})
+    s.draft_answer({"s": "x"})
+    _error(s, bridge.sent[-1]["id"], "llm", "giù")
+    assert view.step == 3 and s.draft_view["started"] is True       # the drafting is real
+    assert s.new_drafting() is None and view.step == 1
+
+
+def test_a_rebuilt_panel_gets_the_whole_workbench_state_back():
+    s, _view, _bridge = _ready_session_with_template()
+    s.draft_view.update(step=3, log=["a", "b"], attachments=[{"n": 1, "name": "x.pdf", "chars": 5,
+                                                              "kind": "pdf", "troncato": False}])
+    s._summary_text = "Riepilogo:\nok"
+    fresh = FakeView()
+    s.replay_drafting(fresh)
+    assert fresh.step == 3 and fresh.log == ["a", "b"]
+    assert fresh.attachments == ["Doc. 1 · x.pdf (5 caratteri)"]
+    assert fresh.summary == "Riepilogo:\nok"
+    assert fresh.calls[-1][0] == "set_step"          # last, after every content call
+
+
+def test_the_log_is_capped():
+    s, _view, _bridge = _ready_session()
+    for i in range(250):
+        s._log(f"r{i}")
+    assert len(s.draft_view["log"]) == MAX_LOG_LINES and s.draft_view["log"][0] == "r50"

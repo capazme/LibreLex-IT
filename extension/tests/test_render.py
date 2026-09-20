@@ -206,8 +206,9 @@ def test_render_guided_drafting_copy():
          "tipo": "testo"}) == "Sede del tribunale? (es. Milano)"
     assert render_question_label(
         {"campo": "d", "domanda": "Data?", "esempio": "", "tipo": "data"}) == "Data? (data)"
-    assert render_questions_hint(3).endswith(
-        "una casella vuota vale come risposta non disponibile.")
+    assert render_questions_hint(3) == (
+        "Il modello ha bisogno di 3 dati: rispondi e premi Continua; una casella vuota vale "
+        "come risposta non disponibile.")
     assert render_riepilogo("Calcoli: CU 129,50").startswith("Riepilogo della redazione:\n")
     view = {"template": None, "started": False, "done": False, "questions": [],
             "stopped": None, "busy": False}
@@ -245,8 +246,9 @@ def test_workbench_rendering():
                     "[interrotto: tempo massimo]")
     assert render_letterhead_labels([{"name": "SAPG Legal"}]) == [
         "Nessuna (impaginazione del documento)", "SAPG Legal"]
-    assert render_questions_hint(3).endswith(
-        "una casella vuota vale come risposta non disponibile.")
+    assert render_questions_hint(3) == (
+        "Il modello ha bisogno di 3 dati: rispondi e premi Continua; una casella vuota vale "
+        "come risposta non disponibile.")
     base = {"template": {"x": 1}, "questions": [], "done": False, "stopped": None,
             "base_errore": None, "busy": False}
     assert render_draft_status({**base, "step": 1, "template": None}) == "Scegli un atto"
@@ -257,6 +259,9 @@ def test_workbench_rendering():
     assert render_draft_status({**base, "step": 3, "busy": True}) == (
         "Redazione in corso: il modello lavora sul documento")
     assert render_draft_status({**base, "step": 4, "done": True}) == (
+        "Redazione completata: Verifica citazioni, poi Nuova redazione")
+    # T1-03: a completed drafting never shows a stale base_errore
+    assert render_draft_status({**base, "step": 4, "done": True, "base_errore": "tool giù"}) == (
         "Redazione completata: Verifica citazioni, poi Nuova redazione")
     assert render_draft_status({**base, "step": 4, "stopped": "cancelled"}) == (
         "Interrotta: Riprendi per continuare")
