@@ -138,3 +138,18 @@ def test_draft_subcommand_campo_without_equals_is_a_usage_error(capsys):
              tools_factory=_factory())
     assert exc.value.code == 2
     assert "--campo/--risposta richiedono NOME=VALORE" in capsys.readouterr().err
+
+
+def test_draft_subcommand_passes_attachments(tmp_path, capsys):
+    from tests.fakes import ScriptedLLM, text_turn, tool_turn
+    a = tmp_path / "fattura_12.txt"
+    a.write_text("Fattura n. 12", encoding="utf-8")
+    llm = ScriptedLLM([tool_turn(("leggi_allegato", {"numero": 1})), text_turn("ok")])
+    rc = main(["draft", "--tipo", "decreto_ingiuntivo_ordinario", "--campo", "creditore=Alfa",
+               "--campo", "debitore=Beta", "--campo", "importo=12000", "--allegato", str(a)],
+              tools_factory=_factory(), llm_factory=lambda cfg: llm)
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "allegati: 1" in out.out
+    assert 'allegati "Doc. 1 fattura_12.txt": 13 caratteri' in out.err
+    assert "Allegati del fascicolo: Doc. 1 fattura_12.txt" in llm.calls[0][0][1]["content"]

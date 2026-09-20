@@ -13,6 +13,24 @@ INTERRUPTED_TOOL_RESULT = "ERRORE: turno interrotto"
 # Guided Drafting design §4.2: an inserted reference act is truncated to this many characters
 # before it ever reaches the session (or the model); it never appears in a Status/Log/error.
 MAX_REFERENCE_CHARS = 60_000
+# Drafting Workbench design §4.2: each case document (attachment) is truncated to this many
+# characters, the set is capped at MAX_ATTACHMENTS documents and MAX_ATTACHMENTS_CHARS in
+# total; none of it ever appears in a Status/Log/error.
+MAX_ATTACHMENT_CHARS = 60_000
+MAX_ATTACHMENTS = 12
+MAX_ATTACHMENTS_CHARS = 300_000
+
+
+def attachments_label(attachments: list[dict[str, Any]]) -> str:
+    """The names of a set of attachments as one consent line ("Doc. 1 a.pdf; Doc. 2 b.docx"),
+    cut at 200 characters with a trailing ellipsis when it does not fit whole."""
+    label = "; ".join(f"Doc. {a['n']} {a['name']}" for a in attachments)
+    return label if len(label) <= 200 else label[:199] + "…"
+
+
+def attachments_chars(attachments: list[dict[str, Any]]) -> int:
+    """The total character count of a set of attachments, after trimming."""
+    return sum(a["chars"] for a in attachments)
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -118,6 +136,12 @@ class DocSession:
     # another reference act is loaded, so a model that insists is answered without asking the
     # lawyer again (final review, finding 6).
     reference_denied: bool = False
+    # The case documents (Drafting Workbench design §4): facts for the model to draft from,
+    # numbered from 1 in the order the panel sent them. Never sent until attachments_consented
+    # flips true, and never echoed back in Status/Log/errors (same consent shape as reference).
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    attachments_consented: bool = False
+    attachments_denied: bool = False
 
     def begin_turn(self, user_message: str) -> Turn:
         turn = Turn(messages=[{"role": "user", "content": user_message}])

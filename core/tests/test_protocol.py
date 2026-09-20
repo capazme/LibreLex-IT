@@ -74,3 +74,12 @@ def test_new_commands_and_reference_consent_scope():
         "summary"]["name"] == "ricorso.docx"
     assert p.ConsentSummary(scope="selection", chars=1, endpoint_host="h", model="m",
                             zdr=False).name is None
+
+
+def test_set_attachments_command_and_consent_scope():
+    p.parse_extension_line(json.dumps({"type": "command", "id": "r", "doc_id": "d",
+                                       "name": "set_attachments",
+                                       "args": {"documenti": [{"name": "a.pdf", "text": "x"}]}}))
+    s = p.ConsentSummary(scope="attachments", chars=10, endpoint_host="h", model="m", zdr=True,
+                         name="Doc. 1 a.pdf")
+    assert s.scope == "attachments"

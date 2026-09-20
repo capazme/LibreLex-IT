@@ -420,3 +420,62 @@ async def test_answers_to_unknown_fields_are_kept_and_a_second_start_starts_over
     assert draft.partitions == [] and draft.base is None and draft.questions == []
     assert session.reference is not None                        # the reference act survives
     assert "Atto di riferimento disponibile: x.odt" in llm3.calls[0][0][-1]["content"]
+
+
+async def test_attachments_are_listed_read_with_one_consent_and_denied_until_the_set_changes():
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument([""], consent_decisions=["once", "once"])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        session.attachments = [
+            {"n": 1, "name": "fattura_12.pdf", "text": "Fattura n. 12 del 3 marzo 2025, Euro 12.000",  # noqa: E501
+             "chars": 43, "kind": "pdf", "troncato": False},
+            {"n": 2, "name": "delibera.docx", "text": "Delibera del 25 giugno 2026", "chars": 27,
+             "kind": "writer", "troncato": False}]
+        llm = ScriptedLLM([
+            tool_turn(("leggi_allegato", {"numero": 1}), ("leggi_allegato", {"numero": 2})),
+            tool_turn(("leggi_allegato", {"numero": 3})),
+            text_turn("letti")])
+        deps = await _deps(llm, doc, tools)
+        out = await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                        "fields": {"attore": "A"}}, deps, emit, "r1")
+    user = llm.calls[0][0][1]["content"]
+    assert ("Allegati del fascicolo: Doc. 1 fattura_12.pdf (43 caratteri); "
+            "Doc. 2 delibera.docx (27 caratteri)") in user
+    assert len(doc.consent_requests) == 1
+    req = doc.consent_requests[0]
+    assert req.scope == "attachments" and req.name == "Doc. 1 fattura_12.pdf; Doc. 2 delibera.docx"
+    assert req.chars == 70
+    tool_msgs = [m for m in llm.calls[1][0] if m.get("role") == "tool"]
+    assert "<<<DATI: allegato 1 (fattura_12.pdf)>>>" in tool_msgs[0]["content"]
+    assert "Delibera del 25 giugno 2026" in tool_msgs[1]["content"]
+    third = [m for m in llm.calls[2][0] if m.get("role") == "tool"][-1]["content"]
+    assert third == "ERRORE: allegato 3 inesistente (disponibili: 1-2)"
+    assert draft_summary(session, out)["allegati"] == [
+        {"n": 1, "name": "fattura_12.pdf", "chars": 43},
+        {"n": 2, "name": "delibera.docx", "chars": 27}]
+    names = {t["function"]["name"] for t in llm.calls[0][1]}
+    assert "leggi_allegato" in names
+
+
+async def test_attachments_consent_denied_is_remembered():
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument([""], consent_decisions=["deny"])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        session.attachments = [{"n": 1, "name": "a.txt", "text": "abc", "chars": 3,
+                                "kind": "text", "troncato": False}]
+        llm = ScriptedLLM([tool_turn(("leggi_allegato", {"numero": 1})),
+                           tool_turn(("leggi_allegato", {"numero": 1})), text_turn("senza")])
+        await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                  "fields": {"attore": "A"}}, await _deps(llm, doc, tools),
+                        emit, "r1")
+        msgs = [m["content"] for c in llm.calls[1:] for m in c[0] if m.get("role") == "tool"]
+        assert all(m.startswith("ERRORE: invio del testo") for m in msgs[-2:])
+        assert len(doc.consent_requests) == 1 and session.attachments_denied is True
+        llm2 = ScriptedLLM([tool_turn(("leggi_allegato", {"numero": 1})), text_turn("mai")])
+        await run_draft(session, {"action": "continue", "message": "vai"},
+                        await _deps(llm2, doc, tools), emit, "r2")
+        assert len(doc.consent_requests) == 1   # still denied, not asked again

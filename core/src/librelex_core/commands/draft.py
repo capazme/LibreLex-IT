@@ -7,10 +7,11 @@ questions the model asked) and ``continue`` (a free instruction, or a resume aft
 iteration stop). The user message of every turn is rebuilt from that state, so the model
 never depends on the compacted tool results of an earlier turn.
 
-Three hooks (``chiedi_dati``, ``redazione_completata``, ``leggi_atto_riferimento``) are added
-to the loop for the drafting turns only: the first two end the turn in an orderly way, the
-third serves the reference act after consent. Everything else (grounding on write, consent for
-document reads, limits, cancellation) is the ordinary agent turn.
+Four hooks (``chiedi_dati``, ``redazione_completata``, ``leggi_atto_riferimento``,
+``leggi_allegato``) are added to the loop for the drafting turns only: the first two end the
+turn in an orderly way, the other two serve the reference act and the case attachments after
+consent. Everything else (grounding on write, consent for document reads, limits, cancellation)
+is the ordinary agent turn.
 """
 from __future__ import annotations
 
@@ -31,7 +32,13 @@ from librelex_core.agent.loop import (
 )
 from librelex_core.agent.prompt import load_recipe, wrap_data
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, DraftState
+from librelex_core.agent.state import (
+    MAX_REFERENCE_CHARS,
+    DocSession,
+    DraftState,
+    attachments_chars,
+    attachments_label,
+)
 from librelex_core.commands.templates import FIELD_TYPES, field_type
 from librelex_core.document import DocumentError
 from librelex_core.mcp.client import ToolError
@@ -46,6 +53,7 @@ TOO_MANY_QUESTIONS = "ERRORE: al massimo otto domande, le altre sono state scart
 QUESTIONS_SENT = "Domande inviate all'utente: attendi le risposte nel prossimo turno."
 DRAFT_DONE = "Redazione registrata come completata."
 NO_REFERENCE = "ERRORE: nessun atto di riferimento caricato"
+NO_ATTACHMENTS = "ERRORE: nessun allegato caricato"
 BASE_BAD_RESPONSE = "risposta non valida del generatore"
 # The four states of the deterministic base, as the user message tells them (design §3.2,
 # §4.3): failed, absent, inserted, data only.
@@ -269,6 +277,15 @@ def draft_message(session: DocSession, action: str, message: str = "",
             f"Atto di riferimento disponibile: {reference['name']} "
             f"({reference['chars']} caratteri{cut}): leggilo con leggi_atto_riferimento "
             "prima di comporre.")
+    if session.attachments:
+        items = []
+        for a in session.attachments:
+            chars = f"{a['chars']:,}".replace(",", ".")
+            note = ", troncato" if a["troncato"] else ""
+            items.append(f"Doc. {a['n']} {a['name']} ({chars} caratteri{note})")
+        blocks.append(
+            "Allegati del fascicolo: " + "; ".join(items) + ": leggi con leggi_allegato "
+            "quelli che servono ai fatti; l'elenco \"Si allegano\" segue questa numerazione.")
     if draft.base_errore:
         blocks.append(BASE_FAILED.format(motivo=draft.base_errore))
     elif draft.base is None:
@@ -335,8 +352,16 @@ LEGGI_ATTO_RIFERIMENTO_TOOL: dict = {"type": "function", "function": {
                    "usare per struttura e stile, mai per i fatti.",
     "parameters": {"type": "object", "properties": {}}}}
 
+LEGGI_ALLEGATO_TOOL: dict = {"type": "function", "function": {
+    "name": "leggi_allegato",
+    "description": "Testo dell'allegato numero N del fascicolo (fattura, delibera, decreto, "
+                   "contratto...): i fatti del caso si prendono da qui.",
+    "parameters": {"type": "object", "properties": {
+        "numero": {"type": "integer", "description": "Numero dell'allegato (Doc. N)."},
+    }, "required": ["numero"]}}}
+
 HOOK_TOOLS: list[dict] = [CHIEDI_DATI_TOOL, REDAZIONE_COMPLETATA_TOOL,
-                          LEGGI_ATTO_RIFERIMENTO_TOOL]
+                          LEGGI_ATTO_RIFERIMENTO_TOOL, LEGGI_ALLEGATO_TOOL]
 
 
 def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], list[dict]]:
@@ -395,9 +420,40 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
                 return CONSENT_DENIED, None
         return wrap_data(f"atto di riferimento ({reference['name']})", reference["text"]), None
 
+    async def leggi_allegato(args: dict) -> tuple[str, str | None]:
+        attachments = session.attachments
+        if not attachments:
+            return NO_ATTACHMENTS, None
+        try:
+            numero = int(args.get("numero"))
+        except (TypeError, ValueError):
+            return BAD_ARGUMENTS, None
+        match = next((a for a in attachments if a["n"] == numero), None)
+        if match is None:
+            return (f"ERRORE: allegato {numero} inesistente "
+                    f"(disponibili: 1-{len(attachments)})", None)
+        if session.attachments_denied:
+            # Already refused for this set: the decision holds until set_attachments replaces
+            # it, same rule as the reference act (final review, finding 6).
+            return CONSENT_DENIED, None
+        if not session.attachments_consented:
+            # One consent per set, not per document (design §4.3): the names of every
+            # attachment are shown once, and reading another one of the same set asks nothing.
+            decision = await deps.consent(p.ConsentSummary(
+                scope="attachments", chars=attachments_chars(attachments),
+                endpoint_host=deps.endpoint_host, model=deps.model, zdr=deps.zdr,
+                name=attachments_label(attachments)))
+            if decision in ("document", "once"):
+                session.attachments_consented = True
+            else:
+                session.attachments_denied = True
+                return CONSENT_DENIED, None
+        return wrap_data(f"allegato {numero} ({match['name']})", match["text"]), None
+
     hooks: dict[str, Hook] = {"chiedi_dati": chiedi_dati,
                               "redazione_completata": redazione_completata,
-                              "leggi_atto_riferimento": leggi_atto_riferimento}
+                              "leggi_atto_riferimento": leggi_atto_riferimento,
+                              "leggi_allegato": leggi_allegato}
     return hooks, list(HOOK_TOOLS)
 
 
@@ -487,15 +543,20 @@ async def _rescan_placeholders(draft: DraftState, deps: AgentDeps) -> None:
         draft.base.setdefault("aperti", list(draft.base["placeholders"]))
 
 
+def _allegati_summary(session: DocSession) -> list[dict[str, Any]]:
+    return [{"n": a["n"], "name": a["name"], "chars": a["chars"]} for a in session.attachments]
+
+
 def draft_summary(session: DocSession, outcome: TurnOutcome) -> dict[str, Any]:
     """The drafting half of the turn's ``Final.summary`` (design §4.4, §4.5)."""
     draft = session.draft
     if draft is None:
-        return {"ended_by": outcome.ended_by}
+        return {"ended_by": outcome.ended_by, "allegati": _allegati_summary(session)}
     base = draft.base or {}
     return {"tipo_atto": draft.tipo_atto, "domande": draft.questions,
             "partizioni": draft.partitions,
             "segnaposto_aperti": list(base.get("aperti", [])),
             "base_errore": draft.base_errore,
             "completata": draft.done, "riepilogo": draft.riepilogo,
+            "allegati": _allegati_summary(session),
             "ended_by": outcome.ended_by}

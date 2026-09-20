@@ -570,6 +570,11 @@ into the document under revision.
 - The reference act (a similar case chosen by the lawyer) is document text of a third case: it
   is sent only after a consent with scope `reference` naming the file and its size; never
   logged, never persisted.
+- The case attachments (the documents of the file: invoices, resolutions, decrees, contracts)
+  are sent only after one consent per set, scope `attachments`, naming the whole set (`Doc. N
+  nome; …`) and its total size; "per questo documento" and "solo stavolta" both consent for the
+  current set, "annulla" is remembered until the set changes (a fresh `set_attachments` resets
+  it); never logged, never persisted.
 
 ### 8.3 Providers and GDPR
 
@@ -797,6 +802,8 @@ Extension → core:
  "args": {"tipo_atto": "decreto_ingiuntivo_ordinario"}}
 {"id": "r6", "type": "command", "doc_id": "…", "name": "set_reference",
  "args": {"name": "ricorso_rossi.docx", "text": "…"}}
+{"id": "r6b", "type": "command", "doc_id": "…", "name": "set_attachments",
+ "args": {"documenti": [{"name": "fattura_12.pdf", "text": "…", "kind": "pdf"}]}}
 {"id": "r7", "type": "command", "doc_id": "…", "name": "draft",
  "args": {"action": "start", "tipo_atto": "decreto_ingiuntivo_ordinario",
           "fields": {"creditore": "Alfa S.r.l.", "debitore": "Beta S.p.A.", "importo": "12.000"},
@@ -838,11 +845,15 @@ Document action payloads follow §5.3; the exact pydantic models in
 
 A `draft` turn's `Final.summary` also carries `tipo_atto`, `domande` (the open questions, if
 any), `partizioni` (the sections inserted so far), `segnaposto_aperti` (placeholders of the
-base still unfilled), `completata`, `riepilogo` (the final summary once `completata` is true)
-and `ended_by` (`questions` | `done` | `null`, why the turn stopped). In `draft`'s `fields` and
-`answers`, a numeric field accepts Italian notation: a dot followed by exactly three digits is
-a thousands separator, a comma is the decimal point, and any other dot is a decimal point (so
-`12.000` is twelve thousand, `12,5` and `12.5` are both twelve and a half).
+base still unfilled), `completata`, `riepilogo` (the final summary once `completata` is true),
+`allegati` (the case documents attached to the session, `{n, name, chars}`) and `ended_by`
+(`questions` | `done` | `null`, why the turn stopped). In `draft`'s `fields` and `answers`, a
+numeric field accepts Italian notation: a dot followed by exactly three digits is a thousands
+separator, a comma is the decimal point, and any other dot is a decimal point (so `12.000` is
+twelve thousand, `12,5` and `12.5` are both twelve and a half).
+
+`set_attachments`'s `Final.summary` carries `allegati`, one entry per document in the set
+(`{n, name, chars, kind, troncato}`); an empty `documenti` list clears the set.
 
 ## Appendix B · mcp-legal-it tool allowlist (55)
 

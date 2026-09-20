@@ -17,7 +17,7 @@ over stdio with the extension, talks MCP to mcp-legal-it, runs the citation pipe
     uv run librelex-dev template decreto_ingiuntivo_ordinario
     uv run librelex-dev draft --tipo decreto_ingiuntivo_ordinario --campo creditore="Alfa S.r.l." \
         --campo debitore="Beta S.p.A." --campo importo=12000 --note "fattura n. 12 del 3 marzo 2025" \
-        --risposta sede=Milano   # needs [llm]
+        --risposta sede=Milano --allegato path/to/fattura_12.txt   # needs [llm]
 
 Configuration: `~/Library/Application Support/LibreLex/config.toml` on macOS
 (see the spec, Appendix D); `LIBRELEX_CONFIG` overrides the path.

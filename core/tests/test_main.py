@@ -426,6 +426,38 @@ async def test_template_commands_and_set_reference():
     await h.run(scenario)
 
 
+async def test_set_attachments_stores_trims_and_refuses_too_many():
+    h = Harness(FakeDocument(["x"]))
+
+    async def scenario(h: Harness):
+        await h.send(HELLO)
+        await h.pump(p.HelloOk)
+        docs = [{"name": "fattura_12.pdf", "text": "FATTURA " * 10, "kind": "pdf"},
+                {"name": "delibera.docx", "text": "D" * 70_000}]
+        await h.send(p.Command(id="r1", doc_id="d1", name="set_attachments",
+                               args={"documenti": docs}))
+        await h.pump(p.Final)
+        final = h.received[-1]
+        assert final.text == "Allegati: 2 documenti (60080 caratteri)."
+        assert final.summary["allegati"] == [
+            {"n": 1, "name": "fattura_12.pdf", "chars": 80, "kind": "pdf", "troncato": False},
+            {"n": 2, "name": "delibera.docx", "chars": 60_000, "kind": "writer", "troncato": True}]
+        session = h.server._session("d1")
+        assert len(session.attachments[1]["text"]) == 60_000
+        session.attachments_consented = session.attachments_denied = True
+        await h.send(p.Command(id="r2", doc_id="d1", name="set_attachments",
+                               args={"documenti": [{"name": "x", "text": "y"}] * 13}))
+        await h.pump(p.Error)
+        assert h.received[-1].code == "bad_request" and "12" in h.received[-1].message
+        await h.send(p.Command(id="r3", doc_id="d1", name="set_attachments",
+                               args={"documenti": []}))
+        await h.pump(p.Final)
+        assert h.received[-1].summary == {"allegati": []} and session.attachments == []
+        assert session.attachments_consented is False and session.attachments_denied is False
+
+    await h.run(scenario)
+
+
 async def test_a_line_over_the_stdio_limit_is_reported_and_the_server_keeps_serving():
     """A reference act longer than the reader's line limit made `readline()` raise and killed
     the process; now the message is refused and the next one is served (final review,
