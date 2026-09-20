@@ -206,30 +206,61 @@ def test_render_guided_drafting_copy():
          "tipo": "testo"}) == "Sede del tribunale? (es. Milano)"
     assert render_question_label(
         {"campo": "d", "domanda": "Data?", "esempio": "", "tipo": "data"}) == "Data? (data)"
-    assert render_questions_hint(3) == (
-        "Il modello ha bisogno di 3 dati: rispondi e premi Continua.")
+    assert render_questions_hint(3).endswith(
+        "una casella vuota vale come risposta non disponibile.")
     assert render_riepilogo("Calcoli: CU 129,50").startswith("Riepilogo della redazione:\n")
     view = {"template": None, "started": False, "done": False, "questions": [],
             "stopped": None, "busy": False}
     assert render_draft_status(view) == "Scegli un atto"
     view["template"] = {"tipo_atto": "x"}
-    assert render_draft_status(view) == "Compila i campi obbligatori"
-    view.update(started=True, busy=True)
-    assert render_draft_status(view) == "Redazione in corso…"
-    view.update(busy=False, questions=[{"campo": "a"}])
-    assert render_draft_status(view) == "In attesa delle tue risposte (pannello Domande)"
-    view.update(questions=[], stopped="iterations")
-    assert render_draft_status(view) == "Interrotta: premi Continua la redazione"
-    view.update(stopped=None, done=True)
-    assert render_draft_status(view) == "Redazione completata"
-    # M6: the base-generation failure is part of the state, so the line survives a rebuild
-    view.update(done=False, base_errore="strumento decreto_ingiuntivo non disponibile")
-    assert render_draft_status(view) == (
-        "Base non generata: strumento decreto_ingiuntivo non disponibile")
-    view.update(questions=[{"campo": "a"}])
-    assert render_draft_status(view) == (
-        "Base non generata: strumento decreto_ingiuntivo non disponibile")
-    view.update(questions=[], busy=True)
-    assert render_draft_status(view) == "Redazione in corso…"       # the turn wins while it runs
-    view.update(busy=False, done=True)
-    assert render_draft_status(view) == "Redazione completata"      # a later turn made a base
+    assert render_draft_status(view) == "Compila i campi obbligatori e premi Avvia redazione"
+
+
+def test_workbench_rendering():
+    from librelex_ext.render import (
+        EXPECTED_PARTITIONS,
+        render_attachments,
+        render_draft_status,
+        render_expected_partitions,
+        render_letterhead_labels,
+        render_log_insert,
+        render_questions_hint,
+        render_summary,
+    )
+    assert EXPECTED_PARTITIONS[0] == "Intestazione" and EXPECTED_PARTITIONS[-1] == "Allegati"
+    marks = render_expected_partitions(["Premesse", "Conclusioni"],
+                                       [{"titolo": "Premesse in fatto"}])
+    assert marks == ["✓ Premesse", "· Conclusioni"]
+    assert render_attachments([{"n": 1, "name": "fattura.pdf", "chars": 1200, "troncato": False},
+                               {"n": 2, "name": "delibera.docx", "chars": 60000,
+                                "troncato": True}]) == [
+        "Doc. 1 · fattura.pdf (1.200 caratteri)",
+        "Doc. 2 · delibera.docx (60.000 caratteri, troncato)"]
+    assert render_log_insert("### PREMESSO CHE\n\ntesto") == "Inserito: PREMESSO CHE"
+    assert render_log_insert("- " + "x" * 80) == "Inserito: " + "x" * 60 + "…"
+    assert render_summary({}) == "Nessun riepilogo."
+    text = render_summary({"riepilogo": "Calcoli: ok", "allegati": [{"n": 1, "name": "a.pdf"}],
+                           "segnaposto_aperti": ["[SEDE]"], "stopped": "timeout"})
+    assert text == ("Riepilogo:\nCalcoli: ok\nAllegati: Doc. 1 a.pdf\nSegnaposto aperti: [SEDE]\n"
+                    "[interrotto: tempo massimo]")
+    assert render_letterhead_labels([{"name": "SAPG Legal"}]) == [
+        "Nessuna (impaginazione del documento)", "SAPG Legal"]
+    assert render_questions_hint(3).endswith(
+        "una casella vuota vale come risposta non disponibile.")
+    base = {"template": {"x": 1}, "questions": [], "done": False, "stopped": None,
+            "base_errore": None, "busy": False}
+    assert render_draft_status({**base, "step": 1, "template": None}) == "Scegli un atto"
+    assert render_draft_status({**base, "step": 1}) == (
+        "Compila i campi obbligatori e premi Avvia redazione")
+    assert render_draft_status({**base, "step": 2, "questions": [{}, {}]}) == (
+        "Rispondi alle 2 domande e premi Continua")
+    assert render_draft_status({**base, "step": 3, "busy": True}) == (
+        "Redazione in corso: il modello lavora sul documento")
+    assert render_draft_status({**base, "step": 4, "done": True}) == (
+        "Redazione completata: Verifica citazioni, poi Nuova redazione")
+    assert render_draft_status({**base, "step": 4, "stopped": "cancelled"}) == (
+        "Interrotta: Riprendi per continuare")
+    assert render_draft_status({**base, "step": 4, "base_errore": "tool giù"}) == (
+        "Base non generata: tool giù")
+    assert render_draft_status({**base, "step": 4}) == (
+        "Turno concluso: Riprendi per continuare o Nuova redazione")

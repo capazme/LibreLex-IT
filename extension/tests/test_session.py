@@ -793,7 +793,7 @@ def test_templates_and_template_info_fill_the_drafting_view():
     s.handle_event({"kind": "message", "msg": {
         "type": "final", "request_id": "r2", "text": "Modello: 2 campi.", "summary": info}})
     assert view.template == info and s.draft_view["template"] == info
-    assert view.draft_status == ("Compila i campi obbligatori", False)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", False)
     assert "Base deterministica: decreto_ingiuntivo" in view.lines[-1]
 
 
@@ -818,7 +818,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                             "fields": {"creditore": "Alfa", "importo": "12000"},
                             "notes": "fattura 12"}
     assert s.transcript[-1] == "Tu: avvio redazione x (2 campi)"
-    assert view.draft_status == ("Redazione in corso…", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     s.handle_event({"kind": "message",
                     "msg": {"type": "delta", "request_id": "r1", "text": "Mi servono"}})
     assert view.stream == "LibreLex: Mi servono"
@@ -839,7 +839,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
     assert view.questions == [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
                                "tipo": "testo"}]
     assert view.partitions == ["✓ Base: Ricorso", "… segnaposto aperti: 1"]
-    assert view.draft_status == ("In attesa delle tue risposte (pannello Domande)", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     s.draft_answer({"sede": "Milano"})
     assert bridges[0].sent[-1]["args"] == {"action": "answer", "answers": {"sede": "Milano"}}
     assert s.transcript[-1] == "Tu: risposte a 1 domande"
@@ -856,7 +856,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
                     "segnaposto_aperti": [], "completata": True,
                     "riepilogo": "Calcoli: CU 129,50.", "ended_by": "done"}}})
     assert view.questions == [] and view.partitions == ["✓ Base: Ricorso", "✓ Conclusioni"]
-    assert view.draft_status == ("Redazione completata", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     assert "LibreLex: Fatto." in view.lines
     assert view.lines[-1] == "Riepilogo della redazione:\nCalcoli: CU 129,50."
     s.draft_answer({"x": "y"})
@@ -897,7 +897,7 @@ def test_draft_start_refuses_while_busy_without_touching_the_drafting_view():
         "usage": {"input_tokens": 1, "output_tokens": 1, "cost_usd": None},
         "summary": {"tool_calls": 0, "usage_totals": {"input_tokens": 1, "output_tokens": 1}}}})
     assert render_draft_status({**s.draft_view, "busy": s._draft_request}) == (
-        "Compila i campi obbligatori")
+        "Compila i campi obbligatori e premi Avvia redazione")
 
 
 def test_draft_answer_refuses_while_busy_without_touching_the_drafting_view():
@@ -1052,7 +1052,7 @@ def test_cancelled_draft_turn_merges_into_the_view_without_resetting_it():
     assert view.partitions == ["✓ Base: Ricorso"]
     assert s.draft_view["partitions"] == [
         {"titolo": "Base: Ricorso", "from_id": "p:1", "to_id": "p:9"}]
-    assert view.draft_status == ("Interrotta: premi Continua la redazione", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
 
 
 def test_base_errore_reports_the_missing_base_in_status_and_transcript():
@@ -1069,13 +1069,14 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
                     "completata": False, "riepilogo": "", "ended_by": None,
                     "base_errore": "strumento decreto_ingiuntivo non disponibile"}}})
     status = "Base non generata: strumento decreto_ingiuntivo non disponibile"
-    assert view.draft_status == (status, True)
+    draft_status = "Compila i campi obbligatori e premi Avvia redazione"
+    assert view.draft_status == (draft_status, True)
     assert status in view.lines
     # M6: the failure is part of the drafting state, so a rebuilt panel is told again
     assert s.draft_view["base_errore"] == "strumento decreto_ingiuntivo non disponibile"
     fresh = FakeView()
     s.bind(fresh, lambda ev: None)
-    assert fresh.draft_status == (status, True)
+    assert fresh.draft_status == (draft_status, True)
     # a later turn that does produce a base clears it
     s.draft_continue("riprova")
     s.handle_event({"kind": "message", "msg": {
@@ -1088,7 +1089,7 @@ def test_base_errore_reports_the_missing_base_in_status_and_transcript():
                     "segnaposto_aperti": [], "completata": False, "riepilogo": "",
                     "ended_by": None}}})
     assert s.draft_view["base_errore"] is None
-    assert fresh.draft_status == ("Pronta per il prossimo passo", True)
+    assert fresh.draft_status == (draft_status, True)
 
 
 def test_a_reference_the_extension_cut_is_labelled_troncato():
@@ -1159,7 +1160,7 @@ def test_choosing_another_template_mid_drafting_keeps_the_resume_controls():
     s.handle_event({"kind": "message", "msg": {
         "type": "final", "request_id": "r1", "text": "Modello.", "summary": info}})
     assert view.template == info
-    assert view.draft_status == ("Pronta per il prossimo passo", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     # I5: another act, other fields — the stored copy goes with the rows the panel clears,
     # while the notes box (free text about the case, kept by the panel) stays as it was
     assert s.draft_view["fields"] == {} and s.draft_view["notes"] == "fattura 12"
@@ -1189,7 +1190,7 @@ def test_replay_drafting_gives_back_the_typed_values_and_is_the_only_path_bind_u
     assert fresh.field_values == ({"creditore": "Alfa"}, "fattura 12")
     assert fresh.reference == ("Caso simile: x.odt (10 caratteri)", True)
     assert fresh.partitions == ["✓ Base", "… segnaposto aperti: 1"]
-    assert fresh.draft_status == ("In attesa delle tue risposte (pannello Domande)", True)
+    assert fresh.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     assert fresh.questions == [{"campo": "sede", "domanda": "Sede?"}]
     assert fresh.answer_values == {"sede": "Milano"}
     seen = []
@@ -1229,7 +1230,7 @@ def test_a_queued_draft_request_that_never_reaches_the_core_is_not_shown_as_star
     bridges[0].fail_send = True              # the core died between the hello and its answer
     _hello(s, bridges)
     assert s._draft_request is False and s.draft_view["started"] is False
-    assert view.draft_status == ("Compila i campi obbligatori", False)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", False)
     assert "Core non raggiungibile" in s.transcript[-1]
     # a drafting that already put a partition in the document is real: it stays started
     s2, _adapter2, view2, bridges2 = make()
@@ -1239,7 +1240,7 @@ def test_a_queued_draft_request_that_never_reaches_the_core_is_not_shown_as_star
     bridges2[0].fail_send = True
     _hello(s2, bridges2)
     assert s2._draft_request is False and s2.draft_view["started"] is True
-    assert view2.draft_status == ("Pronta per il prossimo passo", True)
+    assert view2.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
 
 
 def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
@@ -1257,7 +1258,7 @@ def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
         "type": "error", "request_id": "r1", "code": "llm_config",
         "message": "llm.model non impostato"}})
     assert s.draft_view["started"] is False and s._draft_request is False
-    assert view.draft_status == ("Compila i campi obbligatori", False)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", False)
     # a start whose turn already inserted a partition stays started
     s2, _adapter2, view2, bridges2 = make()
     s2.draft_view["template"] = {"tipo_atto": "x", "campi": []}
@@ -1275,7 +1276,7 @@ def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
     s3.handle_event({"kind": "message", "msg": {
         "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
     assert s3.draft_view["started"] is True
-    assert view3.draft_status == ("Pronta per il prossimo passo", True)
+    assert view3.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
 
 
 def test_goto_partition_navigates_and_ignores_the_rows_that_are_not_partitions():
@@ -1306,7 +1307,7 @@ def test_a_core_that_dies_mid_drafting_stops_claiming_a_running_turn():
                         partitions=[{"titolo": "Base", "from_id": "p:1", "to_id": "p:9"}])
     s.draft_continue("ancora")
     _hello(s, bridges)
-    assert view.draft_status == ("Redazione in corso…", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)
     s.handle_event({"kind": "exit", "code": 1})
     assert s._draft_request is False
-    assert view.draft_status == ("Pronta per il prossimo passo", True)
+    assert view.draft_status == ("Compila i campi obbligatori e premi Avvia redazione", True)

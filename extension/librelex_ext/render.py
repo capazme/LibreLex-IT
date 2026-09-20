@@ -2,6 +2,8 @@
 """Plain-text (Italian) rendering of core results for the panel transcript (spec §5.1, §7.1)."""
 from __future__ import annotations
 
+from librelex_ext.letterheads import NONE_LABEL
+
 VERDICT_MARKERS = {
     "verificata": "✓", "inesistente": "✗", "non trovata": "✗", "metadati discordanti": "✗",
     "non verificata": "?", "non verificabile": "·", "da controllare a mano": "·",
@@ -210,28 +212,34 @@ def render_base_error(message: str) -> str:
 
 
 def render_draft_status(view: dict) -> str:
-    """The "DraftStatus" line: one state machine over template/started/busy/questions/done.
+    """The "DraftStatus" line: step-aware over the four Redazione panel steps (design §3).
 
-    ``view`` is ``{**session.draft_view, "busy": session._draft_request}``. ``base_errore``
-    is read from the view rather than pushed once by the turn that reported it, so a rebuilt
-    panel is told again; a turn that later produced a base clears it (the core sends the key
-    on every draft final), and a completed drafting never shows it.
+    ``view`` is ``{**session.draft_view, "busy": session._draft_request}``; ``step`` defaults
+    to 1 when absent so a session that does not yet carry it (Task 1) still renders a sane
+    line. ``base_errore`` is read from the view rather than pushed once by the turn that
+    reported it, so a rebuilt panel is told again; a turn that later produced a base clears
+    it (the core sends the key on every draft final), and a completed drafting never shows it.
     """
-    if not view.get("template"):
-        return "Scegli un atto"
-    if not view.get("started"):
-        return "Compila i campi obbligatori"
-    if view.get("busy"):
-        return "Redazione in corso…"
-    if view.get("base_errore") and not view.get("done"):
-        return render_base_error(view["base_errore"])
-    if view.get("questions"):
-        return "In attesa delle tue risposte (pannello Domande)"
+    step = view.get("step", 1)
+    if step == 1:
+        if not view.get("template"):
+            return "Scegli un atto"
+        return "Compila i campi obbligatori e premi Avvia redazione"
+    if step == 2:
+        return f"Rispondi alle {len(view.get('questions') or [])} domande e premi Continua"
+    if step == 3:
+        if view.get("busy"):
+            return "Redazione in corso: il modello lavora sul documento"
+        return "In attesa del core"
+    # step 4
+    base_errore = view.get("base_errore")
+    if base_errore and not view.get("done"):
+        return render_base_error(base_errore)
     if view.get("done"):
-        return "Redazione completata"
+        return "Redazione completata: Verifica citazioni, poi Nuova redazione"
     if view.get("stopped"):
-        return "Interrotta: premi Continua la redazione"
-    return "Pronta per il prossimo passo"
+        return "Interrotta: Riprendi per continuare"
+    return "Turno concluso: Riprendi per continuare o Nuova redazione"
 
 
 def render_riepilogo(riepilogo: str) -> str:
@@ -239,7 +247,74 @@ def render_riepilogo(riepilogo: str) -> str:
 
 
 def render_questions_hint(n: int) -> str:
-    return f"Il modello ha bisogno di {n} dati: rispondi e premi Continua."
+    return (f"Il modello ha bisogno di {n} dati: rispondi e premi Continua; "
+            "una casella vuota vale come risposta non disponibile.")
+
+
+# --- drafting workbench (spec §3, §4.2, plan "Drafting Workbench, Extension") -----------
+
+EXPECTED_PARTITIONS = ("Intestazione", "Parti", "Premesse", "Diritto", "Conclusioni", "Allegati")
+
+
+def render_expected_partitions(expected: list[str], partitions: list[dict]) -> list[str]:
+    """The expected-partitions checklist: a name is marked found by its first five letters
+    occurring in some inserted partition's title (case-insensitive, no word boundaries).
+    """
+    titles = " ".join((p.get("titolo") or "").lower() for p in partitions)
+    marks = []
+    for name in expected:
+        found = name.lower()[:5] in titles
+        marks.append(("✓ " if found else "· ") + name)
+    return marks
+
+
+def render_attachments(attachments: list[dict]) -> list[str]:
+    lines = []
+    for a in attachments:
+        suffix = ", troncato" if a.get("troncato") else ""
+        lines.append(
+            f"Doc. {a['n']} · {a['name']} ({_it_thousands(a['chars'])} caratteri{suffix})")
+    return lines
+
+
+def render_log_insert(markdown: str) -> str:
+    """The drafting log line for one inserted block: its first non-empty line, unadorned."""
+    first = ""
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped:
+            first = stripped.lstrip("#->* ")
+            break
+    if len(first) > 60:
+        first = first[:60] + "…"
+    return f"Inserito: {first}"
+
+
+def render_summary(summary: dict) -> str:
+    """The end-of-drafting summary line (design §3): riepilogo, attachments, open
+    placeholders, a missing base and a stop note, each only when present.
+    """
+    lines = []
+    riepilogo = summary.get("riepilogo")
+    if riepilogo:
+        lines.append("Riepilogo:\n" + riepilogo)
+    allegati = summary.get("allegati")
+    if allegati:
+        lines.append("Allegati: " + "; ".join(f"Doc. {a['n']} {a['name']}" for a in allegati))
+    aperti = summary.get("segnaposto_aperti")
+    if aperti:
+        lines.append("Segnaposto aperti: " + ", ".join(aperti))
+    base_errore = summary.get("base_errore")
+    if base_errore:
+        lines.append(render_base_error(base_errore))
+    stopped = summary.get("stopped")
+    if stopped:
+        lines.append(_STOP_NOTES.get(stopped, f"[interrotto: {stopped}]"))
+    return "\n".join(lines) if lines else "Nessun riepilogo."
+
+
+def render_letterhead_labels(entries: list[dict]) -> list[str]:
+    return [NONE_LABEL, *(e["name"] for e in entries)]
 
 
 def render_field_label(campo: dict) -> str:
