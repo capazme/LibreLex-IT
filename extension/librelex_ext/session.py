@@ -498,6 +498,22 @@ class Session:
         except Exception as e:  # navigation is best effort, as in select_citation
             self.view.set_status(f"Posizione non raggiungibile: {e}")
 
+    def goto_expected(self, index: int) -> None:
+        """A row of the Expected checklist names an expected section, not a position: resolve
+        it to the first inserted partition whose title matches, the same rule
+        ``render_expected_partitions`` uses to mark the row found, then jump there as
+        ``goto_partition`` would. No match (the section is not inserted yet, or the index is
+        out of range) is a no-op.
+        """
+        expected = self.draft_view["expected_partitions"]
+        if not (0 <= index < len(expected)):
+            return
+        key = expected[index].lower()[:5]
+        for i, p in enumerate(self.draft_view["partitions"]):
+            if key in (p.get("titolo") or "").lower():
+                self.goto_partition(i)
+                return
+
     def _template_labels(self) -> list[str]:
         return [f"{m['categoria']} · {m['descrizione']}" for m in self.draft_view["templates"]]
 

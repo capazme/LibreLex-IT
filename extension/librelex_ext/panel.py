@@ -92,6 +92,26 @@ def file_uris(data) -> list[str]:
     return [line.strip() for line in data.splitlines() if line.strip().startswith("file://")]
 
 
+def assign_tab_order(model, controls) -> None:
+    """Set TabIndex/Tabstop on the models of ``controls``, already inserted into ``model``
+    under their own names (design review §5 item 10): table order becomes tab order, a label
+    or a bar is never a tab stop, and no control is ever a DefaultButton.
+
+    ``UnoControlFixedLineModel`` and ``UnoControlProgressBarModel`` have no ``Tabstop``
+    property at all (a UNO probe: ``getPropertySetInfo().hasPropertyByName("Tabstop")`` is
+    False), so it is left untouched for them rather than assigned and made to raise
+    ``AttributeError``; ``suppress(Exception)`` is a belt in case another kind turns out the
+    same way.
+    """
+    for i, c in enumerate(controls):
+        m = model.getByName(c.name)
+        m.TabIndex = i
+        if c.kind in ("FixedLine", "ProgressBar"):
+            continue
+        with suppress(Exception):
+            m.Tabstop = c.kind != "FixedText"
+
+
 def _default_label(kind: str, name: str) -> str:
     """The Label the layout table gives a control, so the panel can put the same copy back
     without owning a second copy of it."""
@@ -384,18 +404,17 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     # --- construction -----------------------------------------------------------
     def _build_controls(self):
         self._controls = layout.build(self.kind, self._width_du)
-        for i, c in enumerate(self._controls):
+        for c in self._controls:
             m = self.model.createInstance(f"com.sun.star.awt.UnoControl{c.kind}Model")
             m.Name = c.name
             m.PositionX, m.PositionY, m.Width, m.Height = c.x, c.y, c.w, c.h
             for k, v in c.props.items():
                 if k != "Visible":       # not a model property: see _set_visible
                     m.setPropertyValue(k, v)
-            # Keyboard (design review §5 item 10): table order becomes tab order; a label or
-            # a bar is never a tab stop, and no control is ever a DefaultButton.
-            m.TabIndex = i
-            m.Tabstop = c.kind not in ("FixedText", "FixedLine", "ProgressBar")
             self.model.insertByName(c.name, m)
+        # Keyboard (design review §5 item 10): table order becomes tab order, applied once
+        # every model is inserted (assign_tab_order only looks each up by name).
+        assign_tab_order(self.model, self._controls)
         for c in self._controls:
             if "Visible" in c.props:
                 self._set_visible(c.name, c.props["Visible"])
@@ -452,6 +471,12 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             m.PositionX, m.PositionY, m.Width = c.x, c.y, c.w
             if c.name != "Transcript":
                 m.Height = c.h
+        # F6: the loop above put Continue back at its table position, undoing what
+        # set_questions had moved it to (design review §5 item 12); only a resize runs this
+        # method, so the number of visible question rows never changed under it.
+        if self.model.hasByName("Continue"):
+            self.model.getByName("Continue").PositionY = layout.continue_y(
+                len(self._question_fields))
 
     def _set_visible(self, name, visible):
         """Show or hide a control. The model has no `Visible` property (it is spelled
@@ -482,6 +507,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             # after the state calls: _apply_enabled then settles Start and Rimuovi from both
             # the replayed state and the busy flag, whichever order they arrived in
             self.set_busy(session.state in ("starting", "busy"))
+            # F4: set_consent is a broadcast (views.CompositeView.BROADCAST), so a consent
+            # that landed before this panel attached never reached it; a Redazione panel
+            # rebuilt while one pends (design review §5 item 8) has to come back modal too.
+            self.set_consent(session.consent_summary)
         else:
             busy = session.state in ("starting", "busy")
             self.set_busy(busy)
@@ -611,19 +640,22 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         elif name == "Partitions":
             self.session.goto_partition(index)
         elif name == "Expected":
-            # Partition lists unified (design review §5 item 11): Expected jumps exactly as
-            # Partitions does, but only when nothing is inserting (a jump mid-turn would move
-            # the insertion point from under the model); the row highlight is not kept either
-            # way, since it names an expected section, not a position the lawyer chose.
+            # Partition lists unified (design review §5 item 11): Expected jumps to the
+            # partition that matches the expected section, not to its own row index (F2:
+            # Expected and Partitions do not share numbering), only when nothing is inserting
+            # (a jump mid-turn would move the insertion point from under the model); the row
+            # highlight is not kept either way, since it names an expected section, not a
+            # position the lawyer chose.
             if not self._busy:
-                self.session.goto_partition(index)
+                self.session.goto_expected(index)
             self._clear_selection("Expected")
         elif name == "Template":
             templates = self.session.draft_view["templates"]
             if 0 <= index < len(templates):
                 self.session.template(templates[index]["tipo_atto"])
         elif name == "Letterhead":
-            self.session.choose_letterhead(index)
+            if index >= 0:
+                self.session.choose_letterhead(index)
 
     def _clear_selection(self, name):
         if not self.model.hasByName(name):
@@ -710,9 +742,15 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         except Exception as e:
             self.session.note(f"Carta intestata non creata: {e}")
             return
-        letterheads.register_letterhead(name, out.name)
-        self.session.set_letterheads(letterheads.list_letterheads())
-        self.session.note(f"Carta intestata aggiunta: {name} ({out})")
+        # The file is on disk from here on: a failure below (the index, the disk rescan) is
+        # reported as a registration failure, not repeated as "non creata" over a file that
+        # in fact exists.
+        try:
+            letterheads.register_letterhead(name, out.name)
+            self.session.set_letterheads(letterheads.list_letterheads())
+            self.session.note(f"Carta intestata aggiunta: {name} ({out})")
+        except Exception as e:
+            self.session.note(f"Carta intestata creata ma non registrata: {e}")
 
     # --- XDropTargetListener (Redazione only) --------------------------------------------
     def drop(self, dtde):

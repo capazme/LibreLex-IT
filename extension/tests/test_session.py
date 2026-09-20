@@ -1446,6 +1446,27 @@ def test_goto_partition_navigates_and_ignores_the_rows_that_are_not_partitions()
     assert adapter.calls == calls
 
 
+def test_goto_expected_jumps_to_the_matching_partition_not_its_own_row_index():
+    """F2: a click on the Expected checklist used to forward its own row index straight to
+    goto_partition, which indexes the inserted partitions instead: wrong jump whenever the
+    two lists disagree in length or order. goto_expected resolves the expected name to the
+    first inserted partition whose title contains its first five letters (the same rule
+    render_expected_partitions uses to mark the row found), then jumps there.
+    """
+    s, adapter, view, bridges = make()
+    s.draft_view["expected_partitions"] = ["Base", "Intestazione", "Parti", "Premesse",
+                                           "Diritto", "Conclusioni", "Allegati"]
+    s.draft_view["partitions"] = [{"titolo": "Base: Ricorso", "from_id": "p:1"},
+                                  {"titolo": "Premesse in fatto", "from_id": "p:4"}]
+    s.goto_expected(3)                       # "Premesse" -> the second partition
+    assert adapter.calls[-1] == ("goto", "p:4")
+    calls = list(adapter.calls)
+    s.goto_expected(2)                       # "Parti" -> nothing inserted matches it
+    assert adapter.calls == calls
+    s.goto_expected(99)                      # out of range
+    assert adapter.calls == calls
+
+
 def test_a_core_that_dies_mid_drafting_stops_claiming_a_running_turn():
     """The exit event clears the in-flight draft request; the Redazione line has to hear it,
 

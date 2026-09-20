@@ -257,3 +257,22 @@ def test_actions_lost_the_draft_button_and_the_new_actions_are_wired():
                           ("Resume", "draft_resume"), ("Continue", "draft_answer")):
         assert ACTIONS[name] == command and name in BUSY_DISABLED and name in TOOLTIPS
     assert KINDS == ("Actions", "Drafting", "Citations", "Answers")
+
+
+def test_section_labels_are_fixedlines_with_no_control_carrying_color():
+    """F7: FieldsLabel, NotesLabel, AttachmentsLabel, ExpectedLabel and PartitionsLabel are
+    the five section rules of the Drafting panel (design review §5 item 9): a FixedLine reads
+    as a header on its own emphasis, so no control anywhere in the deck needs a TextColor or
+    a BackgroundColor to stand out (LetterheadLabel is an inline row label, not a section
+    header, and stays FixedText).
+    """
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    section_labels = ("FieldsLabel", "NotesLabel", "AttachmentsLabel", "ExpectedLabel",
+                      "PartitionsLabel")
+    for name in section_labels:
+        assert by[name].kind == "FixedLine", name
+    assert by["LetterheadLabel"].kind == "FixedText"
+    for kind in KINDS:
+        for c in build(kind, WIDTH):
+            assert "TextColor" not in c.props, (kind, c.name)
+            assert "BackgroundColor" not in c.props, (kind, c.name)
