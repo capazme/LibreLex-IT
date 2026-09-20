@@ -2,10 +2,18 @@
 from librelex_ext.render import (
     citation_label,
     render_consent,
+    render_draft_status,
     render_error,
+    render_field_label,
     render_insert_summary,
     render_list_summary,
+    render_partitions,
+    render_question_label,
+    render_questions_hint,
+    render_reference,
+    render_riepilogo,
     render_show_text,
+    render_template_notes,
     render_turn_notes,
     render_usage,
     render_verify_summary,
@@ -164,3 +172,64 @@ def test_render_usage_shows_session_total_and_cost_together():
         {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.0123},
         {"input_tokens": 1000, "output_tokens": 500},
     ) == "Turno: 10 + 5 token · sessione: 1.500 token · costo: $0.01"
+
+
+def test_render_guided_drafting_copy():
+    info = {"routing": {"tipo": "tool_diretto", "tool": "decreto_ingiuntivo"},
+            "avvertenze": ["Bozza indicativa"]}
+    assert render_template_notes(info) == (
+        "Base deterministica: decreto_ingiuntivo · Bozza indicativa")
+    assert render_template_notes({"routing": {"tipo": "resource"}, "avvertenze": []}) == (
+        "Composizione dal modello (risorsa del catalogo)")
+    # M8: a tool routing with no tool name must not render "Base deterministica: None"
+    assert render_template_notes({"routing": {"tipo": "tool_diretto", "tool": None}}) == (
+        "Composizione dal modello")
+    assert render_template_notes({"routing": {"tipo": "tool_enhance", "tool": ""},
+                                  "avvertenze": ["Bozza indicativa"]}) == (
+        "Composizione dal modello · Bozza indicativa")
+    assert render_reference(None) == "Caso simile: nessuno"
+    assert render_reference(
+        {"name": "ricorso_rossi.docx", "chars": 12345, "troncato": False}) == (
+        "Caso simile: ricorso_rossi.docx (12.345 caratteri)")
+    assert render_reference(
+        {"name": "x.odt", "chars": 70000, "troncato": True}).endswith(", troncato)")
+    assert render_partitions(
+        [{"titolo": "Base: Ricorso"}, {"titolo": "Premesse in fatto"}], ["[SEDE]"]) == [
+        "✓ Base: Ricorso", "✓ Premesse in fatto", "… segnaposto aperti: 1"]
+    assert render_field_label(
+        {"nome": "importo", "tipo": "numero", "obbligatorio": True}) == "importo * (numero)"
+    assert render_field_label(
+        {"nome": "provvisoria_esecuzione", "tipo": "sino", "obbligatorio": False}) == (
+        "provvisoria_esecuzione (sì/no)")
+    assert render_question_label(
+        {"campo": "sede", "domanda": "Sede del tribunale?", "esempio": "Milano",
+         "tipo": "testo"}) == "Sede del tribunale? (es. Milano)"
+    assert render_question_label(
+        {"campo": "d", "domanda": "Data?", "esempio": "", "tipo": "data"}) == "Data? (data)"
+    assert render_questions_hint(3) == (
+        "Il modello ha bisogno di 3 dati: rispondi e premi Continua.")
+    assert render_riepilogo("Calcoli: CU 129,50").startswith("Riepilogo della redazione:\n")
+    view = {"template": None, "started": False, "done": False, "questions": [],
+            "stopped": None, "busy": False}
+    assert render_draft_status(view) == "Scegli un atto"
+    view["template"] = {"tipo_atto": "x"}
+    assert render_draft_status(view) == "Compila i campi obbligatori"
+    view.update(started=True, busy=True)
+    assert render_draft_status(view) == "Redazione in corso…"
+    view.update(busy=False, questions=[{"campo": "a"}])
+    assert render_draft_status(view) == "In attesa delle tue risposte (pannello Domande)"
+    view.update(questions=[], stopped="iterations")
+    assert render_draft_status(view) == "Interrotta: premi Continua la redazione"
+    view.update(stopped=None, done=True)
+    assert render_draft_status(view) == "Redazione completata"
+    # M6: the base-generation failure is part of the state, so the line survives a rebuild
+    view.update(done=False, base_errore="strumento decreto_ingiuntivo non disponibile")
+    assert render_draft_status(view) == (
+        "Base non generata: strumento decreto_ingiuntivo non disponibile")
+    view.update(questions=[{"campo": "a"}])
+    assert render_draft_status(view) == (
+        "Base non generata: strumento decreto_ingiuntivo non disponibile")
+    view.update(questions=[], busy=True)
+    assert render_draft_status(view) == "Redazione in corso…"       # the turn wins while it runs
+    view.update(busy=False, done=True)
+    assert render_draft_status(view) == "Redazione completata"      # a later turn made a base

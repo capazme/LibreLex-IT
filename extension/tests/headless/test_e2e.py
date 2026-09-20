@@ -42,6 +42,16 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
         # remembered consent/usage on every bind, so the fake has to implement it in full
         def append_stream(self, t): self.lines.append(t)
         def set_usage(self, t): self.usage = t
+        # The View protocol gained the six drafting methods with the Redazione and Domande
+        # panels: a probe's recorder must implement them too, since Session.bind calls them.
+        def set_templates(self, labels, selected): pass
+        def set_template(self, info): pass
+        def set_reference(self, text, present): pass
+        def set_partitions(self, labels): pass
+        def set_draft_status(self, text, started): pass
+        def set_questions(self, questions): pass
+        def set_field_values(self, fields, notes): pass
+        def set_answer_values(self, answers): pass
         def set_consent(self, summary): self.consent = summary
 
     def pump(session, events, until_state="ready", timeout=180):

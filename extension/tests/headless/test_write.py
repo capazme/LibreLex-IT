@@ -125,3 +125,119 @@ def test_insert_inside_footnote_and_replace_selection(soffice):
     kinds = sorted(set(t for t, _ in out["redlines"]))
     assert kinds == ["Delete", "Insert"] and all(a == "LibreLex" for _, a in out["redlines"])
     assert out["tail"][-1][1] == "Paragrafo riscritto."
+
+
+def test_replace_text_is_a_tracked_deletion_plus_insertion(soffice):
+    out = run_probe(soffice, "replace_text", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "ILL.MO TRIBUNALE DI [SEDE] e ancora [SEDE].", False)
+        text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+        text.insertString(cur, "Avv. [LEGALE]", False)
+        a = DocumentAdapter(ctx, doc)
+        out["first"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test")
+        out["redlines_after_first"] = redlines(doc)
+        out["rest"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test", all=True)
+        out["legale"] = a.replace_text("[LEGALE]", "Mario Rossi", "LibreLex: test",
+                                       paragraph_id="p:1")
+        out["none"] = a.replace_text("[NIENTE]", "x", "LibreLex: test")
+        out["texts"] = paragraph_texts(text)
+        out["redlines"] = redlines(doc)
+        out["undo"] = doc.getUndoManager().getCurrentUndoActionTitle()
+        doc.close(True)
+    ''')
+    assert out["first"]["count"] == 1
+    assert out["first"]["anchors"] == [{"paragraph_id": "p:0", "start": 20, "end": 26}]
+    # every replacement is recorded as a deletion plus an insertion by LibreLex
+    kinds = [k for k, _ in out["redlines_after_first"]]
+    assert sorted(kinds) == ["Delete", "Insert"]
+    assert all(author == "LibreLex" for _, author in out["redlines_after_first"])
+    assert out["rest"]["count"] == 1 and out["legale"]["count"] == 1 and out["none"]["count"] == 0
+    # the visible text (deleted redline text is still part of getString on 26.8: assert on
+    # presence of the replacements and on the redline count, not on exact equality)
+    body = [t for _, t in out["texts"]]
+    assert "MILANO" in body[0] and "Mario Rossi" in body[1]
+    assert len([k for k, _ in out["redlines"] if k == "Insert"]) == 3
+    assert len([k for k, _ in out["redlines"] if k == "Delete"]) == 3
+
+
+def test_replace_text_ignores_a_deletion_that_crosses_a_paragraph_boundary(soffice):
+    """Regression: a Delete redline spanning two paragraphs (reachable today through
+    replace_selection over a multi-paragraph selection) used to be attributed a bogus,
+    inverted span on its start paragraph, so replace_text could still match and re-replace
+    text that was already deleted. Route: replace_selection is driven headless through the
+    view cursor, exactly as `_first_selection_range`'s own docstring says it must be on a
+    hidden document (getCurrentSelection() is None there); no fallback was needed."""
+    out = run_probe(soffice, "replace_text_cross_para", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "Primo [X] fine", False)
+        text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
+        text.insertString(cur, "[X] secondo", False)
+        a = DocumentAdapter(ctx, doc)
+        vc = doc.getCurrentController().getViewCursor()
+        a.goto("p:0")
+        vc.goRight(6, False)                       # after "Primo "
+        p1 = a._entry("p:1").para
+        end_cur = text.createTextCursorByRange(p1.getStart())
+        end_cur.goRight(3, False)                   # after "[X]" in p:1
+        vc.gotoRange(end_cur, True)                  # select across the paragraph break
+        a.replace_selection("NUOVO", "LibreLex: test")
+        out["redlines_before"] = redlines(doc)
+        out["cross"] = a.replace_text("[X]", "Y", "LibreLex: test", all=True)
+        out["redlines_after"] = redlines(doc)
+        cur2 = text.createTextCursor()
+        cur2.gotoEnd(False)
+        text.insertControlCharacter(cur2, PARAGRAPH_BREAK, False)
+        text.insertString(cur2, "Terzo [X].", False)
+        out["fresh"] = a.replace_text("[X]", "Y", "LibreLex: test", all=True)
+        out["texts"] = paragraph_texts(text)
+        doc.close(True)
+    ''')
+    # both original "[X]" occurrences sit entirely under the cross-paragraph deletion
+    assert out["cross"] == {"count": 0, "anchors": []}
+    assert out["redlines_before"] == out["redlines_after"]      # no spurious redline added
+    # a genuinely live "[X]" in a later paragraph is still found and replaced
+    assert out["fresh"]["count"] == 1
+    body = [t for _, t in out["texts"]]
+    assert "Y" in body[-1] and body[-1].startswith("Terzo")
+
+
+def test_find_text_skips_text_under_a_pending_deletion(soffice):
+    """I1: a pending `Delete` redline is not live text for any caller, find_text included.
+
+    The core's open-placeholder rescan calls find_text: on a base the lawyer has accepted
+    (recording off, so the base counts as ordinary text and its replacement records a real
+    deletion) a filled "[SEDE]" would otherwise stay "open" forever, because the old text is
+    only struck through, not removed, until the change is accepted.
+    """
+    out = run_probe(soffice, "find_text_deleted", '''
+    def probe(ctx, out):
+        doc = new_doc(ctx)
+        text = doc.Text
+        cur = text.createTextCursor()
+        text.insertString(cur, "ILL.MO TRIBUNALE DI [SEDE].", False)
+        out["record_before"] = doc.RecordChanges       # off: the base counts as accepted
+        a = DocumentAdapter(ctx, doc)
+        out["open_before"] = a.find_text("[SEDE]")
+        out["replaced"] = a.replace_text("[SEDE]", "MILANO", "LibreLex: test")
+        out["redlines"] = redlines(doc)
+        out["paragraph"] = paragraph_texts(text)[0][1]
+        out["open_after"] = a.find_text("[SEDE]")
+        out["filled"] = a.find_text("MILANO")
+        out["in_paragraph"] = a.find_text("[SEDE]", "p:0")
+        doc.close(True)
+    ''')
+    assert out["record_before"] is False
+    assert len(out["open_before"]) == 1 and out["replaced"]["count"] == 1
+    # the deletion is real (the base was accepted text) and its text is still in getString
+    assert sorted(k for k, _ in out["redlines"]) == ["Delete", "Insert"]
+    assert "[SEDE]" in out["paragraph"]
+    assert out["open_after"] == []                     # struck through: no longer live text
+    assert out["in_paragraph"] == []                   # same with an explicit paragraph_id
+    assert len(out["filled"]) == 1
+    assert out["filled"][0]["anchor"]["paragraph_id"] == "p:0"

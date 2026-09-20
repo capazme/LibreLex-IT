@@ -18,6 +18,12 @@ INTERNAL_TOOLS: list[dict] = [
                        "senza rete) e restituisce i riferimenti in forma canonica.",
         "parameters": {"type": "object",
                        "properties": {"testo": {"type": "string"}}, "required": ["testo"]}}},
+    {"type": "function", "function": {
+        "name": "leggi_risorsa",
+        "description": "Legge una risorsa di mcp-legal-it (URI legal://...): catalogo dei "
+                       "modelli di atto e modelli pubblicati.",
+        "parameters": {"type": "object",
+                       "properties": {"uri": {"type": "string"}}, "required": ["uri"]}}},
 ]
 
 

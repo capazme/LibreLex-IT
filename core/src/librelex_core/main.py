@@ -13,16 +13,19 @@ from librelex_core import PROTOCOL_VERSION, __version__
 from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps, TurnOutcome
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import DocSession, LimitReached, check_ceiling
+from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, LimitReached, check_ceiling
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
+from librelex_core.commands.draft import ACTIONS as DRAFT_ACTIONS
+from librelex_core.commands.draft import BAD_ACTION as DRAFT_BAD_ACTION
 from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
-from librelex_core.commands.draft import run_draft
+from librelex_core.commands.draft import draft_summary, run_draft
 from librelex_core.commands.insert_norm import UnparsedReference, run_insert_norm
 from librelex_core.commands.list_citations import run_list_citations
 from librelex_core.commands.research import PROFILE as RESEARCH_PROFILE
 from librelex_core.commands.research import run_research
 from librelex_core.commands.show_text import TextUnavailable, run_show_text
+from librelex_core.commands.templates import TemplateCatalogue, TemplateNotFound
 from librelex_core.commands.verify_document import run_verify
 from librelex_core.config import Config, load_config
 from librelex_core.document import BridgeDocument, DocumentError
@@ -31,10 +34,17 @@ from librelex_core.mcp.client import IncompatibleServer, LegalToolsClient, ToolS
 
 # Commands that need a live mcp-legal-it connection; list_citations is a local,
 # deterministic pipeline and must keep working even against an incompatible server.
-NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text")
+NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text", "list_templates", "template_info")
 # Model-driven commands still to come (spec §6.3).
 NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
+# asyncio.StreamReader defaults to 64 KiB per line, which a set_reference carrying a 60,000
+# character act crosses as soon as JSON escaping is counted: readline() then raises and,
+# uncaught, killed the core (final review, finding 1). 4 MiB leaves room for every message
+# the protocol allows.
+STDIO_LINE_LIMIT = 4 * 1024 * 1024
+LINE_TOO_LONG = (f"riga troppo lunga (oltre {STDIO_LINE_LIMIT // (1024 * 1024)} MiB): "
+                 "messaggio scartato")
 
 
 class LineTransport(Protocol):
@@ -54,13 +64,20 @@ class MemoryTransport:
 
 
 class StdioTransport:
-    def __init__(self) -> None:
+    """One JSON message per line over stdin/stdout, up to ``limit`` bytes per line."""
+
+    def __init__(self, limit: int = STDIO_LINE_LIMIT) -> None:
+        self._limit = limit
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
+    def _make_reader(self) -> asyncio.StreamReader:
+        """The reader ``_open`` attaches to stdin, with this transport's line limit."""
+        return asyncio.StreamReader(limit=self._limit)
+
     async def _open(self) -> None:
         loop = asyncio.get_running_loop()
-        self._reader = asyncio.StreamReader()
+        self._reader = self._make_reader()
         await loop.connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(self._reader), sys.stdin)
         transport, protocol = await loop.connect_write_pipe(
@@ -102,6 +119,7 @@ class CoreServer:
                 config.mcp_legal_it, timeout_s=config.limits.tool_timeout_s))
         self._tools: LegalToolsClient | None = None
         self._tools_lock = asyncio.Lock()
+        self._templates: TemplateCatalogue | None = None
         self._llm_factory = llm_factory or (lambda: LLMClient(config.llm))
         self._llm: Any | None = None
         self._doc_sessions: dict[str, DocSession] = {}   # one session per doc_id (spec §6.8)
@@ -150,6 +168,12 @@ class CoreServer:
             session = self._doc_sessions[doc_id] = DocSession(doc_id)
         return session
 
+    def _catalogue(self, tools: LegalToolsClient) -> TemplateCatalogue:
+        """One TemplateCatalogue per server process, lazily built with the tools client."""
+        if self._templates is None:
+            self._templates = TemplateCatalogue(tools)
+        return self._templates
+
     async def _announce(self, request_id: str, tools: LegalToolsClient) -> None:
         if not self._announced:
             self._announced = True
@@ -175,7 +199,9 @@ class CoreServer:
         host = getattr(endpoint, "host", "") or getattr(llm, "host", "")
         return AgentDeps(llm, tools, doc, ToolRegistry(specs, profile), self.config.limits,
                          doc.ask_consent, host, getattr(llm, "model", self.config.llm.model),
-                         self.config.llm.zero_data_retention)
+                         self.config.llm.zero_data_retention,
+                         catalogue=self._catalogue(tools) if tools is not None else None,
+                         specs=specs)
 
     async def _prepare_turn(self, request_id: str, doc_id: str, doc: BridgeDocument,
                             profile: str) -> tuple[DocSession, AgentDeps]:
@@ -185,46 +211,69 @@ class CoreServer:
         return session, await self._agent_deps(request_id, doc, profile)
 
     async def _send_turn_final(self, request_id: str, session: DocSession,
-                               outcome: TurnOutcome) -> None:
+                               outcome: TurnOutcome, extra: dict) -> None:
         await self.send(p.Final(
             request_id=request_id, text=outcome.text, usage=outcome.usage,
             summary={"stopped": outcome.stopped, "inserted": outcome.inserted,
                      "flagged": outcome.flagged, "unverified": outcome.unverified,
                      "tool_calls": outcome.tool_calls,
-                     "usage_totals": session.usage.model_dump()}))
+                     "usage_totals": session.usage.model_dump(), **extra}))
 
-    def _arm_cancel_final(self, request_id: str, session: DocSession, before: p.Usage) -> None:
+    def _arm_cancel_final(
+        self, request_id: str, session: DocSession, before: p.Usage,
+        extra_summary: Callable[[DocSession, TurnOutcome], dict] | None = None,
+    ) -> None:
         """Make the Final of a cancelled model turn carry the usage of the interrupted turn.
 
         ``run_turn`` adds the turn's tokens to the session totals in its ``finally``, so the
         delta is known even though the outcome is lost with the cancellation (spec §8.4).
+        The command's own state goes in too: what a drafting wrote into the document before
+        the cancellation is on the session, and the panel must see it (final review,
+        finding 4). The lost outcome is stood in for by an empty one, so the summary reports
+        no orderly end.
         """
+        extra = extra_summary(session, TurnOutcome()) if extra_summary is not None else {}
         self._cancel_finals[request_id] = p.Final(
             request_id=request_id, text="Annullato.", cancelled=True,
             usage=_usage_since(before, session.usage),
-            summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump()})
+            summary={"stopped": "cancelled", "usage_totals": session.usage.model_dump(),
+                     **extra})
 
     async def _model_turn(
         self, request_id: str, doc_id: str, doc: BridgeDocument, profile: str,
         run: Callable[[DocSession, AgentDeps], Awaitable[TurnOutcome]],
+        extra_summary: Callable[[DocSession, TurnOutcome], dict] | None = None,
     ) -> None:
         """One model turn: session and deps, the command's runner, the Final; a cancellation
-        arms the Final that reports the tokens already spent (spec §8.4)."""
+        arms the Final that reports the tokens already spent (spec §8.4).
+
+        ``extra_summary`` lets a stateful command (the guided drafting) merge its own state
+        into the Final's summary once the outcome is known."""
         session, deps = await self._prepare_turn(request_id, doc_id, doc, profile)
         before = session.usage
         try:
             outcome = await run(session, deps)
         except asyncio.CancelledError:
-            self._arm_cancel_final(request_id, session, before)
+            self._arm_cancel_final(request_id, session, before, extra_summary)
             raise
-        await self._send_turn_final(request_id, session, outcome)
+        extra = extra_summary(session, outcome) if extra_summary is not None else {}
+        await self._send_turn_final(request_id, session, outcome, extra)
 
     # --- main loop -----------------------------------------------------------
     async def run(self, transport: LineTransport) -> None:
         self._transport = transport
         try:
             while True:
-                line = await transport.readline()
+                try:
+                    line = await transport.readline()
+                except ValueError:
+                    # asyncio.StreamReader.readline() over its limit: it has already dropped
+                    # the oversized line from its buffer (up to and including the newline, or
+                    # the whole buffer when the newline has not arrived yet), so the reader
+                    # stays usable. The message is refused and the server keeps serving; a
+                    # tail read as a further line can only be another protocol error.
+                    await self.send(p.Error(code="protocol", message=LINE_TOO_LONG))
+                    continue
                 if line is None:
                     break
                 if not line.strip():
@@ -347,15 +396,33 @@ class CoreServer:
                 lambda s, d: run_research(s, msg.args.get("question"), d, self.send, msg.id))
             return
         if msg.name == "draft":
-            message = str(msg.args.get("message") or "").strip()
-            if not message:
-                await self.send(p.Error(
-                    request_id=msg.id, code="bad_request",
-                    message=("indica il tipo di atto da redigere, o rispondi alle domande "
-                             "del modello")))
+            if msg.args.get("action") not in DRAFT_ACTIONS:
+                await self.send(p.Error(request_id=msg.id, code="bad_request",
+                                        message=DRAFT_BAD_ACTION))
                 return
-            await self._model_turn(msg.id, msg.doc_id, doc, DRAFT_PROFILE,
-                                   lambda s, d: run_draft(s, message, d, self.send, msg.id))
+            try:
+                await self._model_turn(
+                    msg.id, msg.doc_id, doc, DRAFT_PROFILE,
+                    lambda s, d: run_draft(s, msg.args, d, self.send, msg.id),
+                    extra_summary=draft_summary)
+            except TemplateNotFound as e:
+                # Same code as the template_info route: the act the panel asked for is not
+                # in the catalogue, and the server's message names the alternatives.
+                await self.send(
+                    p.Error(request_id=msg.id, code="template_not_found", message=str(e)))
+            except ValidationError as e:
+                # A pydantic ValidationError is a ValueError: caught first, it is reported as
+                # what it is (a core-side bug) instead of as a malformed panel request.
+                await self.send(p.Error(request_id=msg.id, code="internal",
+                                        message=f"{type(e).__name__}: {e}"))
+            except ValueError as e:
+                # Missing tipo_atto, missing answers, no drafting in progress, catalogue
+                # unavailable: the panel's request was malformed, not the core (design §4.3).
+                await self.send(
+                    p.Error(request_id=msg.id, code="bad_request", message=str(e)))
+            return
+        if msg.name == "set_reference":
+            await self._set_reference(msg)
             return
         tools: LegalToolsClient | None = None
         if msg.name in NEEDS_TOOLS:
@@ -394,10 +461,53 @@ class CoreServer:
                                         author=author)
             await self.send(p.Final(
                 request_id=msg.id, text=f"Inserito {out['riferimento']}.", summary=out))
+        elif msg.name == "list_templates":
+            assert tools is not None
+            out = await self._catalogue(tools).list(msg.args.get("query"))
+            await self.send(p.Final(
+                request_id=msg.id, text=f"Catalogo: {out['totale']} modelli.", summary=out))
+        elif msg.name == "template_info":
+            assert tools is not None
+            try:
+                info = await self._catalogue(tools).info(
+                    str(msg.args.get("tipo_atto") or ""), await tools.tool_specs())
+            except TemplateNotFound as e:
+                await self.send(
+                    p.Error(request_id=msg.id, code="template_not_found", message=str(e)))
+            else:
+                await self.send(p.Final(
+                    request_id=msg.id, text=f"Modello {info['tipo_atto']}: "
+                    f"{len(info['campi'])} campi.", summary=info))
         else:   # a name accepted by the protocol but not routed here
             await self.send(p.Error(
                 request_id=msg.id, code="not_implemented",
                 message=f"comando {msg.name} non disponibile in questa versione"))
+
+    async def _set_reference(self, msg: p.Command) -> None:
+        """No mcp-legal-it needed: the reference act is stored on the session as-is (design
+        §5.2); it never appears in a Status/Log/error, only in this Final's short summary."""
+        session = self._session(msg.doc_id)
+        text = str(msg.args.get("text") or "")
+        # A new reference act is a new decision: both the consent given and the refusal
+        # recorded for the previous one are dropped (design §5.3, final review finding 6).
+        session.reference_consented = False
+        session.reference_denied = False
+        if text:
+            name = str(msg.args.get("name") or "atto di riferimento")
+            troncato = len(text) > MAX_REFERENCE_CHARS
+            kept = text[:MAX_REFERENCE_CHARS]
+            # The number the panel and the consent block show is the text that will actually
+            # be sent, not the file the lawyer picked (final review, minor 10).
+            chars = len(kept)
+            session.reference = {"name": name, "chars": chars, "text": kept,
+                                 "troncato": troncato}
+            await self.send(p.Final(
+                request_id=msg.id, text=f"Atto di riferimento: {name} ({chars} caratteri).",
+                summary={"riferimento": {"name": name, "chars": chars, "troncato": troncato}}))
+        else:
+            session.reference = None
+            await self.send(p.Final(request_id=msg.id, text="Atto di riferimento rimosso.",
+                                    summary={"riferimento": None}))
 
 
 def main() -> None:

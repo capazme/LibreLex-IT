@@ -200,35 +200,40 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with three panels (Azioni,
-  Citazioni, Risposte) served by one factory; each panel is collapsible
-  through the sidebar's own title bar and "Risposte" takes the remaining
+- Registered as a sidebar deck "LibreLex" with five panels (Azioni,
+  Redazione, Domande, Citazioni, Risposte) served by one factory; each panel is
+  collapsible through the sidebar's own title bar and "Risposte" takes the remaining
   height; each panel is a UNO `XUIElement` built from an XDL dialog
   (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
   controls: read-only multi-line transcript, a citation list (one entry per
   reference found; selecting an entry jumps to its paragraph and shows its text,
   §7.3), single-line input, "Invia", quick-action buttons (Verifica citazioni,
   Verifica selezione, Inserisci norma, Mostra testo, Elenca citazioni, Ricerca,
-  Redigi da modello, Rivedi selezione), status line, cancel button, usage/cost
+  Rivedi selezione), status line, cancel button, usage/cost
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
+- **Redazione** holds the guided drafting of the drafting design §6.1 (catalogue
+  search and list, typed fields, notes, the similar-case row, "Avvia redazione",
+  the partitions list, "Continua la redazione" and the drafting status line), and
+  **Domande** holds the questions a drafting turn asks, one labelled box each, with
+  "Continua" to send the answers back. The "Redigi da modello" button is removed from
+  Azioni: the drafting starts in Redazione.
 - Layout (M1): the controls are grouped in labelled sections (Documento,
   Riferimento) over a two-column button grid, with a progress bar above the
   status line, a `Svuota` button on the answers, tooltips on every button
   and a control table computed from the panel width
   (`layout.build(kind, width)`, minimum 170 dialog units, re-applied on
   `getHeightForWidth` through `XUnitConversion`); the buttons of later
-  milestones (Invia, Ricerca, Redigi da modello, Rivedi selezione) are not
-  created until their milestone.
+  milestones (Invia, Ricerca, Rivedi selezione) are not created until their
+  milestone.
 - Consent block (M2): the `consent_request` of §8.2 is answered inside the
   Azioni panel, by a grey multi-line label over the three choices ("Per questo
   documento", "Solo stavolta", "Annulla") placed between the button grid and
   the progress bar, which keeps its slot in the control table at all times
   (only the visibilities are flipped, so showing it never moves the controls
   under it) and stays enabled while the core is busy.
-- Drafting (M3): "Redigi da modello" is a full-width button under the Mostra testo / Inserisci
-  norma row; the input box above it names the act on the first press and carries the answers to
-  the model's questions on the next ones.
+- Drafting (M3): moved out of Azioni into the Redazione and Domande panels above
+  (drafting design §6.1); the Azioni input box serves chat and research only.
 - Plain text only in v1 (UNO awt controls do not render markdown). Formatted
   output goes into the document, not into the panel.
 - Streaming: the bridge reader thread pushes events onto a `queue.Queue` and
@@ -268,6 +273,7 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
 | `find_text` | query, paragraph_id (optional) | occurrences with anchors | Safety net for anchoring comments |
 | `insert_markdown` | where (cursor / end / after:<id>), markdown, undo_label, bookmark (optional), author (optional) | inserted range {from_id, to_id} | Tracked change; see §5.4 |
 | `replace_selection` | markdown, undo_label | inserted range | Tracked change: deletion + insertion |
+| `replace_text` | query, replacement, paragraph_id (optional), all (default false) | count, anchors | Tracked deletion + insertion of an exact text; fills placeholders |
 | `add_comment` | paragraph_id, start, end, expected_text, author, text | anchored: exact / found / paragraph_start | See §5.5 |
 | `remove_comments` | author | count | Used by the verification pipeline for idempotent re-runs |
 | `goto` | paragraph_id | – | Navigation from the panel summary |
@@ -352,7 +358,7 @@ a v2 command "Aggiorna citazioni" will re-check every such bookmark.
 Three sources, merged into one OpenAI `tools` array per turn:
 
 1. **Legal tools** from mcp-legal-it via `fastmcp.Client`, filtered by the
-   allowlist in Appendix B (35 tools). Parameter schemas pass through
+   allowlist in Appendix B (55 tools). Parameter schemas pass through
    unchanged. Descriptions are replaced by concise ones from
    `tool_overrides.yaml` (2 to 3 lines each; the original description of
    `cerca_giurisprudenza` alone is 2,500 characters), falling back to the
@@ -362,17 +368,17 @@ Three sources, merged into one OpenAI `tools` array per turn:
 3. **Internal tools**: `estrai_citazioni` (local extractor, no network) and
    `data_odierna`.
 
-Measured cost of the allowlist: ~7,500 tokens of descriptions per request
-before schema overhead, versus >50,000 for all 221 tools.
+Measured cost of the allowlist: about 11,000 tokens of descriptions and schemas
+for the chat profile, versus >50,000 for all 221 tools.
 
 ### 6.3 Tool profiles per command
 
 | Command | Legal tools | Document tools |
 |---------|-------------|----------------|
-| `chat` (free) | all 35 | all |
+| `chat` (free) | all 55 | all |
 | `research` | cerca_giurisprudenza, cerca_giurisprudenza_unificata, leggi_sentenza, giurisprudenza_su_norma, orientamento_su_norma, cerca_giurisprudenza_amministrativa, leggi_provvedimento_amm, cerca_giurisprudenza_cgue, leggi_sentenza_cgue, cerca_pronuncia_costituzionale, leggi_pronuncia_costituzionale, cite_law | read_selection, read_paragraphs, insert_markdown |
-| `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, verifica_citazioni, the 9 act generators, the 8 calculators | read_paragraphs, insert_markdown |
-| `review` | cite_law, verifica_citazioni, the 8 calculators | read_selection, replace_selection, add_comment |
+| `draft` | genera_modello_atto, lista_categorie_atti, cite_law, fetch_act_index, fetch_full_act, verifica_citazioni, the 20 generators the catalogue routes to, the 17 calculators it names (Appendix B) | read_paragraphs, insert_markdown, replace_text |
+| `review` | cite_law, verifica_citazioni, the 8 calculators | read_selection, replace_selection, add_comment, replace_text |
 | `verify_citations` | deterministic pipeline (§7.1), no model | read_paragraphs / read_selection, add_comment, remove_comments |
 | `insert_norm` | deterministic pipeline (§7.2), no model | read_selection, insert_markdown |
 
@@ -442,29 +448,16 @@ Kept in the core, in Italian, versioned with the code. Contents:
 One session per `doc_id`: history, consent state, grounded-reference set per
 turn, usage totals. Sessions live in memory for the life of the core process.
 
-### 6.9 Drafting from a template (M3, added 2026-09-19)
+### 6.9 Drafting from a template (M3, redesigned 2026-09-19)
 
-The `draft` command runs the agent loop with the `draft` profile and one fixed
-Italian procedure in the user message: find the template with
-`genera_modello_atto` (its `istruzioni` say whether a deterministic generator such
-as `decreto_ingiuntivo` provides the base text or the act is composed from the
-listed fields), read the document for the data already there, ask the lawyer for
-the missing mandatory fields and stop, then compute the amounts with the
-calculators the template names and insert the act at the end of the document one
-partition per `insert_markdown` call (heading and parties, facts, law with
-`cite_law`, conclusions with the computed sums, exhibits), `[...]` where no value
-was supplied. Every later press of the button sends the same procedure with the
-lawyer's new message; the session history (§6.5, §6.8) is the drafting state, so
-nothing is persisted in the core or in the extension. Because older turns keep
-only their prose (§6.5), the procedure makes the model restate the template and
-the known data when it asks its questions, and re-read the document to resume
-from the first missing partition after an interrupted turn. Grounding on write
-(§6.6) applies to every section. The nine court-act generators the
-genera_modello_atto catalogue routes to are allowlisted for this (Appendix B):
-they cover 16 of the 27 routed acts; the privacy generators
-(genera_informativa_*, genera_dpa, genera_registro_trattamenti, genera_dpia,
-genera_notifica_data_breach) and the preventivi stay out of v1, and the
-procedure tells the model to use a direct tool only when it is available.
+The `draft` command of M3 (a single free-text procedure re-sent on every press) was redesigned
+the same day into a stateful flow: the binding description is
+`docs/superpowers/specs/2026-09-19-guided-drafting-design.md`, which covers the recipe carried
+by the mcp-legal-it plugin instead of the core, a deterministic base inserted before the first
+model call whenever the template routes to a direct generator, the stateful `draft` command
+(`start` / `answer` / `continue`) with structured questions (`chiedi_dati`) and an explicit
+completion signal (`redazione_completata`), the reference act ("caso simile") sent only after
+its own consent, and the dedicated Redazione panel in the extension.
 
 ## 7. Deterministic pipelines
 
@@ -574,6 +567,9 @@ into the document under revision.
 - The deterministic pipelines never send document text anywhere: only
   citation references reach Normattiva / EUR-Lex / Italgiure.
 - Local endpoints (Ollama) still go through consent, labelled "locale".
+- The reference act (a similar case chosen by the lawyer) is document text of a third case: it
+  is sent only after a consent with scope `reference` naming the file and its size; never
+  logged, never persisted.
 
 ### 8.3 Providers and GDPR
 
@@ -795,8 +791,20 @@ Extension → core:
  "context": {"title": "…", "has_selection": true, "cursor_paragraph": "p:12"}}
 {"id": "r3", "type": "command", "doc_id": "…", "name": "verify_citations",
  "args": {"scope": "document"}}
-{"id": "r4", "type": "command", "doc_id": "…", "name": "draft",
- "args": {"message": "decreto ingiuntivo per la fattura n. 12/2025 di 12.000 euro"}}
+{"id": "r4", "type": "command", "doc_id": "…", "name": "list_templates",
+ "args": {"query": "ingiuntivo"}}
+{"id": "r5", "type": "command", "doc_id": "…", "name": "template_info",
+ "args": {"tipo_atto": "decreto_ingiuntivo_ordinario"}}
+{"id": "r6", "type": "command", "doc_id": "…", "name": "set_reference",
+ "args": {"name": "ricorso_rossi.docx", "text": "…"}}
+{"id": "r7", "type": "command", "doc_id": "…", "name": "draft",
+ "args": {"action": "start", "tipo_atto": "decreto_ingiuntivo_ordinario",
+          "fields": {"creditore": "Alfa S.r.l.", "debitore": "Beta S.p.A.", "importo": "12.000"},
+          "notes": "fattura n. 12 del 3 marzo 2025"}}
+{"id": "r8", "type": "command", "doc_id": "…", "name": "draft",
+ "args": {"action": "answer", "answers": {"sede": "Milano"}}}
+{"id": "r9", "type": "command", "doc_id": "…", "name": "draft",
+ "args": {"action": "continue", "message": "aggiungi anche le spese di notifica"}}
 {"id": "r3", "type": "doc_result", "call_id": "c7", "ok": true, "result": {…}}
 {"id": "r3", "type": "doc_result", "call_id": "c8", "ok": false, "error": "…"}
 {"id": "r2", "type": "consent_result", "call_id": "k1", "decision": "document"}
@@ -828,7 +836,15 @@ Document action payloads follow §5.3; the exact pydantic models in
 `core/src/librelex_core/protocol.py` are the contract. The `read_paragraphs` keys are
 `from_` and `to` (Python parameter names), both always present, `null` when unbounded.
 
-## Appendix B · mcp-legal-it tool allowlist (35)
+A `draft` turn's `Final.summary` also carries `tipo_atto`, `domande` (the open questions, if
+any), `partizioni` (the sections inserted so far), `segnaposto_aperti` (placeholders of the
+base still unfilled), `completata`, `riepilogo` (the final summary once `completata` is true)
+and `ended_by` (`questions` | `done` | `null`, why the turn stopped). In `draft`'s `fields` and
+`answers`, a numeric field accepts Italian notation: a dot followed by exactly three digits is
+a thousands separator, a comma is the decimal point, and any other dot is a decimal point (so
+`12.000` is twelve thousand, `12,5` and `12.5` are both twelve and a half).
+
+## Appendix B · mcp-legal-it tool allowlist (55)
 
 Norms: `cite_law`, `fetch_act_index`, `fetch_full_act`, `verifica_citazioni`,
 `cerca_brocardi`.
@@ -841,16 +857,24 @@ Case law: `cerca_giurisprudenza`, `cerca_giurisprudenza_unificata`,
 
 Act templates: `genera_modello_atto`, `lista_categorie_atti`.
 
-Act generators (9, added 2026-09-19 for M3: the nine court-act generators of the catalogue,
-16 of its 27 routed acts; privacy generators and preventivi excluded in v1):
-decreto_ingiuntivo, atto_di_precetto, sollecito_pagamento, procura_alle_liti,
-relata_notifica_pec, attestazione_conformita, sfratto_morosita, nota_precisazione_credito,
-dichiarazione_553_cpc.
+Act generators (20, regrouped 2026-09-19: every `routing.tool` a catalogue entry of
+`genera_modello_atto` can name, court acts and the privacy/preventivi generators alike, up from
+the 9 court-act generators of the original M3 list): `attestazione_conformita`,
+`atto_di_precetto`, `decreto_ingiuntivo`, `dichiarazione_553_cpc`, `genera_dpa`, `genera_dpia`,
+`genera_informativa_cookie`, `genera_informativa_dipendenti`, `genera_informativa_privacy`,
+`genera_informativa_videosorveglianza`, `genera_notifica_data_breach`,
+`genera_registro_trattamenti`, `nota_precisazione_credito`, `preventivo_civile`,
+`preventivo_stragiudiziale`, `preventivo_volontaria_giurisdizione`, `procura_alle_liti`,
+`relata_notifica_pec`, `sfratto_morosita`, `sollecito_pagamento`.
 
-Calculators (8): `interessi_legali`, `interessi_mora`,
-`rivalutazione_monetaria`, `contributo_unificato`,
-`parcella_avvocato_civile`, `termini_processuali_civili`,
-`scadenza_processuale`, `calcolo_tempo_trascorso`.
+Calculators (17): `calcolo_hash`, `calcolo_tempo_trascorso`, `calcolo_valore_catastale`,
+`compenso_ctu`, `conta_giorni`, `contributo_unificato`, `interessi_legali`, `interessi_mora`,
+`parcella_avvocato_civile`, `pignoramento_stipendio`, `rivalutazione_monetaria`,
+`scadenza_processuale`, `scadenze_impugnazioni`, `spese_mediazione`,
+`termini_processuali_civili`, `valutazione_data_breach`, `variazioni_istat`. Two of these
+(`calcolo_tempo_trascorso`, `termini_processuali_civili`) are not named by any template's
+`tool_calcolo` in the catalogue; they stay in the allowlist because the `review` profile
+(§6.3) names them directly.
 
 ## Appendix C · Verdict → action mapping (verification pipeline)
 

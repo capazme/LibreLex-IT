@@ -62,6 +62,16 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
         def set_progress(self, done, total): pass
         def append_stream(self, t): self.stream += t
         def set_usage(self, t): self.usage = t
+        # The View protocol gained the six drafting methods with the Redazione and Domande
+        # panels: a probe's recorder must implement them too, since Session.bind calls them.
+        def set_templates(self, labels, selected): pass
+        def set_template(self, info): pass
+        def set_reference(self, text, present): pass
+        def set_partitions(self, labels): pass
+        def set_draft_status(self, text, started): pass
+        def set_questions(self, questions): pass
+        def set_field_values(self, fields, notes): pass
+        def set_answer_values(self, answers): pass
         def set_consent(self, summary):
             self.consent = summary
             if summary is not None:
@@ -132,12 +142,12 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
     assert summary["model"] == "stub" and summary["endpoint_host"] == "127.0.0.1"
     assert out["consent_pending"] is None
     # The answer streamed into the panel and the usage line carries the stub's tokens.
-    assert out["stream"] == ANSWER, out
+    assert out["stream"] == "LibreLex: " + ANSWER, out
     assert out["usage"].startswith("Turno: 120 + 9 token"), out["usage"]
     # The streamed text is what the reopened panel replays; the trailing blank line is the
     # separator _on_final adds after a streamed turn, and no note follows it (nothing was
     # inserted, flagged or left unverified).
-    assert out["transcript"] == [ANSWER, ""], out["transcript"]
+    assert out["transcript"] == ["Tu: Di cosa parla?", "LibreLex: " + ANSWER, ""], out["transcript"]
     # A chat turn writes nothing: no insertion, no redline.
     assert out["paragraphs_after"] == out["paragraphs_before"]
     assert [t for _, t in out["paragraphs_after"]] == [PARAGRAPH]

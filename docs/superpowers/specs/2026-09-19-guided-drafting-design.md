@@ -71,12 +71,15 @@ bundled copy otherwise.
 When the template's routing names a direct tool (`tool_diretto`), the core, not the model:
 
 1. calls the generator with the fields the lawyer filled plus `parametri_fissi`;
-2. inserts the generator's text (the `testo` key of its result, used by the privacy and
-   court-act generators, else a key starting with `bozza`, as `bozza_ricorso` of
-   `decreto_ingiuntivo`; a result with neither, as the `preventivo_*` tools that return
-   amounts, inserts no base and the model composes from the data) at the end of the document
-   as one tracked insertion with undo label `LibreLex: base <tipo_atto>` and bookmark
-   `LibreLex.atto.<tipo_atto>`;
+2. inserts the generator's text (the `testo` key of its result, used by most generators,
+   else the first key starting with `testo`, as `testo_lettera` of `sollecito_pagamento` and
+   `testo_preventivo` of the `preventivo_*` tools, else a key starting with `bozza`, as
+   `bozza_ricorso` of `decreto_ingiuntivo`; a result with no text key inserts no base, and
+   its data still reach the model as `risultato di <tool>`) at the end of the document as one
+   tracked insertion with undo label `LibreLex: base <tipo_atto>` and bookmark
+   `LibreLex.atto.<tipo_atto>`; a generator failure (a tool error, a malformed result, a
+   date the generator cannot parse) inserts nothing and is reported to the panel as
+   `base_errore` in the turn's summary and to the model in the user message;
 3. records the placeholders found in it (`[SEDE]`, `[LEGALE]`, `[...]`, `{campo}`) in the
    drafting state.
 
@@ -221,15 +224,20 @@ clears it. The extension never keeps the file open or copies it anywhere.
 Internal tool `leggi_atto_riferimento()` (no arguments; it reads the drafting state, so the
 loop executes it like a document read, with consent) returns the stored text wrapped as
 `<<<DATI: atto di riferimento (nome)>>>`; the model calls it when the recipe tells it to (at
-the first drafting turn, and again after a compaction if it needs the text). The first call in a
-session asks consent through the existing channel with `scope: "reference"`, the file name and
-the character count, unless the session consent is already "document"; "annulla" returns the
-usual denial string and the drafting goes on without the reference. The consent block's text
-names the file. Nothing of the reference is logged.
+the first drafting turn, and again after a compaction if it needs the text). The first call
+after the reference is set asks consent through the existing channel with `scope: "reference"`,
+the file name and the character count, regardless of the consent given for the document (the
+reference is another case's text, possibly another client's); "annulla" returns the usual
+denial string and the drafting goes on without the reference. The consent block's text names
+the file. Nothing of the reference is logged.
 
 ## 6. The guided flow in the sidebar (extension)
 
 ### 6.1 A fourth panel, "Redazione"
+
+> Implemented as two panels, Redazione and Domande, per §9 assumption 1 (decided 2026-09-19
+> for height): the questions block of item 8 below is a panel of its own, so each one can be
+> collapsed on its own and neither has to hold the other's height.
 
 The deck gains a fourth panel between Azioni and Citazioni, served by the same factory
 (`…/Drafting`), collapsible like the others. Controls, top to bottom, all pre-created so the

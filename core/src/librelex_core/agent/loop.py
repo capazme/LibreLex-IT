@@ -27,13 +27,17 @@ from librelex_core.agent.state import DocSession
 from librelex_core.citations.verifier import RETRYABLE as UNVERIFIED_VERDICT
 from librelex_core.citations.verifier import Verdict
 from librelex_core.config import LimitsConfig
-from librelex_core.document import DocumentClient, DocumentError
+from librelex_core.document import DocumentClient, DocumentError, InsertedRange
 from librelex_core.llm.client import ToolCallRequest
-from librelex_core.mcp.client import LegalToolsClient, ToolError
+from librelex_core.mcp.client import LegalToolsClient, ToolError, ToolSpec
 from librelex_core.protocol import Usage
 
 Emit = Callable[[Any], Awaitable[None]]
 Consent = Callable[[p.ConsentSummary], Awaitable[str]]
+# A hook is a command-supplied tool executed inside the loop: it answers the model with its
+# result text and, with a stop reason, ends the turn after the tool results are appended
+# (guided drafting design §4.4, §4.5). A hook result never grounds.
+Hook = Callable[[dict], Awaitable[tuple[str, str | None]]]
 
 BAD_ARGUMENTS = "ERRORE: argomenti non validi"
 UNKNOWN_TOOL = "ERRORE: strumento non disponibile in questo profilo"
@@ -41,7 +45,7 @@ CONSENT_DENIED = "ERRORE: invio del testo del documento non autorizzato dall'ute
 NO_LEGAL_TOOLS = "ERRORE: mcp-legal-it non disponibile"
 
 READ_TOOLS = ("read_selection", "read_paragraphs", "find_text")
-WRITE_TOOLS = ("insert_markdown", "replace_selection")
+WRITE_TOOLS = ("insert_markdown", "replace_selection", "replace_text")
 WRITE_AUTHOR = "LibreLex"
 
 
@@ -62,6 +66,15 @@ class AgentDeps:
     endpoint_host: str
     model: str
     zdr: bool
+    # Guided drafting (design §4.1, §4.3): the act catalogue, the raw tool specs the command
+    # needs to rebuild its registry with the hook tools, and the hooks themselves.
+    catalogue: Any | None = None
+    specs: list[ToolSpec] = field(default_factory=list)
+    hooks: dict[str, Hook] = field(default_factory=dict)
+    hook_tools: list[dict] = field(default_factory=list)
+    # Called with every insertion the moment it reaches the document, so a command keeps what
+    # a cancelled turn already wrote (design §4.5, final review finding 4).
+    on_inserted: Callable[[dict], None] | None = None
 
 
 @dataclass
@@ -69,7 +82,11 @@ class TurnOutcome:
     text: str = ""
     usage: Usage = field(default_factory=Usage)
     stopped: str | None = None
+    # A hook asked to end the turn (questions sent, drafting completed): unlike `stopped`,
+    # which reports an interruption, this is an orderly end (design §4.4).
+    ended_by: str | None = None
     inserted: list[dict] = field(default_factory=list)
+    replaced: int = 0
     flagged: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
     tool_calls: int = 0
@@ -101,6 +118,32 @@ def _unverified_text(refs: list[str]) -> str:
     return f"{what} (fonte non disponibile): {', '.join(refs)}."
 
 
+def _title(markdown: str) -> str:
+    """Title of an insertion (design §4.5): the first heading, else the first line, 60 chars."""
+    for line in markdown.splitlines():
+        line = line.strip()
+        if line:
+            return line.lstrip("#").strip()[:60]
+    return ""
+
+
+_TRUE_VALUES = ("true", "1", "sì", "si")
+
+
+def _as_bool(value: Any) -> bool:
+    """A model's boolean argument: only an explicit true counts.
+
+    Providers send booleans as JSON booleans, as numbers or as strings; ``bool("false")`` is
+    True, which would turn a declined ``all`` into a replace-everything (final review,
+    minor 13).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value == 1
+    return str(value).strip().lower() in _TRUE_VALUES
+
+
 def _characters(value: Any) -> int:
     """Characters of document text carried by a read result (what consent is asked for)."""
     items = value if isinstance(value, list) else [value]
@@ -111,7 +154,8 @@ async def run_turn(
     session: DocSession, user_message: str, profile: str, llm: Any,
     tools: LegalToolsClient | None, doc: DocumentClient, registry: ToolRegistry, emit: Emit,
     request_id: str, limits: LimitsConfig, consent: Consent, endpoint_host: str, model: str,
-    zdr: bool, undo_label: str,
+    zdr: bool, undo_label: str, *, hooks: dict[str, Hook] | None = None,
+    on_inserted: Callable[[dict], None] | None = None,
 ) -> TurnOutcome:
     turn = session.begin_turn(user_message)
     grounding = Grounding()
@@ -119,6 +163,8 @@ async def run_turn(
     usage = Usage()
     streamed: list[str] = []
     turn_consented = False
+    hooks = hooks or {}
+    stop_reason: str | None = None
     schemas = {t["function"]["name"]: (t["function"].get("parameters") or {})
                for t in registry.tools}
 
@@ -146,26 +192,59 @@ async def run_turn(
             grounding.record(text)
         return wrap_data(name, text)
 
+    async def resource_tool(uri: str) -> str:
+        if not uri.startswith("legal://"):
+            return "ERRORE: URI non ammesso (solo legal://)"
+        if tools is None:
+            return NO_LEGAL_TOOLS
+        await emit(p.Status(request_id=request_id, text=f"Leggo la risorsa {uri}"))
+        try:
+            text = await tools.read_resource(uri)
+        except ToolError as e:
+            return f"ERRORE: {e.message}"
+        return wrap_data("leggi_risorsa", text)
+
     async def write_tool(name: str, args: dict) -> str:
         """Grounding on write (spec §6.6): verify, then write, then comment the problems."""
         markdown = str(args.get("markdown", ""))
+        query = str(args.get("query", ""))
+        text_to_ground = markdown if name != "replace_text" else str(args.get("replacement", ""))
         verdicts: dict[str, Verdict] = {}
-        refs = grounding.unseen(markdown)
+        refs = grounding.unseen(text_to_ground)
         if refs:
             await emit(p.Status(
                 request_id=request_id,
                 text=f"Verifico {len(refs)} riferimenti prima dell'inserimento"))
             verdicts = await verify_unseen(refs, tools)
+        replaced_count = 0
         if name == "insert_markdown":
             inserted = await doc.insert_markdown(str(args.get("where", "cursor")), markdown,
                                                  undo_label, bookmark=None, author=WRITE_AUTHOR)
+        elif name == "replace_text":
+            replaced = await doc.replace_text(
+                query, text_to_ground, undo_label,
+                paragraph_id=args.get("paragraph_id"), all=_as_bool(args.get("all", False)))
+            if replaced.count == 0:
+                return f"Nessuna occorrenza di «{query}»."
+            replaced_count = replaced.count
+            outcome.replaced += replaced_count
+            inserted = InsertedRange(from_id=replaced.anchors[0].paragraph_id,
+                                     to_id=replaced.anchors[-1].paragraph_id)
         else:
             inserted = await doc.replace_selection(markdown, undo_label)
         # The text is in the document from here on: the write is recorded before anything
         # else can fail, so undo/redline and the panel always know about it (review
         # finding 3), and a comment that cannot be anchored is reported to the model as
-        # such instead of looking like a failed insertion.
-        outcome.inserted.append(inserted.model_dump())
+        # such instead of looking like a failed insertion. `replace_text` is not a partition
+        # of the document (it can touch a range already covered by an earlier insertion), so
+        # it is counted separately in `outcome.replaced` instead of `outcome.inserted`.
+        if name != "replace_text":
+            entry = {**inserted.model_dump(), "titolo": _title(markdown)}
+            outcome.inserted.append(entry)
+            if on_inserted is not None:
+                # Reported now, not at the end of the turn: a cancellation between two
+                # insertions must not lose the first one (final review, finding 4).
+                on_inserted(entry)
         # A reference the source could not verify gets no comment and no Status from
         # comment_problems: say it explicitly, to the model and to the panel, so the
         # §6.6 promise does not degrade silently when mcp-legal-it is down (review
@@ -179,15 +258,16 @@ async def run_turn(
                 if ref not in outcome.unverified:
                     outcome.unverified.append(ref)
             await emit(p.Status(request_id=request_id, text=_unverified_text(unverified)))
+        prefix = (f"Sostituite {replaced_count} occorrenze di «{query}»." if name == "replace_text"
+                 else f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}.")
         try:
             flagged = await comment_problems(doc, inserted, verdicts)
         except DocumentError as e:
-            return (f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}. "
-                    f"ERRORE: commenti di verifica non applicati: {e}" + note)
+            return f"{prefix} ERRORE: commenti di verifica non applicati: {e}" + note
         for ref in flagged:
             if ref not in outcome.flagged:
                 outcome.flagged.append(ref)
-        content = f"Inserito nei paragrafi {inserted.from_id}-{inserted.to_id}."
+        content = prefix
         if flagged:
             content += f" Riferimenti segnalati con un commento: {', '.join(flagged)}."
         return content + note
@@ -235,6 +315,7 @@ async def run_turn(
         return wrap_data(name, _as_json(result))
 
     async def execute(call: ToolCallRequest) -> str:
+        nonlocal stop_reason
         try:
             args = json.loads(call.arguments or "{}")
         except json.JSONDecodeError:
@@ -247,6 +328,15 @@ async def run_turn(
                 return await legal_tool(call.name, args)
             if kind == "document":
                 return await document_tool(call.name, args)
+            if call.name == "leggi_risorsa":
+                return await resource_tool(str(args.get("uri", "")))
+            if call.name in hooks:
+                # Hooks answer the model like an internal tool, but their result is the
+                # command's, never a source: it is not grounded (design §4.4, §5.3).
+                content, reason = await hooks[call.name](args)
+                if reason is not None:
+                    stop_reason = reason
+                return content
             try:
                 return run_internal_tool(call.name, args)
             except KeyError:            # an internal tool listed but no longer implemented
@@ -301,6 +391,11 @@ async def run_turn(
                     break
                 outcome.tool_calls += len(result.tool_calls)
                 await run_tool_calls(result.tool_calls)
+                if stop_reason:
+                    # An orderly end asked for by a hook: the tool results are in the history,
+                    # so the next turn resumes from a well-formed conversation (design §4.4).
+                    outcome.ended_by = stop_reason
+                    break
             else:
                 outcome.stopped = "iterations"
     except TimeoutError:
@@ -324,4 +419,4 @@ async def run_turn_with(
     return await run_turn(
         session, user_message, profile, deps.llm, deps.tools, deps.doc, deps.registry, emit,
         request_id, deps.limits, deps.consent, deps.endpoint_host, deps.model, deps.zdr,
-        undo_label)
+        undo_label, hooks=deps.hooks, on_inserted=deps.on_inserted)

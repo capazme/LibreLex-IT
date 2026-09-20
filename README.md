@@ -5,8 +5,8 @@ official sources through [mcp-legal-it](https://github.com/capazme/mcp-legal-it)
 
 Status: M1 complete (verify citations, list citations, show the text of a reference and
 insert a norm from the sidebar); M2 complete (chat, Ricerca, in-panel consent and usage line
-in the sidebar, see "Chat e ricerca"); M3 complete (template-guided drafting, "Redigi da
-modello").
+in the sidebar, see "Chat e ricerca"); M3 complete (guided drafting in the Redazione and
+Domande panels).
 Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
 
 ## Install (macOS, LibreOffice 26.2+)
@@ -44,31 +44,71 @@ zero_data_retention = true     # OpenRouter: routes only to providers that do no
   no `api_key` needed; document text still goes through the consent dialog, labelled as local.
 
 Without a configured `[llm]` the deterministic commands (verify, list, show text, insert norm)
-keep working: only chat, *Ricerca* and *Redigi da modello* answer with a configuration error.
+keep working: only chat, *Ricerca* and the guided drafting answer with a configuration error.
 
-### Asking: Invia, Ricerca and Redigi da modello
+### Asking: Invia and Ricerca
 
-Type the question in the Azioni input box, then press one of the three buttons; the answer
+Type the question in the Azioni input box, then press one of the two buttons; the answer
 streams into Risposte as the model writes it, and *Annulla* (the button in the Documento
-section) stops it, keeping the partial text with an `[annullato]` note.
+section) stops it, keeping the partial text with an `[annullato]` note. Drafting has its own
+panel, see below.
 
 - **Invia**: a free chat turn. The model can consult the official sources, read the document
   (with consent, see below) and, if asked to, write into it as a redline.
 - **Ricerca**: the same turn restricted to case law (`cerca_*`/`leggi_*` plus `cite_law`),
   for questions like "qual è l'orientamento sulla responsabilità del custode?". It reads and
   inserts, but never comments or replaces.
-- **Redigi da modello**: template-guided drafting. Name the act in the input box ("decreto
-  ingiuntivo per la fattura n. 12/2025 di 12.000 euro") and press the button: the model looks
-  the template up in mcp-legal-it, reads the document (with consent), asks in Risposte for the
-  data it still needs, and stops. Type the answers in the same box and press the button again:
-  it computes the amounts (interests, revaluation, contributo unificato, fees) with the
-  calculators and inserts the act at the end of the document one section at a time, each as a
-  redline, leaving `[...]` where nobody supplied a value. The session keeps the thread until the
-  document is closed, so "continua" resumes a drafting cut by the iteration limit.
 
 Text written into the document is grounded: a reference the model did not read from a source
 is verified before the insertion and commented when it turns out to be non-existent or
 inconsistent.
+
+### Guided drafting: the Redazione and Domande panels
+
+Drafting is no longer a button in Azioni: it has its own panel, *Redazione*, and the data the
+model asks for along the way appear in *Domande*.
+
+1. **Choose the act**: type a keyword in the search box and press *Cerca* to filter the
+   mcp-legal-it catalogue (empty box: the whole catalogue), then pick an entry from the list.
+   The grey line under it says which base the act gets, a deterministic generator
+   ("Base deterministica: decreto_ingiuntivo") or a composition by the model, followed by the
+   catalogue's own caveats.
+2. **Fill the fields**: the mandatory ones first (marked `*`), the optional ones after, each
+   labelled with its type (numero, data, sì/no). *Avvia redazione* stays disabled until every
+   mandatory field is filled; fields beyond the eighth are named in the notes label and go in
+   the notes box.
+3. **Notes**: facts of the case and instructions for the model, free text.
+4. **Similar case** (optional): *Sfoglia…* picks an act of yours (odt, docx, rtf, txt) the
+   model may use for structure and style, never for the facts, and the file can also be
+   dropped onto the panel. It is read through LibreOffice's own filters in a hidden read-only
+   document that is closed straight away, and it reaches the model only after a consent block
+   that names the file. *Rimuovi* drops it; loading another one asks for consent again.
+5. **Avvia redazione**: the deterministic base enters the document at once, as a tracked
+   insertion signed LibreLex, with the exact formulas of the generator and its `[...]`
+   placeholders left open. The model then works on that base and asks for what is missing:
+   the questions appear as labelled boxes in *Domande*. Answer them and press *Continua*: the
+   model fills the placeholders with tracked replacements, computes the amounts (interests,
+   revaluation, contributo unificato, fees) with the calculators, and adds the remaining
+   sections one at a time.
+6. **Partizioni** lists what is in the document so far ("✓ Base: ...", "✓ Conclusioni"), with
+   a trailing "… segnaposto aperti: N" while placeholders remain; clicking an entry jumps to
+   it in the document.
+7. **Continua la redazione** resumes a drafting stopped by the iteration limit, by the time
+   limit or by *Annulla*, with the instruction typed above the button if you give one. The
+   thread lives in the core until the document is closed.
+8. When the model declares the act complete, Risposte shows "Riepilogo della redazione:" with
+   the calculations, the attachments and the caveats, and the status line of Redazione reads
+   "Redazione completata".
+
+Amounts and dates are typed the Italian way: "12.000" is twelve thousand, "12,50" is twelve
+and a half, and a "€" or "euro" written around the figure is ignored.
+
+The deterministic base does not go through the grounding described above: its citations come
+from the generator of mcp-legal-it, not from the model, and enter the document verbatim. Run
+*Verifica citazioni* on the finished act before filing it.
+
+On some LibreOffice builds the panel cannot register itself as a drop target: the transcript
+says so once, and *Sfoglia…* stays the way to pick the similar case.
 
 ### Consent for the document text
 
@@ -92,10 +132,11 @@ answering it is the one thing to do while a turn is running.
 After every chat, research or drafting turn the bottom right of Azioni shows the usage line, for example
 `Turno: 12.480 + 320 token · sessione: 41.900 token`, with `· costo: $0.04` when the provider
 reports it. The turn count is the whole request, not just the question: the system prompt, the
-tool schemas (about 7k token of them), the earlier turns and every tool result of the current
-one (the norm texts, the document paragraphs, a judgment can be 8k token) are resent at each
-model call, and a turn that uses tools calls the model once per round. A turn inside a long
-thread therefore costs several times the first one. The core keeps this bounded by shortening
+tool schemas (about 11k token of them: the chat profile exposes every allowlisted tool), the
+earlier turns and every tool result of the current one (the norm texts, the document
+paragraphs, a judgment can be 8k token) are resent at each model call, and a turn that uses
+tools calls the model once per round. A turn inside a long thread therefore costs several
+times the first one. The core keeps this bounded by shortening
 the tool results of past turns to a one-line placeholder, and by dropping the oldest turns
 once the history exceeds its budget. *Svuota* in Risposte empties the panel, not the
 conversation: the history lives in the core and goes away when the document is closed. Past
@@ -125,10 +166,11 @@ Rule of thumb: with real client data use a provider you have a DPA with, keep
 
 ## Usage
 
-The LibreLex deck has three panels: **Azioni** (buttons, progress and status), **Citazioni**
-(the references found in the document) and **Risposte** (the answers). Each panel opens and
-closes from its own title bar, like every other sidebar panel, and Risposte takes the height
-the other two leave.
+The LibreLex deck has five panels: **Azioni** (buttons, consent, progress and status),
+**Redazione** (the guided drafting, see above), **Domande** (the data the model asks for
+during a drafting), **Citazioni** (the references found in the document) and **Risposte**
+(the answers). Each panel opens and closes from its own title bar, like every other sidebar
+panel, and Risposte takes the height the others leave.
 
 - **Verifica citazioni** (or *Verifica selezione*): checks every citation of the document
   (or of the selection) against the official sources and comments the problematic ones in

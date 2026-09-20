@@ -155,3 +155,110 @@ def render_turn_notes(summary: dict) -> list[str]:
     if unverified:
         notes.append("Riferimenti non verificati (fonte non disponibile): " + ", ".join(unverified))
     return notes
+
+
+# --- guided drafting (spec §6, plan "Guided Drafting, Extension") ----------------------
+
+_ROUTING_LABELS = {
+    "tool_diretto": "Base deterministica: {tool}",
+    "tool_enhance": "Base deterministica (adattata): {tool}",
+    "resource": "Composizione dal modello (risorsa del catalogo)",
+    "preventivo_procedura": "Preventivo: {tool}",
+}
+
+_TYPE_HINTS = {"numero": "numero", "data": "data", "sino": "sì/no"}
+
+
+def render_template_notes(info: dict) -> str:
+    """The routing line shown after a template is chosen: which base the core will use.
+
+    A routing that names a tool but carries no tool name falls back to the generic line: the
+    core composes from the model alone, and "Base deterministica: None" would name a
+    generator that does not exist.
+    """
+    routing = info.get("routing") or {}
+    tool = routing.get("tool")
+    template = _ROUTING_LABELS.get(routing.get("tipo"), "Composizione dal modello")
+    if "{tool}" in template and not tool:
+        template = "Composizione dal modello"
+    text = template.format(tool=tool)
+    avvertenze = info.get("avvertenze") or []
+    if avvertenze:
+        text += " · " + "; ".join(avvertenze)
+    return text
+
+
+def render_reference(ref: dict | None) -> str:
+    """The "Caso simile" label in the Redazione panel: none, or name, size and truncation."""
+    if not ref:
+        return "Caso simile: nessuno"
+    suffix = ", troncato" if ref.get("troncato") else ""
+    return f"Caso simile: {ref['name']} ({_it_thousands(ref['chars'])} caratteri{suffix})"
+
+
+def render_partitions(partizioni: list[dict], open_placeholders: list[str]) -> list[str]:
+    """The "Partizioni inserite" list, plus a trailing count of placeholders still open."""
+    labels = [f"✓ {p['titolo']}" for p in partizioni]
+    if open_placeholders:
+        labels.append(f"… segnaposto aperti: {len(open_placeholders)}")
+    return labels
+
+
+def render_base_error(message: str) -> str:
+    """The status (and transcript) line of a base the core could not generate."""
+    return f"Base non generata: {message}"
+
+
+def render_draft_status(view: dict) -> str:
+    """The "DraftStatus" line: one state machine over template/started/busy/questions/done.
+
+    ``view`` is ``{**session.draft_view, "busy": session._draft_request}``. ``base_errore``
+    is read from the view rather than pushed once by the turn that reported it, so a rebuilt
+    panel is told again; a turn that later produced a base clears it (the core sends the key
+    on every draft final), and a completed drafting never shows it.
+    """
+    if not view.get("template"):
+        return "Scegli un atto"
+    if not view.get("started"):
+        return "Compila i campi obbligatori"
+    if view.get("busy"):
+        return "Redazione in corso…"
+    if view.get("base_errore") and not view.get("done"):
+        return render_base_error(view["base_errore"])
+    if view.get("questions"):
+        return "In attesa delle tue risposte (pannello Domande)"
+    if view.get("done"):
+        return "Redazione completata"
+    if view.get("stopped"):
+        return "Interrotta: premi Continua la redazione"
+    return "Pronta per il prossimo passo"
+
+
+def render_riepilogo(riepilogo: str) -> str:
+    return "Riepilogo della redazione:\n" + riepilogo
+
+
+def render_questions_hint(n: int) -> str:
+    return f"Il modello ha bisogno di {n} dati: rispondi e premi Continua."
+
+
+def render_field_label(campo: dict) -> str:
+    """A "Redazione" field row label: name, a mandatory marker, and a type hint."""
+    label = campo["nome"]
+    if campo.get("obbligatorio"):
+        label += " *"
+    hint = _TYPE_HINTS.get(campo.get("tipo"))
+    if hint:
+        label += f" ({hint})"
+    return label
+
+
+def render_question_label(q: dict) -> str:
+    """A "Domande" question row label: the question, an example, and a type hint."""
+    label = q["domanda"]
+    if q.get("esempio"):
+        label += f" (es. {q['esempio']})"
+    hint = _TYPE_HINTS.get(q.get("tipo"))
+    if hint:
+        label += f" ({hint})"
+    return label

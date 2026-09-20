@@ -52,7 +52,7 @@ def _truncate(text: str, max_desc: int) -> str:
     return cut.rstrip() + "…"
 
 
-# The nine document actions of spec §5.3, as OpenAI tool objects. `undo_label`, `bookmark`
+# The ten document actions of spec §5.3, as OpenAI tool objects. `undo_label`, `bookmark`
 # and `author` (where present) are set by the core, not exposed to the model.
 DOCUMENT_TOOLS: dict[str, dict] = {
     "get_document_info": {"type": "function", "function": {
@@ -107,6 +107,22 @@ DOCUMENT_TOOLS: dict[str, dict] = {
             "markdown": {"type": "string",
                         "description": "Testo in markdown che sostituisce la selezione."},
         }, "required": ["markdown"]}}},
+    "replace_text": {"type": "function", "function": {
+        "name": "replace_text",
+        "description": "Sostituisce nel documento la prima occorrenza (o tutte, con all=true) "
+                       "di un testo esatto con un altro, come modifica tracciata: serve a "
+                       "riempire i segnaposto tra parentesi quadre della base inserita. Le "
+                       "citazioni nuove nel testo sostitutivo vengono verificate prima "
+                       "(grounding).",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Testo esatto da cercare e sostituire."},
+            "replacement": {"type": "string", "description": "Testo che sostituisce ``query``."},
+            "paragraph_id": {"type": ["string", "null"],
+                             "description": "Limita la sostituzione a questo paragrafo, se "
+                                            "indicato."},
+            "all": {"type": "boolean", "default": False,
+                    "description": "Sostituisce tutte le occorrenze anziché solo la prima."},
+        }, "required": ["query", "replacement"]}}},
     "add_comment": {"type": "function", "function": {
         "name": "add_comment",
         "description": "Aggiunge un commento di Writer ancorato a un intervallo di testo di un "
@@ -157,9 +173,11 @@ def concise(spec: ToolSpec, overrides: dict[str, str]) -> str:
 class ToolRegistry:
     """The merged `tools` array for one profile (spec §6.2): legal tools of the profile
     (from ``specs``, with concise descriptions), then its document tools, then the internal
-    tools, each group sorted by name for a deterministic, byte-stable result."""
+    tools (plus any ``extra_tools`` of the command), each group sorted by name for a
+    deterministic, byte-stable result."""
 
-    def __init__(self, specs: list[ToolSpec], profile: str):
+    def __init__(self, specs: list[ToolSpec], profile: str,
+                 extra_tools: list[dict] | None = None):
         self.profile = profile
         chosen = PROFILES[profile]
         overrides = load_overrides()
@@ -178,7 +196,12 @@ class ToolRegistry:
         document_names = sorted(n for n in chosen.document if n in DOCUMENT_TOOLS)
         document_tools = [DOCUMENT_TOOLS[n] for n in document_names]
 
-        internal_tools = sorted(INTERNAL_TOOLS, key=lambda t: t["function"]["name"])
+        # `extra_tools` are the hooks a command adds for its own turns (chiedi_dati,
+        # redazione_completata, leggi_atto_riferimento of the guided drafting, design §3.3):
+        # they belong to the internal group and are sorted with it, so the array stays
+        # byte-stable across the turns of one drafting.
+        internal_tools = sorted(INTERNAL_TOOLS + list(extra_tools or ()),
+                                key=lambda t: t["function"]["name"])
         internal_names = [t["function"]["name"] for t in internal_tools]
 
         self.tools: list[dict] = legal_tools + document_tools + internal_tools

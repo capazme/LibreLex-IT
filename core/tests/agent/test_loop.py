@@ -32,7 +32,8 @@ def _assert_well_formed(messages):
         assert answers == [c["id"] for c in msg["tool_calls"]]
 
 
-async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None, session=None):
+async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None, session=None,
+               on_inserted=None):
     events = []
 
     async def emit(m):
@@ -44,7 +45,7 @@ async def _run(llm, doc, tools, turns_profile="chat", limits=None, consent=None,
     consent = consent or doc.ask_consent
     outcome = await run_turn(session, "domanda", turns_profile, llm, tools, doc, registry, emit,
                              "r1", limits or LimitsConfig(), consent, "fake.local", "fake-model",
-                             True, "LibreLex: chat")
+                             True, "LibreLex: chat", on_inserted=on_inserted)
     return outcome, events, session
 
 
@@ -112,7 +113,8 @@ async def test_insert_markdown_verifies_unseen_references_and_comments_problems(
     assert calls["verifica"] == [["Cass. n. 99999/2024"]]   # art. 2043 was grounded by cite_law
     assert doc.inserts[0]["author"] == "LibreLex"
     assert doc.inserts[0]["undo_label"] == "LibreLex: chat"
-    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1"}]
+    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1",
+                                "titolo": "Come da art. 2043 c.c. e Cass. n. 99999/2024."}]
     assert outcome.flagged == ["Cass. n. 99999/2024"]
     assert len(doc.comments) == 1 and doc.comments[0]["paragraph_id"] == "p:1"
     tool_msgs = [m["content"] for m in session.messages_for_model("S") if m["role"] == "tool"]
@@ -152,7 +154,9 @@ async def test_a_comment_that_cannot_be_added_still_records_the_insertion():
                        {"where": "cursor", "markdown": "Vedi Cass. n. 99999/2024."})),
             text_turn("ok")])
         outcome, _, session = await _run(llm, doc, tools, "research")
-    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1"}] and outcome.flagged == []
+    assert outcome.inserted == [{"from_id": "p:1", "to_id": "p:1",
+                                "titolo": "Vedi Cass. n. 99999/2024."}]
+    assert outcome.flagged == []
     tool_msgs = [m["content"] for m in session.messages_for_model("S") if m["role"] == "tool"]
     assert tool_msgs[0].startswith("Inserito nei paragrafi p:1-p:1.")
     assert "commenti di verifica non applicati" in tool_msgs[0]
@@ -292,3 +296,124 @@ async def test_an_answer_truncated_by_the_output_cap_is_reported():
     async with LegalToolsClient(server) as tools:
         outcome, _, _ = await _run(ScriptedLLM([truncated]), FakeDocument(["x"]), tools)
     assert outcome.stopped == "length" and outcome.text == "Risposta a metà"
+
+
+async def test_replace_text_is_a_grounded_write():
+    server, calls = make_fake_legal_server(
+        verdicts={"Cass. n. 99999/2024": ("inesistente", "nessuna decisione")})
+    doc = FakeDocument(["Come da [PRECEDENTE], si chiede."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[PRECEDENTE]",
+                                        "replacement": "Cass. n. 99999/2024"})),
+            text_turn("fatto")])
+        outcome, events, session = await _run(llm, doc, tools, "draft")
+    assert calls["verifica"] == [["Cass. n. 99999/2024"]]
+    assert outcome.flagged == ["Cass. n. 99999/2024"] and len(doc.comments) == 1
+    assert (await doc.read_paragraphs())[0].text == "Come da Cass. n. 99999/2024, si chiede."
+    tool_msg = [m for m in llm.calls[1][0] if m.get("role") == "tool"][0]["content"]
+    assert tool_msg.startswith("Sostituite 1 occorrenze di «[PRECEDENTE]».")
+    assert "Riferimenti segnalati con un commento: Cass. n. 99999/2024" in tool_msg
+
+
+async def test_leggi_risorsa_reads_a_catalogue_resource_and_refuses_other_schemes():
+    server, _ = make_fake_legal_server()
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("leggi_risorsa", {"uri": "legal://riferimenti/modelli-atti-catalogo"}),
+                      ("leggi_risorsa", {"uri": "file:///etc/passwd"})),
+            text_turn("letto")])
+        outcome, events, session = await _run(llm, FakeDocument(["x"]), tools, "draft")
+    tool_msgs = [m for m in llm.calls[1][0] if m.get("role") == "tool"]
+    assert "<<<DATI: leggi_risorsa>>>" in tool_msgs[0]["content"]
+    assert "# Catalogo modelli atti (fake)" in tool_msgs[0]["content"]
+    assert tool_msgs[1]["content"] == "ERRORE: URI non ammesso (solo legal://)"
+    assert outcome.tool_calls == 2
+
+
+async def test_hooks_run_as_internal_tools_and_can_end_the_turn():
+    server, _ = make_fake_legal_server()
+    seen = []
+
+    async def ask(args):
+        seen.append(args)
+        return "Domande inviate.", "questions"
+
+    hook_tool = {"type": "function", "function": {
+        "name": "chiedi_dati", "description": "d",
+        "parameters": {"type": "object", "properties": {"domande": {"type": "array"}}}}}
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([tool_turn(("chiedi_dati", {"domande": [{"campo": "x"}]})),
+                           text_turn("mai raggiunto")])
+        specs = await tools.tool_specs()
+        registry = ToolRegistry(specs, "draft", extra_tools=[hook_tool])
+        assert "chiedi_dati" in registry.names and registry.kind("chiedi_dati") == "internal"
+        session = DocSession("d1")
+        events = []
+
+        async def emit(m):
+            events.append(m)
+
+        doc = FakeDocument(["x"])
+        outcome = await run_turn(session, "domanda", "draft", llm, tools, doc, registry, emit,
+                                 "r1", LimitsConfig(), doc.ask_consent, "h", "m", True, "u",
+                                 hooks={"chiedi_dati": ask})
+    assert seen == [{"domande": [{"campo": "x"}]}]
+    assert outcome.ended_by == "questions" and outcome.stopped is None and outcome.text == ""
+    assert len(llm.turns) == 1                       # the second scripted turn was never asked
+    tool_msg = session.turns[0].messages[-1]
+    assert tool_msg["role"] == "tool" and tool_msg["content"] == "Domande inviate."
+
+
+async def test_inserted_entries_carry_a_title():
+    server, _ = make_fake_legal_server()
+    lunga = ("Riga senza titolo che è davvero molto lunga e va oltre i sessanta caratteri")
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("insert_markdown",
+                       {"where": "end", "markdown": "## Premesse in fatto\n\nTesto"}),
+                      ("insert_markdown", {"where": "end", "markdown": lunga})),
+            text_turn("ok")])
+        outcome, _, _ = await _run(llm, FakeDocument([""]), tools, "draft")
+    assert [i["titolo"] for i in outcome.inserted] == [
+        "Premesse in fatto", "Riga senza titolo che è davvero molto lunga e va oltre i ses"]
+
+
+async def test_every_insertion_is_reported_as_it_happens():
+    """`on_inserted` fires per insertion, before the turn ends: what a cancelled turn already
+    wrote into the document is not lost (final review, finding 4)."""
+    server, _ = make_fake_legal_server()
+    seen: list[dict] = []
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("insert_markdown", {"where": "end", "markdown": "## Premesse\n\nTesto"}),
+                      ("replace_text", {"query": "Testo", "replacement": "Altro"}),
+                      ("insert_markdown", {"where": "end", "markdown": "## Motivi\n\nTesto"})),
+            text_turn("ok")])
+        outcome, _, _ = await _run(llm, FakeDocument([""]), tools, "draft",
+                                   on_inserted=seen.append)
+    # replace_text is not a partition: it is not reported here either
+    assert [e["titolo"] for e in seen] == ["Premesse", "Motivi"]
+    assert seen == outcome.inserted and all(e["from_id"] for e in seen)
+
+
+async def test_replace_text_all_accepts_only_an_explicit_true():
+    """A model that sends all="false" (a string, as some providers do) must not replace
+    every occurrence (final review, minor 13)."""
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument(["[X] e ancora [X]."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[X]", "replacement": "A", "all": "false"})),
+            text_turn("fatto")])
+        outcome, _, _ = await _run(llm, doc, tools, "draft")
+    assert (await doc.read_paragraphs())[0].text == "A e ancora [X]."
+    assert outcome.replaced == 1
+    doc2 = FakeDocument(["[X] e ancora [X]."])
+    async with LegalToolsClient(server) as tools:
+        llm = ScriptedLLM([
+            tool_turn(("replace_text", {"query": "[X]", "replacement": "A", "all": "sì"})),
+            text_turn("fatto")])
+        outcome, _, _ = await _run(llm, doc2, tools, "draft")
+    assert (await doc2.read_paragraphs())[0].text == "A e ancora A."
+    assert outcome.replaced == 2
