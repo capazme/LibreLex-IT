@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from librelex_ext.layout import KINDS
 
-# Every view method but ``set_busy``, which is broadcast instead of routed: the controls
-# ``layout.BUSY_DISABLED`` names are spread over Azioni, Redazione and Domande, so each
-# attached panel has to hear the busy state and disable its own share of them.
+# Every view method but the ones in BROADCAST, which every attached panel hears instead of
+# just the one it routes to: the controls ``layout.BUSY_DISABLED`` names are spread over
+# Azioni and Redazione, and a consent request can land while either panel is the one showing.
 ROUTES = {"append": "Answers", "set_transcript": "Answers", "append_stream": "Answers",
           "set_status": "Actions", "set_progress": "Actions",
-          "set_usage": "Actions", "set_consent": "Actions", "set_citations": "Citations",
+          "set_usage": "Actions", "set_citations": "Citations",
           "set_templates": "Drafting", "set_template": "Drafting", "set_reference": "Drafting",
           "set_partitions": "Drafting", "set_draft_status": "Drafting",
-          "set_field_values": "Drafting",
-          "set_questions": "Questions", "set_answer_values": "Questions"}
+          "set_field_values": "Drafting", "set_questions": "Drafting",
+          "set_answer_values": "Drafting", "set_step": "Drafting", "set_log": "Drafting",
+          "append_log": "Drafting", "set_expected_partitions": "Drafting",
+          "set_attachments": "Drafting", "set_letterheads": "Drafting",
+          "set_summary": "Drafting"}
+
+# methods broadcast to every attached panel instead of routed to one kind
+BROADCAST = ("set_busy", "set_consent")
 
 
 def panel_kind(url: str) -> str:
@@ -37,6 +43,10 @@ class CompositeView:
         self.panels.pop(kind, None)
 
     def _call(self, method: str, *args) -> None:
+        if method in BROADCAST:
+            for panel in list(self.panels.values()):
+                getattr(panel, method)(*args)
+            return
         panel = self.panels.get(ROUTES[method])
         if panel is not None:
             getattr(panel, method)(*args)
@@ -51,9 +61,8 @@ class CompositeView:
         self._call("set_status", text)
 
     def set_busy(self, busy: bool) -> None:
-        """Broadcast (see ROUTES): every attached panel disables its own busy controls."""
-        for panel in list(self.panels.values()):
-            panel.set_busy(busy)
+        """Broadcast (see BROADCAST): every attached panel disables its own busy controls."""
+        self._call("set_busy", busy)
 
     def set_progress(self, done: int, total) -> None:
         self._call("set_progress", done, total)
@@ -68,6 +77,7 @@ class CompositeView:
         self._call("set_usage", text)
 
     def set_consent(self, summary: dict | None) -> None:
+        """Broadcast (see BROADCAST): a consent request can land on either panel."""
         self._call("set_consent", summary)
 
     def set_templates(self, labels: list[str], selected: int | None) -> None:
@@ -93,3 +103,24 @@ class CompositeView:
 
     def set_answer_values(self, answers: dict) -> None:
         self._call("set_answer_values", answers)
+
+    def set_step(self, step: int) -> None:
+        self._call("set_step", step)
+
+    def set_log(self, lines: list[str]) -> None:
+        self._call("set_log", lines)
+
+    def append_log(self, line: str) -> None:
+        self._call("append_log", line)
+
+    def set_expected_partitions(self, labels: list[str]) -> None:
+        self._call("set_expected_partitions", labels)
+
+    def set_attachments(self, labels: list[str]) -> None:
+        self._call("set_attachments", labels)
+
+    def set_letterheads(self, labels: list[str], selected: int | None) -> None:
+        self._call("set_letterheads", labels, selected)
+
+    def set_summary(self, text: str) -> None:
+        self._call("set_summary", text)
