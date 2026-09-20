@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager, suppress
 from datetime import datetime
@@ -816,10 +817,7 @@ class DocumentAdapter:
             except Exception as e:
                 raise DocumentActionError(f"carta intestata non applicabile: {name}") from e
             finally:
-                with suppress(OSError):
-                    os.unlink(os.path.join(tmpdir, "letterhead.odt"))
-                with suppress(OSError):
-                    os.rmdir(tmpdir)
+                shutil.rmtree(tmpdir, ignore_errors=True)
             loaded = True
         return {"letterhead": loaded, "created": self.ensure_act_styles()}
 
@@ -831,15 +829,20 @@ def make_letterhead(ctx, source_url: str, out_path: str) -> str:
     document, through the same `apply_letterhead` the panel uses, so it carries the source's
     page style (header, footer, any logo) and the `LibreLex` act styles; the body stays empty.
     """
+    basename = os.path.basename(out_path)
     if os.path.exists(out_path):
-        raise DocumentActionError(f"modello già presente: {os.path.basename(out_path)}")
+        raise DocumentActionError(f"modello già presente: {basename}")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     doc = desktop.loadComponentFromURL(
         "private:factory/swriter", "_blank", 0, (prop("Hidden", True),))
     try:
         DocumentAdapter(ctx, doc).apply_letterhead(source_url)
-        doc.storeToURL(uno.systemPathToFileUrl(out_path),
-                       (prop("FilterName", "writer8_template"),))
+        try:
+            doc.storeToURL(uno.systemPathToFileUrl(out_path),
+                           (prop("FilterName", "writer8_template"),))
+        except Exception as e:
+            raise DocumentActionError(f"modello non salvato: {basename}") from e
     finally:
         with suppress(Exception):
             doc.close(True)

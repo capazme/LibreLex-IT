@@ -81,7 +81,6 @@ def test_apply_letterhead_brings_the_page_style_and_keeps_the_templates_own_styl
 def test_make_letterhead_writes_a_template_with_the_letterhead_and_an_empty_body(soffice, tmp_path):
     src, png = tmp_path / "carta.docx", tmp_path / "logo.png"
     target = tmp_path / "modelli" / "SAPG Legal.ott"
-    target.parent.mkdir()
     out = run_probe(soffice, "make_letterhead", BUILD_SOURCE.format(png_b64=PNG_1PX) + f'''
     from librelex_ext.document import make_letterhead
 
@@ -100,6 +99,7 @@ def test_make_letterhead_writes_a_template_with_the_letterhead_and_an_empty_body
             out["error"] = str(e)
     ''')
     assert out["path"] == str(target) and target.exists()
+    assert target.parent.exists()                        # the missing "modelli" folder is made
     facts = out["facts"]
     assert facts["header"] and facts["footer_text"] == "Via Roma 1, Milano"
     assert facts["graphics"] == 1
