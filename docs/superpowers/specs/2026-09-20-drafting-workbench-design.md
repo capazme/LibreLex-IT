@@ -183,17 +183,16 @@ with header and footer (logo, addresses, page number) and, optionally, the `Libr
 styles adjusted by the lawyer. The index `modelli/modelli.json` lists them (`{"name", "file",
 "default": bool}`) and the last choice.
 
-**Adding a letterhead** (button "Aggiungi…" in step 1, or the CLI of §5.4): from an odt, docx
-or doc file that already has the letterhead in its page style (the Legaltech relazione): the
-page styles are loaded into a fresh document (`loadStylesFromURL` with `LoadPageStyles`), the
-body is left empty, the `LibreLex` styles are added, and the result is saved as `.ott` under
-`modelli/` with the name the lawyer gives. From a **PDF** (the SAPG diffida): the PDF is imported
-in Draw; the images and text frames whose top edge lies in the top 4.5 cm of page 1 become the
-header (the images anchored as they are positioned, the text lines below them, right-aligned
-when their x is past the page middle), those in the bottom 4 cm become the footer (text lines
-centred), the page size and margins are taken from the PDF page and the outermost frames; the
-result is the same `.ott`. The lawyer can then open the template in Writer and adjust it; the
-extension never rewrites an existing template.
+**Adding a letterhead** (button "Aggiungi…" in step 1, or the script of §5.4): from an odt,
+docx or doc file that carries the letterhead in its page style (the firm's two Word letterhead
+files do: header with the logos and the office line, footer with the addresses, empty body;
+verified on 2026-09-20, both convert to `.ott` with the logos intact): the page styles are
+loaded into a fresh document (`loadStylesFromURL` with `LoadPageStyles`), the body is left
+empty, the `LibreLex` styles are added, and the result is saved as `.ott` under `modelli/` with
+the name the lawyer gives ("SAPG Legal", "SAPG Legaltech"). A letterhead available only as a
+PDF is out of scope (v2: rebuild from the Draw import); the lawyer converts it to Word first.
+The lawyer can open a template in Writer and adjust it; the extension never rewrites an
+existing template.
 
 ### 5.3 Applying them
 
@@ -228,9 +227,9 @@ signature lines at the end; plain text otherwise, bold for the party names.
 
 ### 5.4 Dev CLI and scripts
 
-`scripts/make_letterhead.py NAME SOURCE [--out DIR]` builds a template from an odt/docx/doc or
-a PDF (headless LibreOffice, the same code the panel uses, importable from the extension
-package); `librelex-dev` is not involved (no LibreOffice in the core).
+`scripts/make_letterhead.py NAME SOURCE [--out DIR]` builds a template from an odt/docx/doc
+(headless LibreOffice running the same adapter code the panel uses, on the pattern of
+`scripts/lo_install.py`); `librelex-dev` is not involved (no LibreOffice in the core).
 
 ## 6. Security and data
 
@@ -254,9 +253,9 @@ package); `librelex-dev` is not involved (no LibreOffice in the core).
 - Headless: `read_document` on odt, docx, doc, txt and on a PDF exported by Writer with a
   header image and two pages (lines rebuilt, page separators); `apply_letterhead` from an
   `.ott` built in the test (header image present in the document afterwards, `LibreLex`
-  styles created, a pre-existing `LibreLex Corpo` kept); `make_letterhead` from an odt and
-  from a PDF (both produce an `.ott` whose page style has a header with an image and a
-  footer with text); an insertion restyled by pattern (each style found on the right
+  styles created, a pre-existing `LibreLex Corpo` kept); `make_letterhead` from an odt with
+  a header image and a footer (the `.ott` produced has both, plus the `LibreLex` styles and
+  an empty body); an insertion restyled by pattern (each style found on the right
   paragraph); the e2e drafting test extended with an attachment read after consent and the
   act's paragraphs carrying the `LibreLex` styles on the letterhead's page style.
 - The lawyer's field test: the step flow, the collapse of the other panels, the drop of a PDF
