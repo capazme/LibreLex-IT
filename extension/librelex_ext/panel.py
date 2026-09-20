@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 # Derived from LibreThinker (https://github.com/mihailthebuilder/librethinker-extension), MPL-2.0.
 # This file stays under the Mozilla Public License 2.0.
-"""Sidebar panels: one XUIElement per deck panel (Azioni, Redazione, Domande, Citazioni,
-Risposte), each built on an XDL container window whose own model holds the controls of its
-kind (spec §5.1). The panels of a document share one Session through the registry's PanelSet,
-which also delivers the bridge events to the UI thread through AsyncCallback."""
+"""Sidebar panels: one XUIElement per deck panel (Azioni, Redazione, Citazioni, Risposte), each
+built on an XDL container window whose own model holds the controls of its kind (spec §5.1).
+The panels of a document share one Session through the registry's PanelSet, which also
+delivers the bridge events to the UI thread through AsyncCallback."""
 from __future__ import annotations
 
+import os
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 import uno
 import unohelper
@@ -20,32 +23,40 @@ from com.sun.star.ui.dialogs.TemplateDescription import FILEOPEN_SIMPLE
 from com.sun.star.ui.UIElementType import TOOLPANEL
 from com.sun.star.util.MeasureUnit import APPFONT
 
-from librelex_ext import EXTENSION_ID, layout, paths, registry, views
+from librelex_ext import EXTENSION_ID, layout, letterheads, paths, registry, views
 from librelex_ext.bridge import Bridge, BridgeError
 from librelex_ext.document import (
     DocumentActionError,
     DocumentAdapter,
     has_markdown_filter,
     lo_version,
-    read_reference,
+    make_letterhead,
+    read_document,
 )
 from librelex_ext.render import (
     render_consent,
+    render_draft_consent_status,
     render_field_label,
     render_question_label,
     render_questions_hint,
     render_template_notes,
 )
-from librelex_ext.session import Session
+from librelex_ext.session import Session, drop_role
 
 XDL_URL = f"vnd.sun.star.extension://{EXTENSION_ID}/dialogs/panel.xdl"
 MAX_TRANSCRIPT = 40_000
 
 # the similar-case file: what the picker offers and what a drop has to carry (design §5.2)
 REFERENCE_FILTER = ("Atti (odt, docx, rtf, txt)", "*.odt;*.docx;*.rtf;*.txt")
+# case documents (design §4) and letterhead sources (design §5.2): the other two file pickers
+# the Redazione panel offers, besides the similar-case one above
+ATTACHMENT_FILTER = ("Documenti del caso (pdf, odt, docx, doc, rtf, txt)",
+                    "*.pdf;*.odt;*.docx;*.doc;*.rtf;*.txt")
+LETTERHEAD_FILTER = ("Carta intestata (odt, docx, doc)", "*.odt;*.docx;*.doc")
 URI_LIST = "text/uri-list"
 DROP_UNAVAILABLE = "Trascinamento non disponibile su questo LibreOffice: usa Sfoglia…"
-DROP_REFUSED = "Trascina un solo file odt, docx, rtf o txt"
+DROP_REFUSED = "Trascina un file locale (pdf, odt, docx, doc, rtf, txt)"
+DROP_ONE_AT_A_TIME = "Un file alla volta: preso il primo, trascina gli altri dopo"
 EXTRA_FIELDS = "Altri campi (scrivili nelle note): "
 
 
@@ -63,26 +74,22 @@ def collect_fields(names: list[str], values: list[str]) -> dict[str, str]:
     return out
 
 
-def first_file_uri(data) -> str | None:
-    """First ``file://`` line of a dropped ``text/uri-list`` payload, or None.
+def file_uris(data) -> list[str]:
+    """Every ``file://`` line of a dropped ``text/uri-list`` payload, in order.
 
     The payload is a UTF-8 byte sequence (pyuno hands it over as ``uno.ByteSequence``, whose
     ``value`` is bytes) on most platforms and a plain string on some; anything else, and any
-    list that names no local file (a dragged web link), is refused.
+    line that names no local file (a dragged web link), is left out.
     """
     if not isinstance(data, str):
         data = getattr(data, "value", data)          # uno.ByteSequence -> bytes
         if not isinstance(data, (bytes, bytearray)):
-            return None
+            return []
         try:
             data = bytes(data).decode("utf-8")
         except UnicodeDecodeError:
-            return None
-    for line in data.splitlines():
-        line = line.strip()
-        if line.startswith("file://"):
-            return line
-    return None
+            return []
+    return [line.strip() for line in data.splitlines() if line.strip().startswith("file://")]
 
 
 def _default_label(kind: str, name: str) -> str:
@@ -94,8 +101,22 @@ def _default_label(kind: str, name: str) -> str:
     return ""
 
 
-QUESTIONS_HINT = _default_label("Questions", "QuestionsHint")
-NO_QUESTIONS = _default_label("Questions", "QuestionsStatus")
+QUESTIONS_HINT = _default_label("Drafting", "QuestionsHint")
+
+# the panel title per step (design review §5 item 6), and the control each step focuses when
+# it becomes current (item 10); shared by set_step and the consent-modal override of item 8
+_STEP_TITLES = {1: "Redazione · 1/4 Atto e dati", 2: "Redazione · 2/4 Domande",
+                3: "Redazione · 3/4 In corso", 4: "Redazione · 4/4 Fine"}
+_STEP_FOCUS = {1: "TemplateSearch", 2: "Answer1", 3: "DraftCancel", 4: "ResumeInput"}
+
+# rows whose Visible is owned by set_template/set_questions, never by the blanket per-step
+# show/hide of _apply_drafting_state (design review §5, the step switch): forcing them all
+# visible on entering a step would undo what those two just hid for the rows with no content
+_DYNAMIC_ROWS = frozenset(
+    [f"FieldLabel{n}" for n in range(1, layout.FIELD_ROWS + 1)]
+    + [f"Field{n}" for n in range(1, layout.FIELD_ROWS + 1)]
+    + [f"QuestionLabel{n}" for n in range(1, layout.FIELD_ROWS + 1)]
+    + [f"Answer{n}" for n in range(1, layout.FIELD_ROWS + 1)])
 
 
 def package_dir(ctx) -> Path:
@@ -194,6 +215,20 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         self._template_set = False
         self._reference_present = False
         self._busy = False
+        # the drafting workbench (design §3, §4): which of the four steps is current, whether
+        # a Redazione-side consent is pending (design review §5 item 8), and how many
+        # attachment rows are shown. ``_letterhead_entries`` is reserved for a future task:
+        # the View protocol's ``set_letterheads`` only ever hands the panel rendered labels
+        # and a selected index (session.py owns the raw entries), never the entries themselves.
+        self._step = 1
+        self._consent_pending = False
+        self._attachment_count = 0
+        self._letterhead_entries: list[dict] = []
+        # what the last set_draft_status call actually said: the label under a pending
+        # consent, which set_draft_status must not overwrite (item 8); restored once the
+        # consent is answered or cleared
+        self._draft_status_text = ""
+        self._draft_status_started = False
 
     # --- XUIElement ------------------------------------------------------------
     def getRealInterface(self):
@@ -204,14 +239,21 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model = self.window.getModel()          # never setModel (spec §5.1)
             self._build_controls()
             self._height = self.window.getPosSize().Height
+            self._log_metrics()
             if self.kind == "Answers":
                 # the transcript is the only control that grows with the deck: follow the
                 # height the sidebar gives us (see windowResized)
                 self.window.addWindowListener(self)
             self._attach_panel_set()
             if self.kind == "Drafting":
-                # after the session: a LibreOffice without a drop target says so in the
-                # transcript, which only exists once the panel set is attached
+                # after the session: a fresh disk scan of the letterhead folder, so templates
+                # another lawyer (or a previous run of this one) registered show up without
+                # waiting for the next add/remove; a bad or missing folder must not break the
+                # panel, hence the one suppress around the whole thing
+                with suppress(Exception):
+                    self.session.set_letterheads(letterheads.list_letterheads())
+                # a LibreOffice without a drop target says so in the transcript, which only
+                # exists once the panel set is attached
                 self._install_drop_target()
         return self
 
@@ -318,16 +360,17 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         self.session = None
 
     def _store_typed_values(self):
-        """Push the rows of this panel into the session's drafting state (Redazione fields
-        and notes, Domande answers); no-op for the other kinds."""
+        """Push the Redazione panel's rows into the session's drafting state (fields, notes
+        and answers: the same panel now holds every step, so all three go together); no-op
+        for the other kinds."""
+        if self.kind != "Drafting":
+            return
         draft = self.session.draft_view
-        if self.kind == "Drafting":
-            draft["fields"] = collect_fields(self._field_names,
-                                             self._row_texts("Field", self._field_names))
-            draft["notes"] = self.window.getControl("Notes").getText()
-        elif self.kind == "Questions":
-            draft["answers_draft"] = collect_fields(
-                self._question_fields, self._row_texts("Answer", self._question_fields))
+        draft["fields"] = collect_fields(self._field_names,
+                                         self._row_texts("Field", self._field_names))
+        draft["notes"] = self.window.getControl("Notes").getText()
+        draft["answers_draft"] = collect_fields(
+            self._question_fields, self._row_texts("Answer", self._question_fields))
 
     def addEventListener(self, listener):
         pass
@@ -341,13 +384,17 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
     # --- construction -----------------------------------------------------------
     def _build_controls(self):
         self._controls = layout.build(self.kind, self._width_du)
-        for c in self._controls:
+        for i, c in enumerate(self._controls):
             m = self.model.createInstance(f"com.sun.star.awt.UnoControl{c.kind}Model")
             m.Name = c.name
             m.PositionX, m.PositionY, m.Width, m.Height = c.x, c.y, c.w, c.h
             for k, v in c.props.items():
                 if k != "Visible":       # not a model property: see _set_visible
                     m.setPropertyValue(k, v)
+            # Keyboard (design review §5 item 10): table order becomes tab order; a label or
+            # a bar is never a tab stop, and no control is ever a DefaultButton.
+            m.TabIndex = i
+            m.Tabstop = c.kind not in ("FixedText", "FixedLine", "ProgressBar")
             self.model.insertByName(c.name, m)
         for c in self._controls:
             if "Visible" in c.props:
@@ -358,9 +405,25 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             ctrl = self.window.getControl(name)
             ctrl.setActionCommand(command)
             ctrl.addActionListener(self)
-        for name in ("Citations", "Template", "Partitions"):
+        for name in ("Citations", "Template", "Partitions", "Expected", "Attachments",
+                    "Letterhead"):
             if self.model.hasByName(name):
                 self.window.getControl(name).addItemListener(self)
+
+    def _log_metrics(self):
+        """One line of ``panel-metrics.log`` per panel creation, best effort (design review
+        §5 item 13): the field test's diagnostic of how the sidebar sized this panel."""
+        with suppress(Exception):
+            path = paths.config_path().parent / "panel-metrics.log"
+            paths.ensure_private(path)
+            du436 = self.window.convertSizeToPixel(Size(0, 436), APPFONT).Height
+            deck_px = self.window.getPosSize().Height
+            line = (f"{self.kind} {datetime.now(UTC).isoformat()} "
+                    f"du436px={du436} deck_px={deck_px} width_du={self._width_du}\n")
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(line)
+            paths.ensure_private(path)
 
     def _install_drop_target(self):
         """Let the Redazione panel take a similar-case file dropped on it (design §5.2).
@@ -412,7 +475,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.set_transcript("\n".join(session.transcript))
         elif self.kind == "Citations":
             self.set_citations([label for label, _, _ in session.citations])
-        elif self.kind in ("Drafting", "Questions"):
+        elif self.kind == "Drafting":
             # exactly what Session.bind replays, through the session's one replay path: the
             # calls this panel has no controls for are no-ops (see the View methods below)
             session.replay_drafting(self)
@@ -455,11 +518,25 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         elif cmd == "template_search":
             self.session.templates(self.window.getControl("TemplateSearch").getText())
         elif cmd == "reference_browse":
-            url = self._pick_reference()
+            url = self._pick_file(REFERENCE_FILTER)
             if url:
                 self._load_reference(url)
         elif cmd == "reference_clear":
             self.session.clear_reference()
+        elif cmd == "attachment_add":
+            url = self._pick_file(ATTACHMENT_FILTER)
+            if url:
+                self._load_attachment(url)
+        elif cmd == "attachment_remove":
+            index = self._selected_index("Attachments")
+            if index is not None:
+                self.session.remove_attachment(index)
+        elif cmd == "letterhead_add":
+            url = self._pick_file(LETTERHEAD_FILTER)
+            if url:
+                self._add_letterhead(url)
+        elif cmd == "draft_new":
+            self.session.new_drafting()
         elif cmd == "draft_start":
             template = self.session.draft_view.get("template") or {}
             fields = collect_fields(self._field_names, self._row_texts("Field",
@@ -506,9 +583,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                               "\nModifica il file con un editor di testo e riavvia LibreOffice.")
 
     def itemStateChanged(self, event):          # XItemListener: a list box row was picked
-        """Citations, Template and Partitions share this listener; the model name of the
-        control that fired says which list the selection came from, with Citations (the one
-        panel with a single list box) as the fallback when the source cannot be identified."""
+        """Citations, Template, Partitions, Expected, Attachments and Letterhead share this
+        listener; the model name of the control that fired says which list the selection came
+        from, with Citations (the one panel with a single list box) as the fallback when the
+        source cannot be identified."""
         if self.session is None or self._quiet_items:
             return
         name = ""
@@ -520,6 +598,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             if not self.model.hasByName("Citations"):
                 return
             name = "Citations"
+        if name == "Attachments":
+            # no jump, no session call: only Rimuovi's enabled state depends on the selection
+            self._apply_enabled()
+            return
         try:
             index = self.window.getControl(name).getSelectedItemPos()
         except Exception:
@@ -528,23 +610,53 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.session.select_citation(index)
         elif name == "Partitions":
             self.session.goto_partition(index)
+        elif name == "Expected":
+            # Partition lists unified (design review §5 item 11): Expected jumps exactly as
+            # Partitions does, but only when nothing is inserting (a jump mid-turn would move
+            # the insertion point from under the model); the row highlight is not kept either
+            # way, since it names an expected section, not a position the lawyer chose.
+            if not self._busy:
+                self.session.goto_partition(index)
+            self._clear_selection("Expected")
         elif name == "Template":
             templates = self.session.draft_view["templates"]
             if 0 <= index < len(templates):
                 self.session.template(templates[index]["tipo_atto"])
+        elif name == "Letterhead":
+            self.session.choose_letterhead(index)
+
+    def _clear_selection(self, name):
+        if not self.model.hasByName(name):
+            return
+        self._quiet_items = True
+        try:
+            self.model.getByName(name).SelectedItems = ()
+        finally:
+            self._quiet_items = False
+
+    def _selected_index(self, name):
+        """Row index currently selected in list box ``name``, or None (nothing selected, or
+        the control cannot answer)."""
+        try:
+            index = self.window.getControl(name).getSelectedItemPos()
+        except Exception:
+            return None
+        return index if index >= 0 else None
 
     def _row_texts(self, prefix, names):
         """What was typed in the rows currently shown, in row order."""
         return [self.window.getControl(f"{prefix}{n}").getText()
                 for n in range(1, len(names) + 1)]
 
-    def _pick_reference(self):
-        """Ask for a similar-case file and answer its URL, or None when nothing was chosen."""
+    def _pick_file(self, filt):
+        """Ask for a file through ``filt`` and answer its URL, or None when nothing was
+        chosen; generalises the one-off reference picker to the attachment and letterhead
+        pickers, which differ only in the filter offered."""
         try:
             picker = self.ctx.ServiceManager.createInstanceWithContext(
                 "com.sun.star.ui.dialogs.FilePicker", self.ctx)
             picker.initialize((FILEOPEN_SIMPLE,))
-            picker.appendFilter(*REFERENCE_FILTER)
+            picker.appendFilter(*filt)
             if picker.execute() != 1:       # ExecutableDialogResults.OK
                 return None
             try:
@@ -562,7 +674,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         The panel never keeps the text: it reads the file, passes it on and forgets it.
         """
         try:
-            ref = read_reference(self.ctx, url)
+            ref = read_document(self.ctx, url)
         except DocumentActionError as e:
             self.session.note(f"Caso simile non caricato: {e}")
             return
@@ -571,10 +683,43 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             return
         self.session.set_reference(ref["name"], ref["text"])
 
+    def _load_attachment(self, url):
+        """Read a case document and hand it to the session (design §4); same shape as
+        ``_load_reference``, its own prefix on a read failure."""
+        try:
+            doc = read_document(self.ctx, url)
+        except DocumentActionError as e:
+            self.session.note(f"Allegato non caricato: {e}")
+            return
+        except Exception as e:
+            self.session.note(f"Allegato non caricato: {type(e).__name__}: {e}")
+            return
+        self.session.add_attachment(doc["name"], doc["text"], doc["kind"])
+
+    def _add_letterhead(self, url):
+        """Build a letterhead template from a chosen file and register it (design §5.2).
+
+        The template name comes from the source file's own name, not asked separately: one
+        picker, one template, no naming dialog. ``make_letterhead`` refuses to overwrite an
+        existing file, which surfaces here as the same note a read failure would.
+        """
+        name = Path(unquote(url)).stem
+        out = letterheads.template_path(name)
+        try:
+            make_letterhead(self.ctx, url, str(out))
+        except Exception as e:
+            self.session.note(f"Carta intestata non creata: {e}")
+            return
+        letterheads.register_letterhead(name, out.name)
+        self.session.set_letterheads(letterheads.list_letterheads())
+        self.session.note(f"Carta intestata aggiunta: {name} ({out})")
+
     # --- XDropTargetListener (Redazione only) --------------------------------------------
     def drop(self, dtde):
-        """Take the first local file of a ``text/uri-list`` drop as the similar case."""
-        url = None
+        """Take the dropped local files: the first goes to the similar-case slot or the
+        attachments set, whichever ``drop_role`` (session, pure) says (design §3.1); every
+        file after it is left for a later drop, one at a time."""
+        uris: list[str] = []
         owed = False                    # acceptDrop called: a dropComplete is now owed
         try:
             transferable = dtde.getTransferable()
@@ -585,11 +730,11 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             else:
                 dtde.acceptDrop(dtde.DropAction)
                 owed = True
-                url = first_file_uri(transferable.getTransferData(flavor))
-                dtde.dropComplete(bool(url))
+                uris = file_uris(transferable.getTransferData(flavor))
+                dtde.dropComplete(bool(uris))
                 owed = False
         except Exception:
-            url = None
+            uris = []
             with suppress(Exception):
                 # an accepted drop is ours to finish: only dropComplete ends it, and
                 # rejectDrop after acceptDrop would leave the source hanging
@@ -599,10 +744,17 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                     dtde.rejectDrop()
         if self.session is None:
             return
-        if url:
-            self._load_reference(url)
-        else:
+        if not uris:
             self.session.note(DROP_REFUSED)
+            return
+        first = uris[0]
+        name = Path(unquote(first)).name
+        if drop_role(name, self._reference_present) == "reference":
+            self._load_reference(first)
+        else:
+            self._load_attachment(first)
+        if len(uris) > 1:
+            self.session.note(DROP_ONE_AT_A_TIME)
 
     def dragEnter(self, dtde):
         with suppress(Exception):
@@ -651,15 +803,20 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         self._apply_enabled()           # last: the two state-driven buttons win over the loop
 
     def _apply_enabled(self):
-        """Avvia redazione and Rimuovi are state-driven *and* busy-driven.
+        """Avvia redazione, Rimuovi, Togli (allegato) and Annulla (Redazione) are all
+        state-driven *and* busy-driven.
 
         Invariant: ``Start`` is enabled only while a template is chosen and no request is
         running, ``ReferenceClear`` only while a reference act is loaded and no request is
-        running. The generic ``BUSY_DISABLED`` loop of ``set_busy`` knows nothing of the
-        first half, so all three writers (``set_template``, ``set_reference``, ``set_busy``)
-        recompute both here instead of writing ``Enabled`` themselves: otherwise an idle
-        ``set_busy(False)`` on a rebuilt panel would re-enable a Start with no template and
-        a Rimuovi with no reference.
+        running, ``AttachmentRemove`` only while a row is selected, at least one attachment
+        exists and no request is running, ``DraftCancel`` only while a request runs and no
+        consent is pending (design review §5 item 8: the consent buttons are the only thing
+        the lawyer can press while it is). The generic ``BUSY_DISABLED`` loop of ``set_busy``
+        knows nothing of any of this, so every writer that can change one of these four
+        conditions (``set_template``, ``set_reference``, ``set_attachments``, ``set_busy``,
+        ``itemStateChanged`` on Attachments, ``_apply_drafting_state``) recomputes all four
+        here instead of writing ``Enabled`` itself: otherwise an idle ``set_busy(False)`` on a
+        rebuilt panel would re-enable controls their own state does not justify yet.
         """
         if self.model is None:
             return
@@ -668,6 +825,13 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         if self.model.hasByName("ReferenceClear"):
             self.model.getByName("ReferenceClear").Enabled = (self._reference_present
                                                               and not self._busy)
+        if self.model.hasByName("AttachmentRemove"):
+            self.model.getByName("AttachmentRemove").Enabled = (
+                self._selected_index("Attachments") is not None and not self._busy
+                and self._attachment_count > 0)
+        if self.model.hasByName("DraftCancel"):
+            modal = self._consent_pending and self._step in (2, 3)
+            self.model.getByName("DraftCancel").Enabled = self._busy and not modal
 
     def set_citations(self, labels):
         if self.model.hasByName("Citations"):
@@ -678,18 +842,24 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName("Usage").Label = text
 
     def set_consent(self, summary):
-        """Show the consent block for ``summary``, or hide it again when it is None.
-
-        The four controls keep their slot in the layout table either way (spec §8.2), so the
-        question appears and disappears without moving the rest of the panel.
+        """Show the consent block for ``summary``, or hide it again when it is None: on the
+        Actions panel as always (the four controls keep their slot in the layout table
+        either way, spec §8.2, so the question appears and disappears without moving the
+        rest of the panel); on the Drafting panel this additionally makes the wait modal
+        (design review §5 item 8), since a consent request can land mid-turn with no
+        further ``set_step`` call to react to it.
         """
-        if not self.model.hasByName("ConsentText"):
-            return
-        if summary is not None:
-            self.model.getByName("ConsentText").Label = render_consent(summary)
-        self._set_visible("ConsentText", summary is not None)
-        for name in layout.CONSENT_BUTTONS:
-            self._set_visible(name, summary is not None)
+        if self.model.hasByName("ConsentText"):
+            if summary is not None:
+                self.model.getByName("ConsentText").Label = render_consent(summary)
+            self._set_visible("ConsentText", summary is not None)
+            for name in layout.CONSENT_BUTTONS:
+                self._set_visible(name, summary is not None)
+        if self.model.hasByName("DraftConsentText"):
+            self._consent_pending = summary is not None
+            if summary is not None:
+                self.model.getByName("DraftConsentText").Label = render_consent(summary)
+            self._apply_drafting_state()
 
     def set_progress(self, done, total):
         """Show the bar at done/total; ``total`` None (or zero) hides it again."""
@@ -703,7 +873,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         m.ProgressValue = max(0, min(done, total))
         self._set_visible("Progress", True)
 
-    # --- View protocol: guided drafting (Redazione, Domande) ----------------------------
+    # --- View protocol: guided drafting, steps 1-2 (Redazione) --------------------------
     def set_templates(self, labels, selected=None):
         """Fill the catalogue list box; ``selected`` preselects a row, None leaves the list
         with no row selected.
@@ -749,6 +919,9 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.window.getControl(f"Field{n}").setText("")
             self._set_visible(f"FieldLabel{n}", campo is not None)
             self._set_visible(f"Field{n}", campo is not None)
+        if self.model.hasByName("FieldsLabel"):
+            self.model.getByName("FieldsLabel").Label = (
+                layout.FIELDS_LABEL_CHOSEN if info else layout.FIELDS_LABEL_EMPTY)
         self._template_set = info is not None
         self._apply_enabled()
 
@@ -792,17 +965,26 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self._quiet_items = False
 
     def set_draft_status(self, text, started):
-        """The status line, plus the two controls that only make sense once a drafting is
-        under way (they keep their slot in the layout table, as the consent block does)."""
+        """The status line. ``ResumeInput``/``Resume`` no longer toggle here (design review
+        §5 item 6): they belong to step 4 now and follow ``set_step`` like every other
+        control of their step, not the ``started`` flag. While a Redazione-side consent is
+        pending (item 8) the label stays the modal one ``_apply_drafting_state`` wrote, but
+        ``text`` is still kept so the normal line comes straight back once it clears.
+        """
         if not self.model.hasByName("DraftStatus"):
             return
-        self.model.getByName("DraftStatus").Label = text
-        self._set_visible("ResumeInput", bool(started))
-        self._set_visible("Resume", bool(started))
+        self._draft_status_text, self._draft_status_started = text, bool(started)
+        if not (self._consent_pending and self._step in (2, 3)):
+            self.model.getByName("DraftStatus").Label = text
 
     def set_questions(self, questions):
         """Show the model's open questions, one row each (the core sends at most
-        ``FIELD_ROWS``), and empty the answers of the previous round."""
+        ``FIELD_ROWS``), and empty the answers of the previous round.
+
+        ``Continue`` stays part of step 2's always-shown controls (the session only ever
+        moves to step 2 when there is at least one question), but its position follows the
+        last visible row (design review §5 item 12, ``layout.continue_y``).
+        """
         if not self.model.hasByName("QuestionsHint"):
             return
         questions = list(questions or [])
@@ -815,7 +997,124 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.window.getControl(f"Answer{n}").setText("")
             self._set_visible(f"QuestionLabel{n}", q is not None)
             self._set_visible(f"Answer{n}", q is not None)
-        self._set_visible("Continue", bool(shown))
+        if self.model.hasByName("Continue"):
+            self.model.getByName("Continue").PositionY = layout.continue_y(len(shown))
         self.model.getByName("QuestionsHint").Label = (render_questions_hint(len(questions))
                                                        if questions else QUESTIONS_HINT)
-        self.model.getByName("QuestionsStatus").Label = "" if questions else NO_QUESTIONS
+
+    # --- View protocol: drafting workbench, steps 3-4 (design §3, §4, §5.2) ------------
+    def set_step(self, step):
+        """Show the controls of step ``step`` and hide those of the other three (spec §3);
+        moving from step 1 to step 3 collapses the Azioni and Citazioni panels (design §3.5,
+        best effort), the one signal that a drafting has actually started."""
+        if not self.model.hasByName("DraftStatus"):
+            return
+        previous, self._step = self._step, step
+        self._apply_drafting_state()
+        if previous == 1 and step == 3:
+            self._collapse_other_panels()
+
+    def _apply_drafting_state(self):
+        """What ``set_step`` and ``set_consent`` share on the Drafting panel: which step's
+        controls show, the shared consent block, the modal override of design review §5 item
+        8 (Continue hidden, DraftCancel disabled, a shorter status line, focus on the first
+        consent button) and, the rest of the time, the step's own focus and panel title
+        (item 6, item 10). A no-op on every other panel kind (no ``DraftStatus`` there).
+        """
+        if not self.model.hasByName("DraftStatus"):
+            return
+        step = self._step
+        for s, names in layout.DRAFT_STEPS.items():
+            for name in names:
+                if name in layout.DRAFT_CONSENT or not self.model.hasByName(name):
+                    continue
+                if s == step:
+                    if name not in _DYNAMIC_ROWS:
+                        self._set_visible(name, True)
+                else:
+                    self._set_visible(name, False)
+        modal = self._consent_pending and step in (2, 3)
+        for name in layout.DRAFT_CONSENT:
+            if self.model.hasByName(name):
+                self._set_visible(name, modal)
+        if modal and self.model.hasByName("Continue"):
+            self._set_visible("Continue", False)
+        self._apply_enabled()
+        if modal:
+            summary = self.session.consent_summary if self.session is not None else None
+            self.model.getByName("DraftStatus").Label = render_draft_consent_status(summary or {})
+        else:
+            self.model.getByName("DraftStatus").Label = self._draft_status_text
+        focus = "DraftConsentDocument" if modal else _STEP_FOCUS.get(step)
+        if focus and self.model.hasByName(focus):
+            with suppress(Exception):
+                self.window.getControl(focus).setFocus()
+        with suppress(Exception):
+            self._panel_by_id("LibreLexRedazionePanel").setTitle(_STEP_TITLES.get(step, ""))
+
+    def _panel_by_id(self, panel_id):
+        """The live sidebar panel named ``panel_id``, may raise (every caller wraps it in its
+        own ``suppress(Exception)``: no sidebar under the headless field test, and a panel
+        the lawyer already closed both answer the same way, by raising)."""
+        sidebar = self.frame.getController().getSidebar()
+        deck = sidebar.getDecks().getByName("LibreLexDeck")
+        return deck.getPanels().getByName(panel_id)
+
+    def _collapse_other_panels(self):
+        """Collapse Azioni and Citazioni when a drafting starts (design §3.5): best effort,
+        never re-expanded by this panel, and a no-op wherever the sidebar API disagrees
+        (headless LibreOffice, an already-collapsed panel)."""
+        with suppress(Exception):
+            for panel_id in ("LibreLexActionsPanel", "LibreLexCitationsPanel"):
+                self._panel_by_id(panel_id).collapse()
+
+    def set_log(self, lines):
+        if self.model.hasByName("Log"):
+            self.window.getControl("Log").setText("\n".join(lines))
+
+    def append_log(self, line):
+        """Append one line to the log and keep it scrolled to the end."""
+        if not self.model.hasByName("Log"):
+            return
+        ctrl = self.window.getControl("Log")
+        current = ctrl.getText()
+        text = current + ("\n" if current else "") + line
+        ctrl.setText(text)
+        with suppress(Exception):
+            selection = uno.createUnoStruct("com.sun.star.awt.Selection")
+            selection.Min = selection.Max = len(text)
+            ctrl.setSelection(selection)
+
+    def set_expected_partitions(self, labels):
+        if not self.model.hasByName("Expected"):
+            return
+        self._quiet_items = True
+        try:
+            self.model.getByName("Expected").StringItemList = tuple(labels)
+        finally:
+            self._quiet_items = False
+
+    def set_attachments(self, labels):
+        if not self.model.hasByName("Attachments"):
+            return
+        self._quiet_items = True
+        try:
+            self.model.getByName("Attachments").StringItemList = tuple(labels)
+        finally:
+            self._quiet_items = False
+        self._attachment_count = len(labels)
+        self._apply_enabled()
+
+    def set_letterheads(self, labels, selected):
+        if not self.model.hasByName("Letterhead"):
+            return
+        self._quiet_items = True
+        try:
+            self.model.getByName("Letterhead").StringItemList = tuple(labels)
+            self.model.getByName("Letterhead").SelectedItems = (int(selected),)
+        finally:
+            self._quiet_items = False
+
+    def set_summary(self, text):
+        if self.model.hasByName("Summary"):
+            self.window.getControl("Summary").setText(text)

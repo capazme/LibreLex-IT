@@ -17,7 +17,6 @@ from librelex_ext.layout import (
     DRAFT_STEPS,
     FIELD_ROWS,
     GAP,
-    GRAY,
     KINDS,
     LOG_H,
     MARGIN,
@@ -122,6 +121,8 @@ def test_steps_two_three_four_rows():
     for n in range(1, FIELD_ROWS + 1):
         label, edit = by[f"QuestionLabel{n}"], by[f"Answer{n}"]
         assert edit.y == label.y + label.h and label.props["MultiLine"] is True
+    assert by["QuestionsHint"].props["Label"].endswith(
+        "una casella vuota vale come risposta non disponibile.")
     assert by["Log"].props["ReadOnly"] is True and by["Log"].h == LOG_H
     assert by["Expected"].props["Dropdown"] is False and by["DraftCancel"].props["Enabled"] is False
     assert by["Summary"].props["ReadOnly"] is True
@@ -193,7 +194,7 @@ def test_consent_block_is_hidden_and_takes_two_rows(width):
     by = {c.name: c for c in build("Actions", width)}
     text = by["ConsentText"]
     assert text.kind == "FixedText" and text.h == 40           # the question is ~110 characters
-    assert text.props["MultiLine"] is True and text.props["TextColor"] == GRAY
+    assert text.props["MultiLine"] is True
     document, once, deny = (by[name] for name in CONSENT_BUTTONS)
     assert [b.props["Label"] for b in (document, once, deny)] == ["Per questo documento",
                                                                   "Solo stavolta", "Annulla"]
@@ -237,6 +238,14 @@ def test_drafting_panel_rows_and_hidden_blocks():
     assert by["Partitions"].props["Dropdown"] is False
     assert by["ResumeInput"].props["Visible"] is False and by["Resume"].props["Visible"] is False
     assert by["DraftStatus"].props["Label"] == "Scegli un atto"
+
+
+def test_continue_y_tracks_the_visible_questions_and_never_exceeds_the_table_position():
+    from librelex_ext.layout import continue_y
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    assert continue_y(FIELD_ROWS) == by["Continue"].y
+    assert continue_y(0) < continue_y(1) < continue_y(2) < continue_y(FIELD_ROWS)
+    assert continue_y(FIELD_ROWS + 3) == continue_y(FIELD_ROWS)          # clamped
 
 
 def test_actions_lost_the_draft_button_and_the_new_actions_are_wired():

@@ -214,13 +214,15 @@ def test_render_guided_drafting_copy():
             "stopped": None, "busy": False}
     assert render_draft_status(view) == "Scegli un atto"
     view["template"] = {"tipo_atto": "x"}
-    assert render_draft_status(view) == "Compila i campi obbligatori e premi Avvia redazione"
+    assert render_draft_status(view) == (
+        "Passo 1 di 4 · Compila i campi obbligatori e premi Avvia redazione")
 
 
 def test_workbench_rendering():
     from librelex_ext.render import (
         EXPECTED_PARTITIONS,
         render_attachments,
+        render_draft_consent_status,
         render_draft_status,
         render_expected_partitions,
         render_letterhead_labels,
@@ -253,19 +255,28 @@ def test_workbench_rendering():
             "base_errore": None, "busy": False}
     assert render_draft_status({**base, "step": 1, "template": None}) == "Scegli un atto"
     assert render_draft_status({**base, "step": 1}) == (
-        "Compila i campi obbligatori e premi Avvia redazione")
+        "Passo 1 di 4 · Compila i campi obbligatori e premi Avvia redazione")
     assert render_draft_status({**base, "step": 2, "questions": [{}, {}]}) == (
-        "Rispondi alle 2 domande e premi Continua")
+        "Passo 2 di 4 · Rispondi alle 2 domande e premi Continua")
     assert render_draft_status({**base, "step": 3, "busy": True}) == (
-        "Redazione in corso: il modello lavora sul documento")
+        "Passo 3 di 4 · Redazione in corso: il modello lavora sul documento")
     assert render_draft_status({**base, "step": 4, "done": True}) == (
-        "Redazione completata: Verifica citazioni, poi Nuova redazione")
+        "Passo 4 di 4 · Redazione completata: Verifica citazioni, poi Nuova redazione")
     # T1-03: a completed drafting never shows a stale base_errore
     assert render_draft_status({**base, "step": 4, "done": True, "base_errore": "tool giù"}) == (
-        "Redazione completata: Verifica citazioni, poi Nuova redazione")
+        "Passo 4 di 4 · Redazione completata: Verifica citazioni, poi Nuova redazione")
     assert render_draft_status({**base, "step": 4, "stopped": "cancelled"}) == (
-        "Interrotta: Riprendi per continuare")
+        "Passo 4 di 4 · Interrotta: Riprendi per continuare")
     assert render_draft_status({**base, "step": 4, "base_errore": "tool giù"}) == (
-        "Base non generata: tool giù")
+        "Passo 4 di 4 · Base non generata: tool giù")
     assert render_draft_status({**base, "step": 4}) == (
-        "Turno concluso: Riprendi per continuare o Nuova redazione")
+        "Passo 4 di 4 · Turno concluso: Riprendi per continuare o Nuova redazione")
+    # design review §5 item 8: the modal consent line on the Redazione panel, name first
+    assert render_draft_consent_status(
+        {"scope": "attachments", "name": "Doc. 1, Doc. 2", "chars": 24100,
+         "model": "gpt-4o", "endpoint_host": "x", "zdr": True}) == (
+        "In attesa del tuo consenso: Doc. 1, Doc. 2 (24.100 caratteri)")
+    # no name (a plain document read mid-turn, scope selection/paragraphs): falls back to model
+    assert render_draft_consent_status(
+        {"scope": "paragraphs", "chars": 500, "model": "gpt-4o", "endpoint_host": "x",
+         "zdr": True}) == "In attesa del tuo consenso: gpt-4o (500 caratteri)"

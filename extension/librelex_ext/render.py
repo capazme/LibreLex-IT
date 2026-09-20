@@ -135,6 +135,19 @@ def render_consent(summary: dict) -> str:
             f"({conservazione}) {ambito} ({_it_thousands(summary.get('chars', 0))} caratteri)?")
 
 
+def render_draft_consent_status(summary: dict) -> str:
+    """The Redazione panel's DraftStatus line while a consent is pending (design review §5
+    item 8, illustrated there for an attachments-scope request: "In attesa del tuo consenso:
+    Doc. 1, Doc. 2 (24.100 caratteri)"): a one-line summary, shorter than ``render_consent``
+    (which stays the text of the consent block itself, on both panels). ``ConsentSummary.name``
+    is only set for the "attachments"/"reference" scopes; a plain document read during a draft
+    turn ("selection"/"paragraphs") falls back to the model name, so the line never says "None".
+    """
+    name = summary.get("name") or summary.get("model") or ""
+    chars = _it_thousands(summary.get("chars", 0))
+    return f"In attesa del tuo consenso: {name} ({chars} caratteri)"
+
+
 _STOP_NOTES = {
     "iterations": "[interrotto: limite di iterazioni]",
     "timeout": "[interrotto: tempo massimo]",
@@ -219,27 +232,33 @@ def render_draft_status(view: dict) -> str:
     line. ``base_errore`` is read from the view rather than pushed once by the turn that
     reported it, so a rebuilt panel is told again; a turn that later produced a base clears
     it (the core sends the key on every draft final), and a completed drafting never shows it.
+
+    Every line but "Scegli un atto" (nothing to do yet: step 1, no template) carries a
+    "Passo N di 4 · " prefix (design review §5 item 5): a refusal (``Session._refuse_draft``)
+    writes its own line straight to the view and never goes through here, so it stays
+    unprefixed too.
     """
     step = view.get("step", 1)
     if step == 1:
         if not view.get("template"):
             return "Scegli un atto"
-        return "Compila i campi obbligatori e premi Avvia redazione"
-    if step == 2:
-        return f"Rispondi alle {len(view.get('questions') or [])} domande e premi Continua"
-    if step == 3:
-        if view.get("busy"):
-            return "Redazione in corso: il modello lavora sul documento"
-        return "In attesa del core"
-    # step 4
-    base_errore = view.get("base_errore")
-    if base_errore and not view.get("done"):
-        return render_base_error(base_errore)
-    if view.get("done"):
-        return "Redazione completata: Verifica citazioni, poi Nuova redazione"
-    if view.get("stopped"):
-        return "Interrotta: Riprendi per continuare"
-    return "Turno concluso: Riprendi per continuare o Nuova redazione"
+        text = "Compila i campi obbligatori e premi Avvia redazione"
+    elif step == 2:
+        text = f"Rispondi alle {len(view.get('questions') or [])} domande e premi Continua"
+    elif step == 3:
+        text = ("Redazione in corso: il modello lavora sul documento" if view.get("busy")
+                else "In attesa del core")
+    else:
+        base_errore = view.get("base_errore")
+        if base_errore and not view.get("done"):
+            text = render_base_error(base_errore)
+        elif view.get("done"):
+            text = "Redazione completata: Verifica citazioni, poi Nuova redazione"
+        elif view.get("stopped"):
+            text = "Interrotta: Riprendi per continuare"
+        else:
+            text = "Turno concluso: Riprendi per continuare o Nuova redazione"
+    return f"Passo {step} di 4 · {text}"
 
 
 def render_riepilogo(riepilogo: str) -> str:

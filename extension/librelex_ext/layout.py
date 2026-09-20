@@ -15,7 +15,6 @@ MIN_WIDTH = 170      # below this the two-column button grid stops being readabl
 
 MARGIN = 4
 GAP = 4
-GRAY = 0x666666      # notice text: present but not shouting
 BOLD = 150.0         # com.sun.star.awt.FontWeight.BOLD, i.e. FontDescriptor.Weight
 
 LABEL_H = 10
@@ -88,11 +87,16 @@ DRAFT_STEPS: dict[int, tuple[str, ...]] = {
 }
 DRAFT_SHARED = ("DraftStatus",)
 
+# the two copies FieldsLabel toggles between (design review §5 item 14): no template chosen
+# yet, and a template chosen (the panel writes the second back in on set_template)
+FIELDS_LABEL_EMPTY = "Campi del modello: scegli prima un atto dal catalogo"
+FIELDS_LABEL_CHOSEN = "Campi del modello"
+
 # section label → its copy (the panel appends the count to "Citazioni")
 SECTIONS: dict[str, str] = {
     "DocumentLabel": "Documento",
     "ReferenceLabel": "Messaggio, domanda o riferimento (es. art. 2043 c.c.)",
-    "FieldsLabel": "Campi del modello",
+    "FieldsLabel": FIELDS_LABEL_EMPTY,
     "NotesLabel": "Fatti e note",
     "PartitionsLabel": "Partizioni inserite",
     "AttachmentsLabel": "Allegati del fascicolo (Doc. 1, 2, …)",
@@ -187,7 +191,7 @@ def build(kind: str, width: int) -> list[Control]:
 
     if kind == "Actions":
         controls.append(Control("FixedText", "Notice", MARGIN, y, inner, NOTICE_H,
-                                {"Label": NOTICE, "MultiLine": True, "TextColor": GRAY}))
+                                {"Label": NOTICE, "MultiLine": True}))
         y += NOTICE_H + GAP
 
         section("DocumentLabel")
@@ -213,8 +217,7 @@ def build(kind: str, width: int) -> list[Control]:
         # Consent block (spec §8.2): it keeps its slot in the table at all times, so showing
         # it never moves the controls under it; set_consent only flips the four visibilities.
         controls.append(Control("FixedText", "ConsentText", MARGIN, y, inner, CONSENT_TEXT_H,
-                                {"Label": "", "MultiLine": True, "TextColor": GRAY,
-                                 "Visible": False}))
+                                {"Label": "", "MultiLine": True, "Visible": False}))
         y += CONSENT_TEXT_H + GAP
         # the longest label ("Per questo documento") takes the whole width; the other two
         # share the standard two-column row below it
@@ -245,9 +248,10 @@ def build(kind: str, width: int) -> list[Control]:
             rows: list[Control] = []
 
             def section1(name: str) -> None:
-                rows.append(Control("FixedText", name, MARGIN, y, inner, SECTION_H,
-                                    {"Label": SECTIONS[name], "FontWeight": BOLD,
-                                     "MultiLine": True}))
+                # FixedLine, not FixedText (design review §5 item 9): a section rule with its
+                # own emphasis, so no FontWeight/TextColor is needed to read as a header.
+                rows.append(Control("FixedLine", name, MARGIN, y, inner, SECTION_H,
+                                    {"Label": SECTIONS[name]}))
 
             def button1(name: str, label: str, x: int, w: int = col, h: int = BUTTON_H,
                         **props: object) -> None:
@@ -266,7 +270,7 @@ def build(kind: str, width: int) -> list[Control]:
                                  "HelpText": TOOLTIPS["Template"]}))
             y += INPUT_H + GAP
             rows.append(Control("FixedText", "TemplateNotes", MARGIN, y, inner, 20,
-                                {"Label": "", "MultiLine": True, "TextColor": GRAY}))
+                                {"Label": "", "MultiLine": True}))
             y += 20 + GAP
 
             section1("FieldsLabel")
@@ -310,6 +314,8 @@ def build(kind: str, width: int) -> list[Control]:
                                  "Enabled": False}))
             y += REFERENCE_ROW_H + GAP
 
+            # LetterheadLabel is an inline row label ("Carta intestata" next to the list box
+            # and the button), not a section header: FixedText, never the section1 FixedLine.
             rows.append(Control("FixedText", "LetterheadLabel", MARGIN, y,
                                 LETTERHEAD_LABEL_W, INPUT_H,
                                 {"Label": SECTIONS["LetterheadLabel"], "MultiLine": False}))
@@ -332,7 +338,7 @@ def build(kind: str, width: int) -> list[Control]:
                 "FixedText", "QuestionsHint", MARGIN, y, inner, 20,
                 {"Label": ("Il modello ha bisogno di questi dati: rispondi e premi Continua; "
                            "una casella vuota vale come risposta non disponibile."),
-                 "MultiLine": True, "TextColor": GRAY, "Visible": False})]
+                 "MultiLine": True, "Visible": False})]
             y += 20 + GAP
             for n in range(1, FIELD_ROWS + 1):
                 rows.append(Control("FixedText", f"QuestionLabel{n}", MARGIN, y, inner,
@@ -355,9 +361,8 @@ def build(kind: str, width: int) -> list[Control]:
                 {"MultiLine": True, "ReadOnly": True, "VScroll": True, "AutoVScroll": True,
                  "HelpText": TOOLTIPS["Log"], "Visible": False})]
             y += LOG_H + GAP
-            rows.append(Control("FixedText", "ExpectedLabel", MARGIN, y, inner, SECTION_H,
-                                {"Label": SECTIONS["ExpectedLabel"], "FontWeight": BOLD,
-                                 "MultiLine": True, "Visible": False}))
+            rows.append(Control("FixedLine", "ExpectedLabel", MARGIN, y, inner, SECTION_H,
+                                {"Label": SECTIONS["ExpectedLabel"], "Visible": False}))
             y += SECTION_H + GAP
             rows.append(Control("ListBox", "Expected", MARGIN, y, inner, EXPECTED_H,
                                 {"Dropdown": False, "HelpText": TOOLTIPS["Expected"],
@@ -371,9 +376,8 @@ def build(kind: str, width: int) -> list[Control]:
         def step4() -> list[Control]:
             y = MARGIN
             rows: list[Control] = [Control(
-                "FixedText", "PartitionsLabel", MARGIN, y, inner, SECTION_H,
-                {"Label": SECTIONS["PartitionsLabel"], "FontWeight": BOLD, "MultiLine": True,
-                 "Visible": False})]
+                "FixedLine", "PartitionsLabel", MARGIN, y, inner, SECTION_H,
+                {"Label": SECTIONS["PartitionsLabel"], "Visible": False})]
             y += SECTION_H + GAP
             rows.append(Control("ListBox", "Partitions", MARGIN, y, inner, STEP_PARTITIONS_H,
                                 {"Dropdown": False, "HelpText": TOOLTIPS["Partitions"],
@@ -403,7 +407,7 @@ def build(kind: str, width: int) -> list[Control]:
             y = MARGIN + DRAFT_AREA_H - DRAFT_CONSENT_H
             rows: list[Control] = [Control(
                 "FixedText", "DraftConsentText", MARGIN, y, inner, DRAFT_CONSENT_TEXT_H,
-                {"Label": "", "MultiLine": True, "TextColor": GRAY, "Visible": False})]
+                {"Label": "", "MultiLine": True, "Visible": False})]
             y += DRAFT_CONSENT_TEXT_H + GAP
             rows.append(Control("Button", "DraftConsentDocument", MARGIN, y, inner, BUTTON_H,
                                 {"Label": CONSENT_LABELS[0],
@@ -428,7 +432,7 @@ def build(kind: str, width: int) -> list[Control]:
                                 {"Label": "Scegli un atto", "MultiLine": True}))
     elif kind == "Citations":
         controls.append(Control("FixedText", "CitationsHint", MARGIN, y, inner, HINT_H,
-                                {"Label": HINT, "MultiLine": True, "TextColor": GRAY}))
+                                {"Label": HINT, "MultiLine": True}))
         y += HINT_H + GAP
         controls.append(Control("ListBox", "Citations", MARGIN, y, inner, CITATIONS_H,
                                 {"Dropdown": False, "HelpText": TOOLTIPS["Citations"]}))
@@ -449,6 +453,15 @@ def build_all(width: int) -> dict[str, list[Control]]:
 def total_height(controls: list[Control]) -> int:
     """Height the panel needs for ``controls``, bottom margin included (dialog units)."""
     return max(c.y + c.h for c in controls) + MARGIN
+
+
+def continue_y(n: int) -> int:
+    """PositionY (dialog units) of step 2's ``Continue`` button for ``n`` visible questions
+    (design review §5 item 12): just under the last visible question row, never below the
+    button's own table position (``FIELD_ROWS`` rows, the maximum step2() ever shows).
+    """
+    n = min(max(int(n), 0), FIELD_ROWS)
+    return MARGIN + 20 + GAP + n * (QUESTION_LABEL_H + INPUT_H) + GAP
 
 
 CONTROLS: dict[str, list[Control]] = build_all(WIDTH)
