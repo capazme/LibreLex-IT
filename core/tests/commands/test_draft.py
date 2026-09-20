@@ -2,7 +2,7 @@
 import pytest
 
 from librelex_core import protocol as p
-from librelex_core.agent.loop import CONSENT_DENIED, AgentDeps, TurnOutcome
+from librelex_core.agent.loop import BAD_ARGUMENTS, CONSENT_DENIED, AgentDeps, TurnOutcome
 from librelex_core.agent.prompt import load_recipe
 from librelex_core.agent.registry import ToolRegistry
 from librelex_core.agent.state import DocSession, DraftState
@@ -10,6 +10,7 @@ from librelex_core.commands.draft import (
     PROFILE,
     TOO_MANY_QUESTIONS,
     base_text,
+    base_to_markdown,
     coerce_args,
     draft_message,
     draft_summary,
@@ -101,6 +102,40 @@ def test_pure_helpers():
         "tipo_credito": "ordinario"}
 
 
+def test_base_to_markdown_marks_the_act_structure():
+    text = ("RICORSO PER DECRETO INGIUNTIVO\n(Artt. 633 e ss. c.p.c.)\n\n"
+            "ILL.MO SIG. TRIBUNALE DI [SEDE]\n\nRICORSO\n\nIl sottoscritto Avv. [LEGALE] espone.\n"
+            "ESPONE\n\nChe il credito è certo.\n\nSi allegano:\n1. Procura alle liti\n"
+            "2. Fattura\n\n[Luogo], [Data]\nAvv. [LEGALE]")
+    md = base_to_markdown(text)
+    lines = [ln for ln in md.split("\n") if ln]
+    assert lines[0] == "## RICORSO PER DECRETO INGIUNTIVO"
+    assert lines[1] == "(Artt. 633 e ss. c.p.c.)"
+    assert lines[2] == "# ILL.MO SIG. TRIBUNALE DI [SEDE]"
+    assert lines[3] == "### RICORSO" and lines[5] == "### ESPONE"
+    assert lines[7] == "Si allegano:" and lines[8] == "1. Procura alle liti"
+    assert lines[-1] == "Avv. [LEGALE]" and lines[-2] == "[Luogo], [Data]"
+    assert "\n\n" in md and "\n\n\n" not in md
+    assert base_to_markdown("## Già markdown\n\n- punto") == "## Già markdown\n\n- punto"
+
+
+async def test_final_text_and_riepilogo_lose_the_proxy_prefixes():
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument([""])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        llm = ScriptedLLM([
+            tool_turn(("redazione_completata", {"riepilogo":
+                       "Calcoli: mcp__trade_dress__swamp_contributo_unificato 129,50."}),
+                      text="Fatto con mcp__trade_dress__peasant_cite_law.")])
+        out = await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                        "fields": {"attore": "A"}},
+                              await _deps(llm, doc, tools), emit, "r1")
+    assert session.draft.riepilogo == "Calcoli: contributo_unificato 129,50."
+    assert out.text == "Fatto con cite_law."
+
+
 async def test_start_inserts_the_base_then_the_model_asks_questions_and_stops():
     server, calls = make_fake_legal_server()
     doc = FakeDocument([""])
@@ -123,7 +158,8 @@ async def test_start_inserts_the_base_then_the_model_asks_questions_and_stops():
     assert doc.inserts[0]["undo_label"] == "LibreLex: base decreto_ingiuntivo_ordinario"
     assert doc.inserts[0]["bookmark"] == "LibreLex.atto.decreto_ingiuntivo_ordinario"
     assert doc.inserts[0]["author"] == "LibreLex" and doc.inserts[0]["where"] == "end"
-    assert doc.inserts[0]["markdown"].startswith("RICORSO PER DECRETO INGIUNTIVO\n\n(Artt. 633")
+    assert doc.inserts[0]["markdown"].startswith("## RICORSO PER DECRETO INGIUNTIVO\n\n(Artt. 633")
+    assert "# ILL.MO SIG. TRIBUNALE DI [SEDE]" in doc.inserts[0]["markdown"]
     draft = session.draft
     assert draft.base["placeholders"] == ["[SEDE]"] and draft.base["tool"] == "decreto_ingiuntivo"
     assert draft.base["result"]["giudice_competente"] == "Tribunale"
@@ -309,7 +345,7 @@ async def test_the_letter_and_the_preventivo_texts_become_the_base():
                                              "importo": "1.000", "data_scadenza": "2025-03-03",
                                              "data_sollecito": "2025-09-19"}},
                         await _deps(llm, doc, tools), emit, "r1")
-        assert doc.inserts[0]["markdown"].startswith("SOLLECITO DI PAGAMENTO")
+        assert doc.inserts[0]["markdown"].startswith("## SOLLECITO DI PAGAMENTO")
         base = session.draft.base
         assert base["tool"] == "sollecito_pagamento" and base["inserted"] is True
         assert base["placeholders"] == ["[LUOGO]", "[DATA]"] and base["result"] == {
@@ -320,7 +356,7 @@ async def test_the_letter_and_the_preventivo_texts_become_the_base():
         await run_draft(session2, {"action": "start", "tipo_atto": "preventivo_causa",
                                    "fields": {"valore_causa": "12.000"}},
                         await _deps(llm2, doc2, tools), emit, "r2")
-    assert doc2.inserts[0]["markdown"].startswith("PREVENTIVO PER CAUSA CIVILE")
+    assert doc2.inserts[0]["markdown"].startswith("## PREVENTIVO PER CAUSA CIVILE")
     assert session2.draft.base["result"] == {"totale": 1234.5}
     assert "<<<DATI: risultato di preventivo_civile>>>" in llm2.calls[0][0][1]["content"]
 
@@ -479,3 +515,23 @@ async def test_attachments_consent_denied_is_remembered():
         await run_draft(session, {"action": "continue", "message": "vai"},
                         await _deps(llm2, doc, tools), emit, "r2")
         assert len(doc.consent_requests) == 1   # still denied, not asked again
+
+
+async def test_leggi_allegato_rejects_a_non_int_numero():
+    """A float or a bool is not a document number: told to the model, never truncated into
+    an int or coerced (Task 1 review, finding 4)."""
+    server, _ = make_fake_legal_server()
+    doc = FakeDocument([""])
+    events, emit = _emit_list()
+    async with LegalToolsClient(server) as tools:
+        session = DocSession("d1")
+        session.attachments = [{"n": 1, "name": "a.txt", "text": "abc", "chars": 3,
+                                "kind": "text", "troncato": False}]
+        llm = ScriptedLLM([tool_turn(("leggi_allegato", {"numero": 1.0}),
+                                     ("leggi_allegato", {"numero": True})), text_turn("ok")])
+        await run_draft(session, {"action": "start", "tipo_atto": "atto_di_citazione",
+                                  "fields": {"attore": "A"}}, await _deps(llm, doc, tools),
+                        emit, "r1")
+    msgs = [m["content"] for m in llm.calls[1][0] if m.get("role") == "tool"]
+    assert msgs == [BAD_ARGUMENTS, BAD_ARGUMENTS]
+    assert doc.consent_requests == []

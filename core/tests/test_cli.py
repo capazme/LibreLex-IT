@@ -153,3 +153,18 @@ def test_draft_subcommand_passes_attachments(tmp_path, capsys):
     assert "allegati: 1" in out.out
     assert 'allegati "Doc. 1 fattura_12.txt": 13 caratteri' in out.err
     assert "Allegati del fascicolo: Doc. 1 fattura_12.txt" in llm.calls[0][0][1]["content"]
+
+
+def test_draft_subcommand_too_many_attachments_is_a_usage_error(tmp_path, capsys):
+    files = []
+    for i in range(13):
+        f = tmp_path / f"a{i}.txt"
+        f.write_text("x", encoding="utf-8")
+        files.append(str(f))
+    args = ["draft", "--tipo", "decreto_ingiuntivo_ordinario", "--campo", "creditore=Alfa"]
+    for f in files:
+        args += ["--allegato", f]
+    with pytest.raises(SystemExit) as exc:
+        main(args, tools_factory=_factory())
+    assert exc.value.code == 2
+    assert "--allegato: al massimo 12 documenti" in capsys.readouterr().err

@@ -121,3 +121,11 @@ def test_recipe_mentions_attachments_and_short_tool_names():
     for needle in ("leggi_allegato", "una domanda la cui risposta è in un documento non va fatta",
                    "- doc. N: descrizione breve", "procura alle liti", "STRUMENTI", "nome breve"):
         assert needle in text, needle
+
+
+def test_recipe_carries_the_act_markdown_conventions():
+    from librelex_core.agent.prompt import load_recipe
+    text = load_recipe()
+    for needle in ("## Stile e forma dell'atto", "`# ` per l'intestazione",
+                   "`### ` per le partizioni", "`* * * * *`"):
+        assert needle in text, needle

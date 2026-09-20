@@ -39,6 +39,7 @@ from librelex_core.agent.state import (
     attachments_chars,
     attachments_label,
 )
+from librelex_core.agent.textclean import clean_tool_names
 from librelex_core.commands.templates import FIELD_TYPES, field_type
 from librelex_core.document import DocumentError
 from librelex_core.mcp.client import ToolError
@@ -123,6 +124,60 @@ def to_markdown(text: str) -> str:
     one paragraph; ordered lists ("1. ...") keep working, each item being its own paragraph.
     """
     return re.sub(r"\n{2,}", "\n\n", re.sub(r"(?<!\n)\n(?!\n)", "\n\n", text.strip()))
+
+
+# A line the generator's plain text already wrote as markdown (a heading, a list item, a
+# quote): idempotency means such a line is never touched a second time.
+_ALREADY_MARKDOWN_RE = re.compile(r"^(#{1,6}\s|-\s|>\s|\d+\.\s)")
+# The court/judge heading of an act (design §5.3): always the first line after the title,
+# always in capitals, and never mistaken for a section heading of the body.
+_COURT_PREFIXES = ("ILL.MO", "TRIBUNALE", "GIUDICE DI PACE", "CORTE", "AL SIG.", "ALL'ILL.MO")
+_PAREN_LINE_RE = re.compile(r"^\(.*\)$")
+_MAX_SECTION_CHARS = 40
+
+
+def _is_court_heading(stripped: str) -> bool:
+    return stripped.upper().startswith(_COURT_PREFIXES)
+
+
+def _is_short_all_caps(stripped: str) -> bool:
+    """A short, all-capitals line: a section name (PREMESSO CHE, P.Q.M.), not a body line."""
+    if len(stripped) > _MAX_SECTION_CHARS:
+        return False
+    letters = [ch for ch in stripped if ch.isalpha()]
+    return bool(letters) and all(ch.isupper() for ch in letters)
+
+
+def base_to_markdown(text: str) -> str:
+    """A generator's plain act text, pre-formatted into the markdown conventions the model and
+    the act styles both read (design §5.3): every line becomes its own paragraph; the first
+    non-empty line is the act's title (``## ``); a line opening with the court's name
+    (``ILL.MO``, ``TRIBUNALE``, ...) is the court heading (``# ``); a short all-capitals line
+    elsewhere is a section name (``### ``); the line right after the title in parentheses
+    (``(Artt. 633 e ss. c.p.c.)``) stays a plain paragraph; a line that already carries a
+    markdown marker (heading, list item, quote) is left exactly as it is, so the function is
+    idempotent on text the model already wrote in markdown.
+    """
+    lines = text.strip().split("\n")
+    title_idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+    paragraphs: list[str] = []
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if _ALREADY_MARKDOWN_RE.match(stripped):
+            paragraphs.append(stripped)
+        elif i == title_idx:
+            paragraphs.append(f"## {stripped}")
+        elif title_idx is not None and i == title_idx + 1 and _PAREN_LINE_RE.match(stripped):
+            paragraphs.append(stripped)
+        elif _is_court_heading(stripped):
+            paragraphs.append(f"# {stripped}")
+        elif _is_short_all_caps(stripped):
+            paragraphs.append(f"### {stripped}")
+        else:
+            paragraphs.append(stripped)
+    return "\n\n".join(paragraphs)
 
 
 def parse_number(value: str) -> float:
@@ -225,7 +280,7 @@ async def insert_base(session: DocSession, deps: AgentDeps, emit: Emit,
             f"Nessun testo base da {tool}: passo i dati al modello")))
         return
     inserted = await deps.doc.insert_markdown(
-        "end", to_markdown(base), BASE_UNDO.format(tipo_atto=draft.tipo_atto),
+        "end", base_to_markdown(base), BASE_UNDO.format(tipo_atto=draft.tipo_atto),
         bookmark=BASE_BOOKMARK.format(tipo_atto=draft.tipo_atto), author=WRITE_AUTHOR)
     open_placeholders = placeholders(base)
     draft.base = {
@@ -365,8 +420,13 @@ HOOK_TOOLS: list[dict] = [CHIEDI_DATI_TOOL, REDAZIONE_COMPLETATA_TOOL,
 
 
 def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], list[dict]]:
-    """The three drafting hooks, closed over this session and these dependencies."""
+    """The four drafting hooks, closed over this session and these dependencies."""
     draft = session.draft
+    # Snapshot at hook-building time (design §1's follow-up): `deps.registry` is rebuilt with
+    # the hook tools right after this call returns, so a lazy read through `deps` inside the
+    # hook would pick up the wrong list; the closure keeps the one that matters here, the
+    # legal/document/internal tool names the model can mangle through a proxy.
+    names = list(deps.registry.names)
 
     async def chiedi_dati(args: dict) -> tuple[str, str | None]:
         domande = args.get("domande")
@@ -392,7 +452,7 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
         if draft is None:
             return BAD_ARGUMENTS, None
         draft.done = True
-        draft.riepilogo = str(args.get("riepilogo") or "")
+        draft.riepilogo = clean_tool_names(str(args.get("riepilogo") or ""), names)
         draft.questions = []
         return DRAFT_DONE, "done"
 
@@ -424,9 +484,11 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
         attachments = session.attachments
         if not attachments:
             return NO_ATTACHMENTS, None
-        try:
-            numero = int(args.get("numero"))
-        except (TypeError, ValueError):
+        numero = args.get("numero")
+        # A real document number, not a truncated float or a bool masquerading as one
+        # (``True`` is an ``int`` in Python): a model that sends "1.5" or "true" gets told its
+        # arguments are wrong instead of silently reading Doc. 1 (Task 1 review, finding 4).
+        if not isinstance(numero, int) or isinstance(numero, bool):
             return BAD_ARGUMENTS, None
         match = next((a for a in attachments if a["n"] == numero), None)
         if match is None:
@@ -527,6 +589,10 @@ async def run_draft(session: DocSession, args: dict, deps: AgentDeps, emit: Emit
     for entry in outcome.inserted:      # safety net: `record` has already seen them all
         record(entry)
     await _rescan_placeholders(draft, deps)
+    # A proxy the extension sits behind may hand the model tools as `mcp__<x>__<name>` (design
+    # §1's follow-up): the core never changes the name it sends, but the model's own prose can
+    # echo it mangled, so the chat text is cleaned once the turn is over.
+    outcome.text = clean_tool_names(outcome.text, deps.registry.names)
     return outcome
 
 

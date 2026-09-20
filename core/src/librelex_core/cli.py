@@ -13,7 +13,13 @@ from typing import Any
 from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps, TurnOutcome
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import MAX_ATTACHMENT_CHARS, MAX_REFERENCE_CHARS, DocSession
+from librelex_core.agent.state import (
+    MAX_ATTACHMENT_CHARS,
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENTS_CHARS,
+    MAX_REFERENCE_CHARS,
+    DocSession,
+)
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
 from librelex_core.commands.draft import PROFILE as DRAFT_PROFILE
@@ -223,7 +229,8 @@ def _print_draft_turn(session: DocSession, outcome: TurnOutcome) -> None:
 
 
 def _draft_extra(session: DocSession, outcome: TurnOutcome) -> str:
-    """`· domande: N`, `· partizioni: N`, `· completata` appended to a turn's usage line."""
+    """`· domande: N`, `· partizioni: N`, `· allegati: N`, `· completata` appended to a turn's
+    usage line."""
     summary = draft_summary(session, outcome)
     parts = [f"· domande: {len(summary.get('domande') or [])}",
              f"· partizioni: {len(summary.get('partizioni') or [])}",
@@ -233,22 +240,33 @@ def _draft_extra(session: DocSession, outcome: TurnOutcome) -> str:
     return " " + " ".join(parts)
 
 
-def _attachments_from_files(files: list[Path]) -> list[dict[str, Any]]:
+def _attachments_from_files(
+    parser: argparse.ArgumentParser, files: list[Path],
+) -> list[dict[str, Any]]:
     """The `--allegato` files as a session attachment set (text files only, CLI-side reading:
-    the LibreOffice/PDF reading of Drafting Workbench design §4.2 is the extension's)."""
+    the LibreOffice/PDF reading of Drafting Workbench design §4.2 is the extension's); the
+    same limits `set_attachments` enforces on the panel apply here too, as a usage error
+    (`parser.error`, exit 2), the same shape as `--campo`/`--risposta` without `=`."""
+    if len(files) > MAX_ATTACHMENTS:
+        parser.error(f"--allegato: al massimo {MAX_ATTACHMENTS} documenti")
     attachments: list[dict[str, Any]] = []
+    total = 0
     for n, path in enumerate(files, start=1):
         text = path.read_text(encoding="utf-8")
         kept = text[:MAX_ATTACHMENT_CHARS]
+        total += len(kept)
         attachments.append({"n": n, "name": path.name, "text": kept, "chars": len(kept),
                             "kind": "text", "troncato": len(text) > MAX_ATTACHMENT_CHARS})
+    if total > MAX_ATTACHMENTS_CHARS:
+        limit = f"{MAX_ATTACHMENTS_CHARS:,}".replace(",", ".")
+        parser.error(f"--allegato: al massimo {limit} caratteri in totale")
     return attachments
 
 
 async def _draft(
     cfg: Config, factory: ToolsFactory, llm_factory: LLMFactory, path: Path | None,
     tipo_atto: str, fields: dict[str, str], note: str, riferimento: Path | None,
-    risposte: dict[str, str], allegati: list[Path],
+    risposte: dict[str, str], allegati: list[dict[str, Any]],
 ) -> int:
     """The guided drafting from the dev CLI: a `start` turn, then an `answer` turn right after
     if `--risposta` values were given (the two-turn flow of the Redazione panel, one press)."""
@@ -263,7 +281,7 @@ async def _draft(
         if reference is not None:
             session.reference = reference
         if allegati:
-            session.attachments = _attachments_from_files(allegati)
+            session.attachments = allegati
         outcomes = [await run_draft(
             session, {"action": "start", "tipo_atto": tipo_atto, "fields": fields,
                      "notes": note}, deps, _chat_emit, "cli")]
@@ -342,7 +360,8 @@ def main(argv: list[str] | None = None, tools_factory: ToolsFactory = _default_f
             return asyncio.run(_draft(
                 cfg, tools_factory, llm_factory, args.file, args.tipo_atto,
                 _parse_kv(parser, args.campo), args.note, args.riferimento,
-                _parse_kv(parser, args.risposta), args.allegato))
+                _parse_kv(parser, args.risposta),
+                _attachments_from_files(parser, args.allegato)))
         return asyncio.run(_show(cfg, tools_factory, args.reference))
     except (ConfigError, IncompatibleServer, UnparsedReference, TextUnavailable, LLMError,
             TemplateNotFound) as e:

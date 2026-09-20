@@ -46,7 +46,9 @@ NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text", "list_templates",
 # Model-driven commands still to come (spec §6.3).
 NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
-BAD_ATTACHMENTS = ("allegati non validi: al massimo 12 documenti e 300.000 caratteri in totale")
+BAD_ATTACHMENTS = (
+    f"allegati non validi: al massimo {MAX_ATTACHMENTS} documenti e "
+    f"{MAX_ATTACHMENTS_CHARS:,} caratteri in totale".replace(",", "."))
 # asyncio.StreamReader defaults to 64 KiB per line, which a set_reference carrying a 60,000
 # character act crosses as soon as JSON escaping is counted: readline() then raises and,
 # uncaught, killed the core (final review, finding 1). 4 MiB leaves room for every message
