@@ -76,6 +76,15 @@ def test_chat_turn_with_consent_from_inside_libreoffice(soffice, stub, tmp_path)
             self.consent = summary
             if summary is not None:
                 self.consents.append(summary)
+        # The drafting workbench (M3.6) gained seven more: step, log, expected partitions,
+        # attachments, letterheads, summary; a probe's recorder must implement them too.
+        def set_step(self, step): pass
+        def set_log(self, lines): pass
+        def append_log(self, line): pass
+        def set_expected_partitions(self, labels): pass
+        def set_attachments(self, labels): pass
+        def set_letterheads(self, labels, selected): pass
+        def set_summary(self, text): pass
 
     def pump(session, view, events, until_state="ready", timeout=300):
         """Drive the session to `until_state`, granting consent once when it is asked."""

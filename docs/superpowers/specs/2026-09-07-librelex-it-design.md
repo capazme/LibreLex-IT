@@ -200,8 +200,8 @@ LibreLex-IT/
 
 ### 5.1 Sidebar panel
 
-- Registered as a sidebar deck "LibreLex" with five panels (Azioni,
-  Redazione, Domande, Citazioni, Risposte) served by one factory; each panel is
+- Registered as a sidebar deck "LibreLex" with four panels (Azioni,
+  Redazione, Citazioni, Risposte) served by one factory; each panel is
   collapsible through the sidebar's own title bar and "Risposte" takes the remaining
   height; each panel is a UNO `XUIElement` built from an XDL dialog
   (LibreThinker skeleton), registered via `Sidebar.xcu` + `Factories.xcu`;
@@ -212,12 +212,15 @@ LibreLex-IT/
   Rivedi selezione), status line, cancel button, usage/cost
   line, settings button, and the permanent notice *"Le citazioni vanno sempre
   controllate dal professionista"*.
-- **Redazione** holds the guided drafting of the drafting design §6.1 (catalogue
-  search and list, typed fields, notes, the similar-case row, "Avvia redazione",
-  the partitions list, "Continua la redazione" and the drafting status line), and
-  **Domande** holds the questions a drafting turn asks, one labelled box each, with
-  "Continua" to send the answers back. The "Redigi da modello" button is removed from
-  Azioni: the drafting starts in Redazione.
+- **Redazione** (drafting workbench design §3) holds the guided drafting as one panel of
+  four pre-created steps, toggled by visibility: Atto e dati (catalogue search and list,
+  typed fields, notes, the case attachments, the similar-case row, the letterhead
+  dropdown, "Avvia redazione"), Domande (the questions a drafting turn asks, one
+  labelled box each, plus the consent block, with "Continua" to send the answers
+  back), Redazione in corso (a live activity log, the expected partitions, "Annulla"),
+  and Fine (the partitions inserted, the summary, "Verifica citazioni", "Riprendi",
+  "Nuova redazione"). The status line names the step ("Passo N di 4 · ..."). The
+  "Redigi da modello" button is removed from Azioni: the drafting starts in Redazione.
 - Layout (M1): the controls are grouped in labelled sections (Documento,
   Riferimento) over a two-column button grid, with a progress bar above the
   status line, a `Svuota` button on the answers, tooltips on every button
@@ -276,6 +279,15 @@ footnote paragraphs, `t:<table>/c:<cell>/p:<i>` for table cells.
 | `replace_text` | query, replacement, paragraph_id (optional), all (default false) | count, anchors | Tracked deletion + insertion of an exact text; fills placeholders |
 | `add_comment` | paragraph_id, start, end, expected_text, author, text | anchored: exact / found / paragraph_start | See §5.5 |
 | `remove_comments` | author | count | Used by the verification pipeline for idempotent re-runs |
+
+`insert_markdown` also takes an `act_styles` flag, forwarded by the session (never on the
+wire): a drafting insertion restyles the paragraphs it produced with the `LibreLex` act styles
+by pattern, after the Markdown filter (drafting workbench design §5.1, §5.3). Three more
+adapter helpers are not document actions the core drives over the wire, but functions the
+panel calls directly, on the same hidden-document pattern as the reference act: `read_document`
+(a Writer format or a PDF into `{name, text, chars, kind}`, generalising `read_reference`),
+`apply_letterhead` (loads a template's page style and creates the missing `LibreLex` styles)
+and `make_letterhead` (builds a `.ott` from a source file, module-level, not a method).
 | `goto` | paragraph_id | – | Navigation from the panel summary |
 
 ### 5.4 Writing: tracked changes and markdown insertion
@@ -842,6 +854,12 @@ Core → extension:
 Document action payloads follow §5.3; the exact pydantic models in
 `core/src/librelex_core/protocol.py` are the contract. The `read_paragraphs` keys are
 `from_` and `to` (Python parameter names), both always present, `null` when unbounded.
+
+A `draft` turn also exposes four internal tools to the model, added to its profile only for
+that turn: `chiedi_dati` (structured questions, ends the turn), `redazione_completata` (the
+final summary, ends the turn), `leggi_atto_riferimento` (the similar case, after its own
+consent) and `leggi_allegato` (one case attachment by number, after the set's own consent,
+drafting workbench design §4.3).
 
 A `draft` turn's `Final.summary` also carries `tipo_atto`, `domande` (the open questions, if
 any), `partizioni` (the sections inserted so far), `segnaposto_aperti` (placeholders of the

@@ -1,13 +1,14 @@
 # Copyright 2026 Guglielmo Puzio. Licensed under the Apache License, Version 2.0.
-"""M3 exit criterion, headless: a decreto ingiuntivo drafted through the Redazione and
-Domande panels, on the guided-drafting protocol.
+"""M3.6 exit criterion, headless: a decreto ingiuntivo drafted through the one-panel Redazione
+workbench, on a letterhead template, with a case attachment, on the guided-drafting protocol.
 
-Everything between the panels and the endpoint is real: the session's drafting commands
-(`list_templates`, `template_info`, `set_reference`, `draft` start/answer), the Bridge, the
-core subprocess with its `draft` command, the DocumentAdapter and the fake mcp-legal-it with
-its catalogue and its `decreto_ingiuntivo` generator. Only the model is scripted (the
-localhost SSE stub): it reads the similar case (consent), asks for the missing datum through
-`chiedi_dati`, then fills the base's `[SEDE]` placeholder, adds a section and closes with
+Everything between the panel and the endpoint is real: the session's drafting commands
+(`list_templates`, `template_info`, `set_reference`, `set_attachments`, `draft` start/answer),
+the Bridge, the core subprocess with its `draft` command, the DocumentAdapter (letterhead and
+act styles included) and the fake mcp-legal-it with its catalogue and its `decreto_ingiuntivo`
+generator. Only the model is scripted (the localhost SSE stub): it reads the similar case and
+the case attachment (one consent each), asks for the missing datum through `chiedi_dati`, then
+fills the base's `[SEDE]` placeholder, adds a section listing the attachment and closes with
 `redazione_completata`.
 """
 import json
@@ -18,6 +19,8 @@ import pytest
 from librelex_ext import paths
 from tests.headless.conftest import run_probe
 from tests.headless.llm_stub import StubLLM, chunk, tool_call_response, usage
+from tests.headless.test_document import PNG_1PX
+from tests.headless.test_letterhead import BUILD_SOURCE
 
 pytestmark = [pytest.mark.headless,
               pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")]
@@ -34,7 +37,12 @@ NOTES = "Il credito è documentato dalla fattura allegata."
 # it into twelve thousand, which the generator answers with "TRIBUNALE" (over ten thousand).
 FIELDS = {"creditore": "Alfa S.r.l.", "debitore": "Beta S.p.A.", "importo": "12.000"}
 QUESTIONS = [{"campo": "sede", "domanda": "Sede del tribunale?", "esempio": "Milano"}]
-CONCLUSIONS = "## Conclusioni\n\nSi chiede l'ingiunzione di pagamento di Euro 12.000,00."
+# The case document (design §4): a fact the model must find here instead of asking for it,
+# listed by number in the base's "Si allegano" section below.
+ATTACHMENT_NAME = "fattura_12.txt"
+ATTACHMENT_TEXT = "Fattura n. 12 del 3 marzo 2025 di Euro 12.000,00."
+CONCLUSIONS = ("### CONCLUSIONI\n\nSi chiede l'ingiunzione di pagamento di Euro 12.000,00.\n\n"
+               "- doc. 1: fattura n. 12")
 RIEPILOGO = "Calcoli: contributo unificato 129,50.\nAllegati: procura, fattura."
 BASE_PARTITION = "✓ Base: Ricorso per decreto ingiuntivo — credito ordinario"
 
@@ -51,9 +59,10 @@ def tool_messages(request: dict) -> list[dict]:
 @pytest.fixture
 def stub():
     server = StubLLM([
-        # turn 1 (the core has already inserted the base): read the similar case, then ask
-        # for the one datum the template does not carry, which ends the turn.
+        # turn 1 (the core has already inserted the base): read the similar case, read the
+        # one case attachment, then ask for the one datum neither carries, ending the turn.
         tool_call_response("leggi_atto_riferimento", {}, "call_ref"),
+        tool_call_response("leggi_allegato", {"numero": 1}, "call_allegato"),
         with_usage(tool_call_response("chiedi_dati", {"domande": QUESTIONS}, "call_ask"),
                    (1500, 40)),
         # turn 2 (the answers): fill the placeholder, add a section, close the drafting.
@@ -74,6 +83,9 @@ def stub():
 def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub, tmp_path):
     cfg = tmp_path / "config.toml"
     ref_path = tmp_path / REFERENCE_NAME
+    letterhead_src = tmp_path / "carta.docx"
+    letterhead_png = tmp_path / "logo.png"
+    attachment_path = tmp_path / ATTACHMENT_NAME
     server = CORE / "tests" / "fake_legal_server.py"
     cfg.write_text(
         "[mcp_legal_it]\nmode = \"local\"\n"
@@ -82,15 +94,15 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         f"base_url = \"{stub.base_url}\"\napi_key = \"x\"\nmodel = \"stub\"\n",
         encoding="utf-8")
     uv_dir = str(paths.Path(shutil.which("uv")).parent)
-    out = run_probe(soffice, "e2e_draft", f'''
+    out = run_probe(soffice, "e2e_draft", BUILD_SOURCE.format(png_b64=PNG_1PX) + f'''
     import os, queue
-    from librelex_ext import paths
+    from librelex_ext import letterheads, paths
     from librelex_ext.bridge import Bridge
-    from librelex_ext.document import read_reference
+    from librelex_ext.document import make_letterhead, read_document
     from librelex_ext.session import Session
 
     class RecView:
-        """The five panels as one recorder: the last argument of every View method."""
+        """The four panels as one recorder: the last argument of every View method."""
         def __init__(self):
             self.lines, self.status = [], []
             self.stream, self.usage, self.consent = "", None, None
@@ -99,6 +111,9 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
             self.reference, self.partitions, self.questions = ["", False], [], []
             self.draft_status = ["", False]
             self.field_values, self.answer_values = [{{}}, ""], {{}}
+            self.step, self.log = 1, []
+            self.expected, self.attachments = [], []
+            self.letterheads, self.summary = ([], 0), ""
         def append(self, t): self.lines.append(t)
         def set_transcript(self, t): pass
         def set_status(self, t): self.status.append(t)
@@ -119,6 +134,13 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         def set_questions(self, questions): self.questions = list(questions)
         def set_field_values(self, fields, notes): self.field_values = [dict(fields), notes]
         def set_answer_values(self, answers): self.answer_values = dict(answers)
+        def set_step(self, step): self.step = step
+        def set_log(self, lines): self.log = list(lines)
+        def append_log(self, line): self.log.append(line)
+        def set_expected_partitions(self, labels): self.expected = list(labels)
+        def set_attachments(self, labels): self.attachments = list(labels)
+        def set_letterheads(self, labels, selected): self.letterheads = [list(labels), selected]
+        def set_summary(self, text): self.summary = text
 
     def pump(session, view, events, until_state="ready", timeout=300):
         """Drive the session to `until_state`, granting consent once when it is asked."""
@@ -180,17 +202,39 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         out["state_template"] = pump(s, view, events)
         out["template_info"] = view.template
 
-        ref = read_reference(ctx, ref_url)
+        ref = read_document(ctx, ref_url)
         out["reference_chars"] = ref["chars"]
         s.set_reference(ref["name"], ref["text"])
         out["state_reference"] = pump(s, view, events)
         out["reference_label"] = list(view.reference)
+
+        # Letterhead template (design §5.2): a Word source with a header logo and a footer,
+        # built into a .ott, registered in the folder LIBRELEX_CONFIG points the index at,
+        # then chosen for this drafting.
+        letterhead_url = build_source(ctx, {str(letterhead_src)!r}, {str(letterhead_png)!r})
+        modelli = letterheads.templates_dir()
+        make_letterhead(ctx, letterhead_url, str(modelli / "SAPG Legal.ott"))
+        letterheads.register_letterhead("SAPG Legal", "SAPG Legal.ott", modelli)
+        s.set_letterheads(letterheads.list_letterheads())
+        s.choose_letterhead(1)
+        out["letterhead_labels"] = list(view.letterheads[0])
+
+        # A case document (design §4): read the way the panel reads a drop or a pick, then
+        # handed to the session; the model reads it back through leggi_allegato after consent.
+        with open({str(attachment_path)!r}, "w", encoding="utf-8") as f:
+            f.write({ATTACHMENT_TEXT!r})
+        att = read_document(ctx, uno.systemPathToFileUrl({str(attachment_path)!r}))
+        s.add_attachment(att["name"], att["text"], att["kind"])
+        out["state_attachment"] = pump(s, view, events)
+        out["attachment_chars"] = att["chars"]
+        out["attachments_after_add"] = list(view.attachments)
 
         s.draft_start({TIPO_ATTO!r}, {FIELDS!r}, {NOTES!r})
         out["state_start"] = pump(s, view, events)
         out["questions"] = list(view.questions)
         out["status_start"] = list(view.draft_status)
         out["partitions_start"] = list(view.partitions)
+        out["step_start"] = view.step
         out["paragraphs_start"] = paragraph_texts(text)
         out["redlines_start"] = redlines(doc)
         out["bookmarks"] = list(doc.getBookmarks().getElementNames())
@@ -200,6 +244,7 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         out["questions_end"] = list(view.questions)
         out["status_end"] = list(view.draft_status)
         out["partitions"] = list(view.partitions)
+        out["step_end"] = view.step
         out["paragraphs"] = paragraph_texts(text)
         out["redlines"] = redlines(doc)
         out["redline_texts"] = redline_texts(doc)
@@ -208,12 +253,15 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
         out["consent_pending"] = view.consent
         out["stream"] = view.stream
         out["lines"] = list(view.lines)
+        out["log"] = list(view.log)
+        out["summary"] = view.summary
         out["transcript"] = list(s.transcript)
+        out["page_facts"] = page_facts(doc)
         s.shutdown()
         doc.close(True)
     ''', timeout=600, env={"LIBRELEX_CONFIG": str(cfg)})
-    for key in ("state_catalogue", "state_template", "state_reference", "state_start",
-                "state_answer"):
+    for key in ("state_catalogue", "state_template", "state_reference", "state_attachment",
+                "state_start", "state_answer"):
         assert out[key] == "ready", (key, out[key], out.get("transcript"))
 
     # --- the Redazione panel before the drafting -----------------------------
@@ -236,6 +284,13 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
     assert out["reference_label"] == [
         f"Caso simile: {REFERENCE_NAME} ({len(REFERENCE)} caratteri)", True]
 
+    # --- the letterhead: registered, chosen, not yet applied to the document --
+    assert out["letterhead_labels"] == ["Nessuna (impaginazione del documento)", "SAPG Legal"]
+
+    # --- the attachment: read by the panel, listed with its number and size ---
+    assert out["attachments_after_add"] == [
+        f"Doc. 1 · {ATTACHMENT_NAME} ({out['attachment_chars']} caratteri)"]
+
     # --- the deterministic base, before the first model call ------------------
     assert f"LibreLex.atto.{TIPO_ATTO}" in out["bookmarks"], out["bookmarks"]
     assert out["redlines_start"], out["redlines_start"]
@@ -248,30 +303,51 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
     # the court the fake picks over ten thousand euro, so "12.000" was read as such.
     assert any("ILL.MO SIG. TRIBUNALE DI [SEDE]" in t for t in start_texts), start_texts
 
-    # --- turn 1: the question landed in the Domande panel ---------------------
+    # --- turn 1: the question landed in the Domande step, step 2 of 4 ---------
     assert out["questions"] == [{"campo": "sede", "domanda": "Sede del tribunale?",
                                  "esempio": "Milano", "tipo": "testo"}]
-    assert out["status_start"] == ["In attesa delle tue risposte (pannello Domande)", True]
+    assert out["step_start"] == 2
+    assert out["status_start"] == [
+        "Passo 2 di 4 · Rispondi alle 1 domande e premi Continua", True]
     assert out["partitions_start"] == [BASE_PARTITION, "… segnaposto aperti: 1"]
 
-    # --- the reference act: one consent, for the file, by name ----------------
-    assert len(out["consents"]) == 1, out["consents"]
-    summary = out["consents"][0]
-    assert summary["scope"] == "reference" and summary["name"] == REFERENCE_NAME
-    assert summary["chars"] == len(REFERENCE)
-    assert summary["model"] == "stub" and summary["endpoint_host"] == "127.0.0.1"
+    # --- the reference act and the attachment: one consent each, in order -----
+    assert len(out["consents"]) == 2, out["consents"]
+    ref_summary, att_summary = out["consents"]
+    assert ref_summary["scope"] == "reference" and ref_summary["name"] == REFERENCE_NAME
+    assert ref_summary["chars"] == len(REFERENCE)
+    assert ref_summary["model"] == "stub" and ref_summary["endpoint_host"] == "127.0.0.1"
+    assert att_summary["scope"] == "attachments"
+    assert att_summary["name"] == f"Doc. 1 {ATTACHMENT_NAME}"
+    assert att_summary["chars"] == out["attachment_chars"]
     assert out["consent_pending"] is None
 
     # --- turn 2: placeholder filled, section added, drafting closed -----------
     assert out["questions_end"] == []
-    assert out["status_end"] == ["Redazione completata", True]
-    assert out["partitions"] == [BASE_PARTITION, "✓ Conclusioni"]
+    assert out["step_end"] == 4
+    assert out["status_end"] == [
+        "Passo 4 di 4 · Redazione completata: Verifica citazioni, poi Nuova redazione", True]
+    assert out["partitions"] == [BASE_PARTITION, "✓ CONCLUSIONI"]
     paras = out["paragraphs"]
     base_i = next(i for i, (_, t) in enumerate(paras) if "RICORSO PER DECRETO INGIUNTIVO" in t)
-    concl_i = next(i for i, (_, t) in enumerate(paras) if t == "Conclusioni")
+    concl_i = next(i for i, (_, t) in enumerate(paras) if t == "CONCLUSIONI")
     assert concl_i > base_i, paras
-    assert paras[concl_i][0] == "Heading 2", paras[concl_i]
     assert any("MILANO" in t for _, t in paras), paras
+
+    # --- act styles: base and turn-2 insertions carry the LibreLex canon ------
+    by_text = {t: s for s, t in paras}
+    assert by_text.get("RICORSO PER DECRETO INGIUNTIVO") == "LibreLex Titolo atto", paras
+    assert by_text.get("ILL.MO SIG. TRIBUNALE DI MILANO") == "LibreLex Intestazione", paras
+    assert by_text.get("CONCLUSIONI") == "LibreLex Sezione", paras
+    assert by_text.get("- doc. 1: fattura n. 12") == "LibreLex Punto", paras
+    lawyer_style = next(s for s, t in paras if t == PARAGRAPH)
+    assert not lawyer_style.startswith("LibreLex "), lawyer_style
+
+    # --- the letterhead's page style and the ten act styles landed for real ---
+    facts = out["page_facts"]
+    assert facts["header"] is True and facts["graphics"] == 1
+    assert len(facts["styles"]) == 10, facts["styles"]
+
     # The placeholder was filled as a tracked change: the old text is a Delete redline.
     # No Delete redline: the placeholder sat inside LibreLex's own insertion, not yet
     # accepted, so Writer drops the old text outright instead of recording a deletion. The
@@ -280,29 +356,38 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
     assert out["redlines"] == [["Insert", "LibreLex"]], out["redlines"]
     assert len(out["redline_texts"]) == 1, out["redline_texts"]
     tracked = out["redline_texts"][0]
-    for needle in ("RICORSO PER DECRETO INGIUNTIVO", "TRIBUNALE DI MILANO", "Conclusioni"):
+    for needle in ("RICORSO PER DECRETO INGIUNTIVO", "TRIBUNALE DI MILANO", "CONCLUSIONI",
+                   "doc. 1: fattura n. 12"):
         assert needle in tracked, (needle, tracked)
     assert "[SEDE]" not in tracked and PARAGRAPH not in tracked, tracked
 
     # --- what the panels show -------------------------------------------------
     assert out["stream"] == ""          # every turn ended on a tool call, not on prose
     assert out["lines"] == out["transcript"]
+    log = out["log"]
+    assert log[0] == f"Avvio della redazione: {TIPO_ATTO}"
+    assert any(line.startswith("Inserito: ") for line in log), log
+    assert log[-2:] == ["Sostituito: «[SEDE]»", "Inserito: CONCLUSIONI"], log
+    assert out["summary"].startswith("Riepilogo:\n" + RIEPILOGO)
+    assert f"Allegati: Doc. 1 {ATTACHMENT_NAME}" in out["summary"], out["summary"]
     t = out["transcript"]
     assert t[0] == f"Catalogo: {len(tipi)} modelli."
     assert t[1].startswith("Base deterministica: decreto_ingiuntivo · Bozza indicativa")
     assert t[2] == f"Atto di riferimento: {REFERENCE_NAME} ({len(REFERENCE)} caratteri)."
-    assert t[3] == f"Tu: avvio redazione {TIPO_ATTO} (3 campi)"
-    assert t[4] == ""                   # the separator a turn opens with
-    assert t[5] == "Tu: risposte a 1 domande"
-    assert t[6] == ""
-    assert t[7].startswith("Inserito nei paragrafi ")
-    assert t[8] == "Riepilogo della redazione:\n" + RIEPILOGO
-    assert len(t) == 9, t
+    assert t[3] == f"Tu: allegato {ATTACHMENT_NAME}"
+    assert t[4] == f"Allegati: 1 documenti ({out['attachment_chars']} caratteri)."
+    assert t[5] == f"Tu: avvio redazione {TIPO_ATTO} (3 campi)"
+    assert t[6] == ""                   # the separator a turn opens with
+    assert t[7] == "Tu: risposte a 1 domande"
+    assert t[8] == ""
+    assert t[9].startswith("Inserito nei paragrafi ")
+    assert t[10] == "Riepilogo della redazione:\n" + RIEPILOGO
+    assert len(t) == 11, t
     # render_usage formats with the Italian thousands separator above 999 (spec §5.1).
     assert out["usage"] == "Turno: 2.400 + 60 token · sessione: 4.000 token", out["usage"]
 
     # --- what reached the endpoint -------------------------------------------
-    assert len(stub.requests) == 5, [r["messages"][-1] for r in stub.requests]
+    assert len(stub.requests) == 6, [r["messages"][-1] for r in stub.requests]
     first = stub.requests[0]
     assert first["model"] == "stub" and first["stream"] is True
     user = first["messages"][1]["content"]
@@ -311,9 +396,10 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
     assert "Base deterministica già nel documento" in user
     assert "segnaposto ancora aperti: [SEDE]" in user
     assert f"Atto di riferimento disponibile: {REFERENCE_NAME} ({len(REFERENCE)} caratteri)" in user
+    assert f"Allegati del fascicolo: Doc. 1 {ATTACHMENT_NAME}" in user
     assert "# Ricetta di redazione" in user
     names = {tool["function"]["name"] for tool in first["tools"]}
-    assert {"chiedi_dati", "redazione_completata", "leggi_atto_riferimento",
+    assert {"chiedi_dati", "redazione_completata", "leggi_atto_riferimento", "leggi_allegato",
             "genera_modello_atto", "decreto_ingiuntivo", "contributo_unificato",
             "read_paragraphs", "insert_markdown", "replace_text"} <= names, sorted(names)
     assert not ({"cerca_giurisprudenza", "replace_selection", "add_comment"} & names)
@@ -323,13 +409,23 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
     assert len(ref_msgs) == 1, ref_msgs
     assert ref_msgs[0]["content"] == (
         f"<<<DATI: atto di riferimento ({REFERENCE_NAME})>>>\n{REFERENCE}\n<<<FINE DATI>>>")
-    # The last call of the second turn: the first turn compacted, this turn's two writes.
-    last = tool_messages(stub.requests[4])
-    assert len(last) == 4, last
+    # The attachment travelled once too, wrapped the same way, right after its own consent.
+    att_msgs = tool_messages(stub.requests[2])
+    assert len(att_msgs) == 2, att_msgs
+    assert att_msgs[1]["content"] == (
+        f"<<<DATI: allegato 1 ({ATTACHMENT_NAME})>>>\n{ATTACHMENT_TEXT}\n<<<FINE DATI>>>")
+    # The last call of the second turn: the first turn's three tool calls compacted, this
+    # turn's two writes.
+    last = tool_messages(stub.requests[5])
+    assert len(last) == 5, last
     assert last[0]["content"].startswith("[risultato di leggi_atto_riferimento omesso")
-    assert last[1]["content"].startswith("[risultato di chiedi_dati omesso")
-    assert last[2]["content"].startswith("Sostituite 1 occorrenze di «[SEDE]».")
-    assert last[3]["content"].startswith("Inserito nei paragrafi ")
+    assert last[1]["content"].startswith("[risultato di leggi_allegato omesso")
+    assert last[2]["content"].startswith("[risultato di chiedi_dati omesso")
+    assert last[3]["content"].startswith("Sostituite 1 occorrenze di «[SEDE]».")
+    assert last[4]["content"].startswith("Inserito nei paragrafi ")
     blob = json.dumps(stub.requests, ensure_ascii=False)
-    assert blob.count(REFERENCE) == 1          # compacted out of the second turn's history
-    assert PARAGRAPH not in blob               # never read: the document asked for no consent
+    # The reference act is read at the turn's second call and stays in history for the turn's
+    # third (the one that reads the attachment too), then both are compacted out of turn 2.
+    assert blob.count(REFERENCE) == 2
+    assert blob.count(ATTACHMENT_TEXT) == 1     # read only at the turn's last call
+    assert PARAGRAPH not in blob                # never read: the document asked for no consent

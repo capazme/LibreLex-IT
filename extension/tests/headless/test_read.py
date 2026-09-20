@@ -100,11 +100,11 @@ def test_panel_module_imports_inside_libreoffice(soffice):
         registry.ensure_terminate_listener(ctx)
         out["pkg"] = str(panel.package_dir(ctx))
     ''')
-    assert len(urls) == 5
+    assert len(urls) == 4
     assert out["xdl"] == "vnd.sun.star.extension://org.librelex.extension/dialogs/panel.xdl"
     assert out["factory"] == "PanelFactory" and out["pkg"].endswith("/extension")
     assert sorted(out["kinds"]) == out["layout_kinds"]
-    assert out["layout_kinds"] == ["Actions", "Answers", "Citations", "Drafting", "Questions"]
+    assert out["layout_kinds"] == ["Actions", "Answers", "Citations", "Drafting"]
 
 
 def test_minimal_width_follows_the_layout_minimum(soffice):

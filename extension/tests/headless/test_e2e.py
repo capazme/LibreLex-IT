@@ -53,6 +53,15 @@ def test_insert_norm_and_verify_from_inside_libreoffice(soffice, tmp_path):
         def set_field_values(self, fields, notes): pass
         def set_answer_values(self, answers): pass
         def set_consent(self, summary): self.consent = summary
+        # The drafting workbench (M3.6) gained seven more: step, log, expected partitions,
+        # attachments, letterheads, summary; a probe's recorder must implement them too.
+        def set_step(self, step): pass
+        def set_log(self, lines): pass
+        def append_log(self, line): pass
+        def set_expected_partitions(self, labels): pass
+        def set_attachments(self, labels): pass
+        def set_letterheads(self, labels, selected): pass
+        def set_summary(self, text): pass
 
     def pump(session, events, until_state="ready", timeout=180):
         import time

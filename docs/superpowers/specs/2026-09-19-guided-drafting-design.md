@@ -233,6 +233,10 @@ the file. Nothing of the reference is logged.
 
 ## 6. The guided flow in the sidebar (extension)
 
+> Superseded by the drafting workbench design §3 (2026-09-20): one Redazione panel with four
+> pre-created steps replaces the two-panel Redazione/Domande split of §6.1-§6.2 below, which
+> is kept here for its history only.
+
 ### 6.1 A fourth panel, "Redazione"
 
 > Implemented as two panels, Redazione and Domande, per §9 assumption 1 (decided 2026-09-19
