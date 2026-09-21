@@ -128,7 +128,18 @@ def render_usage(usage: dict | None, totals: dict | None) -> str:
 
 def render_consent(summary: dict) -> str:
     conservazione = "senza conservazione dati" if summary.get("zdr") else "con conservazione dati"
-    ambito = "il testo selezionato" if summary.get("scope") == "selection" else "i paragrafi letti"
+    scope = summary.get("scope")
+    name = (summary.get("name") or "")[:120]
+    if len(summary.get("name") or "") > 120:
+        name += "…"
+    if scope == "attachments":
+        ambito = f"gli allegati del fascicolo ({name})"
+    elif scope == "reference":
+        ambito = f"l'atto di riferimento «{name}»"
+    elif scope == "selection":
+        ambito = "il testo selezionato"
+    else:
+        ambito = "i paragrafi letti"
     return (f"Inviare al modello {summary.get('model')} su {summary.get('endpoint_host')} "
             f"({conservazione}) {ambito} ({_it_thousands(summary.get('chars', 0))} caratteri)?")
 
