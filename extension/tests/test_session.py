@@ -974,7 +974,7 @@ def test_draft_start_validates_fields_then_sends_and_the_turn_updates_the_view()
     assert view.questions == [{"campo": "sede", "domanda": "Sede?", "esempio": "Milano",
                                "tipo": "testo"}]
     assert view.partitions == ["✓ Base: Ricorso", "… segnaposto aperti: 1"]
-    assert view.draft_status == ("Passo 2 di 4 · Rispondi alle 1 domande e premi Continua", True)
+    assert view.draft_status == ("Passo 2 di 4 · Rispondi alla domanda e premi Continua", True)
     s.draft_answer({"sede": "Milano"})
     assert bridges[0].sent[-1]["args"] == {"action": "answer", "answers": {"sede": "Milano"}}
     assert s.transcript[-1] == "Tu: risposte a 1 domande"
@@ -1387,7 +1387,8 @@ def test_a_queued_draft_request_that_never_reaches_the_core_is_not_shown_as_star
     assert s2._draft_request is False and s2.draft_view["started"] is True
     # started stays True and the step stays where draft_continue left it (3): the request
     # never reached the core, so the line says the core is unreachable, not "Compila i campi"
-    assert view2.draft_status == ("Passo 3 di 4 · In attesa del core", True)
+    assert view2.draft_status == (
+        "Passo 3 di 4 · In attesa del core", True)
 
 
 def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
@@ -1424,8 +1425,8 @@ def test_an_error_on_the_start_request_drops_the_started_it_had_claimed():
     s3.handle_event({"kind": "message", "msg": {
         "type": "error", "request_id": "r1", "code": "tool_error", "message": "boom"}})
     assert s3.draft_view["started"] is True
-    # the step draft_continue set (3) survives the error: only a failed start moves it back
-    assert view3.draft_status == ("Passo 3 di 4 · In attesa del core", True)
+    assert view3.draft_status == (
+        "Passo 4 di 4 · Turno concluso: Riprendi per continuare o Nuova redazione", True)
 
 
 def test_goto_partition_navigates_and_ignores_the_rows_that_are_not_partitions():
@@ -1480,9 +1481,9 @@ def test_a_core_that_dies_mid_drafting_stops_claiming_a_running_turn():
     assert view.draft_status == (
         "Passo 3 di 4 · Redazione in corso: il modello lavora sul documento", True)
     s.handle_event({"kind": "exit", "code": 1})
-    assert s._draft_request is False
+    assert view.draft_status == (
+        "Passo 4 di 4 · Turno concluso: Riprendi per continuare o Nuova redazione", True)
     # exit leaves the step where it was (3): busy is now False, so the line says so
-    assert view.draft_status == ("Passo 3 di 4 · In attesa del core", True)
     assert view.log[-1] == "Il core si è chiuso"
 
 
@@ -1724,7 +1725,7 @@ def test_the_steps_follow_the_turns_and_the_log_follows_the_core():
                         "segnaposto_aperti": [], "completata": False, "allegati": [],
                         "usage_totals": {}})
     assert s.draft_view["step"] == 2 and view.step == 2
-    assert view.draft_status[0] == "Passo 2 di 4 · Rispondi alle 1 domande e premi Continua"
+    assert view.draft_status[0] == "Passo 2 di 4 · Rispondi alla domanda e premi Continua"
     assert view.expected[3] == "✓ Premesse"
     s.draft_answer({"sede": "Milano"})
     assert view.step == 3 and view.log[-1] == "Risposte inviate"
@@ -1767,7 +1768,7 @@ def test_errors_keep_the_step_and_a_failed_start_goes_back_to_step_one():
         "segnaposto_aperti": [], "completata": False, "allegati": [], "usage_totals": {}})
     s.draft_answer({"s": "x"})
     _error(s, bridge.sent[-1]["id"], "llm", "giù")
-    assert view.step == 3 and s.draft_view["started"] is True       # the drafting is real
+    assert view.step == 4 and s.draft_view["started"] is True       # the drafting is real
     assert s.new_drafting() is None and view.step == 1
 
 

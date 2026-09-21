@@ -154,7 +154,8 @@ def _is_short_all_caps(stripped: str) -> bool:
         return False
     without_placeholders = _BRACKET_PLACEHOLDER_RE.sub("", stripped)
     letters = [ch for ch in without_placeholders if ch.isalpha()]
-    return bool(letters) and all(ch.isupper() for ch in letters)
+    return (bool(letters) and not any(ch.isdigit() for ch in without_placeholders)
+            and all(ch.isupper() for ch in letters))
 
 
 def base_to_markdown(text: str) -> str:
@@ -168,7 +169,10 @@ def base_to_markdown(text: str) -> str:
     idempotent on text the model already wrote in markdown.
     """
     lines = text.strip().split("\n")
-    title_idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+    title_idx = next((i for i, line in enumerate(lines)
+                       if line.strip()
+                       and not _is_court_heading(line.strip())
+                       and not _ALREADY_MARKDOWN_RE.match(line.strip())), None)
     paragraphs: list[str] = []
     for i, raw in enumerate(lines):
         stripped = raw.strip()
@@ -176,6 +180,8 @@ def base_to_markdown(text: str) -> str:
             continue
         if _ALREADY_MARKDOWN_RE.match(stripped):
             paragraphs.append(stripped)
+        elif _is_court_heading(stripped):
+            paragraphs.append(f"# {stripped}")
         elif i == title_idx:
             paragraphs.append(f"## {stripped}")
         elif title_idx is not None and i == title_idx + 1 and _PAREN_LINE_RE.match(stripped):

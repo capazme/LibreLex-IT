@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
@@ -507,7 +508,9 @@ class CoreServer:
         session.reference_consented = False
         session.reference_denied = False
         if text:
-            name = str(msg.args.get("name") or "atto di riferimento")
+            name = re.sub(
+                r"[\x00-\x1f\x7f]+", " ",
+                str(msg.args.get("name") or "atto di riferimento")).strip()[:120]
             troncato = len(text) > MAX_REFERENCE_CHARS
             kept = text[:MAX_REFERENCE_CHARS]
             # The number the panel and the consent block show is the text that will actually
@@ -542,7 +545,8 @@ class CoreServer:
             troncato = len(text) > MAX_ATTACHMENT_CHARS
             kept = text[:MAX_ATTACHMENT_CHARS]
             total += len(kept)
-            attachments.append({"n": n, "name": str(d["name"]), "text": kept, "chars": len(kept),
+            name = re.sub(r"[\x00-\x1f\x7f]+", " ", str(d["name"])).strip()[:120]
+            attachments.append({"n": n, "name": name, "text": kept, "chars": len(kept),
                                 "kind": str(d.get("kind") or "writer"), "troncato": troncato})
         if total > MAX_ATTACHMENTS_CHARS:
             await self.send(p.Error(request_id=msg.id, code="bad_request", message=BAD_ATTACHMENTS))

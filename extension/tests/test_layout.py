@@ -136,7 +136,7 @@ def test_workbench_buttons_are_wired():
     for name, command in (("AttachmentAdd", "attachment_add"),
                           ("AttachmentRemove", "attachment_remove"),
                           ("LetterheadAdd", "letterhead_add"), ("DraftCancel", "cancel"),
-                          ("VerifyAct", "verify_document"), ("NewDraft", "draft_new"),
+                          ("VerifyAct", "verify_act"), ("NewDraft", "draft_new"),
                           ("DraftConsentDocument", "consent_document"),
                           ("DraftConsentOnce", "consent_once"),
                           ("DraftConsentDeny", "consent_deny")):

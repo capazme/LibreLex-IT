@@ -44,6 +44,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("name", help="letterhead name shown in the Redazione panel")
     parser.add_argument("source", help="source file (odt, docx or doc)")
+    parser.add_argument("--default", action="store_true", help="make this the default letterhead")
     parser.add_argument("--out", default=None,
                         help="destination folder (default: the extension's own modelli/)")
     args = parser.parse_args(argv)

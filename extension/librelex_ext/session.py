@@ -174,6 +174,7 @@ class Session:
             "base_errore": None, "step": 1, "log": [], "expected_partitions": [],
             "attachments": [], "letterheads": [], "letterhead": None,
         }
+        self._letterhead_chosen = False
         # The committed set of case documents (design §4): what the core last confirmed
         # through a `set_attachments` final. ``_attachments_pending`` is the set sent and not
         # yet answered (committed on the final, discarded on error or exit); the whole set is
@@ -390,6 +391,8 @@ class Session:
             answers_draft={}, questions=[], partitions=[], open_placeholders=[],
             started=False, done=False, stopped=None, base_errore=None, log=[],
             expected_partitions=[])
+        self.view.set_template(self.draft_view["template"])
+        self.view.set_field_values(self.draft_view["fields"], self.draft_view["notes"])
         self._summary_text = ""
         self.view.set_questions([])
         self.view.set_answer_values({})
@@ -446,7 +449,8 @@ class Session:
     def set_letterheads(self, entries: list[dict]) -> None:
         self.draft_view["letterheads"] = entries
         current = self.draft_view.get("letterhead")
-        if current is None or not any(e["name"] == current for e in entries):
+        if (not self._letterhead_chosen
+                and (current is None or not any(e["name"] == current for e in entries))):
             self.draft_view["letterhead"] = letterheads.initial_choice(
                 entries, letterheads.load_index())
         labels, selected = self._letterhead_selection()
@@ -458,6 +462,7 @@ class Session:
             return       # a ListBox reports -1 with no selection: not a valid row
         name = None if index == 0 else entries[index - 1]["name"]
         self.draft_view["letterhead"] = name
+        self._letterhead_chosen = True
         with suppress(OSError):
             letterheads.remember_choice(name)
 
@@ -483,7 +488,10 @@ class Session:
         path = self.letterhead_path()
         url = "file://" + urllib.parse.quote(path) if path else None
         try:
-            self.adapter.apply_letterhead(url)
+            result = self.adapter.apply_letterhead(url)
+            if result.get("page_style") and result["page_style"] != "Standard":
+                self._log("Carta intestata applicata (pagina «{}» sostituita)".format(
+                    result["page_style"]))
         except Exception as e:
             line = f"Carta intestata non applicata: {e}"
             self._log(line)
@@ -629,6 +637,12 @@ class Session:
             self._forget_attachments_request()
             if was_draft:      # same as _on_error: no drafting is running any more
                 self._log("Il core si è chiuso")
+                if self.draft_view["step"] == 3:
+                    self._set_step(4)
+                self._attachment_texts.clear()
+                self.draft_view["attachments"] = []
+                self.view.set_attachments([])
+                self._append("Il core si è chiuso: riaggiungi i documenti del caso")
                 self._refresh_draft_status()
             self._flush_stream()
             self._clear_pending_consent()
@@ -736,7 +750,7 @@ class Session:
         self.view.set_status("Pronto")
         self._clear_pending_consent()
         was_streamed = self._streamed
-        self._flush_stream()
+        self._flush_stream(msg.get("text", ""))
         summary = msg.get("summary") or {}
         if "modelli" in summary:
             self.draft_view["templates"] = summary["modelli"]
@@ -784,6 +798,9 @@ class Session:
             self.draft_view["attachments"] = merged
             self.view.set_attachments(render_attachments(merged))
             self._append(msg["text"])
+            if allegati:
+                self.view.set_draft_status(
+                    "Allegato aggiunto: " + allegati[-1].get("name", ""), True)
             self._attachments_pending = None
             self._forget_attachments_request()
         elif was_streamed or "usage_totals" in summary or "tool_calls" in summary:
@@ -873,7 +890,7 @@ class Session:
             self._set_busy(False)
             self.view.set_status("Pronto")
         self.view.set_progress(0, None)
-        self._flush_stream()
+        self._flush_stream(msg.get("text", ""))
         self._clear_pending_consent()
         self._append(render_error(msg.get("code", "?"), msg.get("message", ""), self.config_path))
         if failed_attachments:
@@ -881,6 +898,8 @@ class Session:
             self._forget_attachments_request()
         if was_draft:
             self._log(f"Errore: {msg.get('message', '')}")
+            if self.draft_view["step"] == 3:
+                self._set_step(4)
         if failed_start:
             self._forget_draft_start()
             self._abandon_draft_request()
@@ -935,9 +954,13 @@ class Session:
             self._append(label)
         return True
 
-    def _flush_stream(self) -> None:
+    def _flush_stream(self, final_text: str = "") -> None:
         if self._streamed:
-            self.transcript.append(self._stream_buffer)
+            text = (final_text if final_text and final_text != self._stream_buffer
+                    else self._stream_buffer)
+            self.transcript.append(
+                text if text.startswith("LibreLex: ") else "LibreLex: " + text)
+            self.view.set_transcript("\n".join(self.transcript))
         self._streamed = False
         self._stream_buffer = ""
 
@@ -961,6 +984,8 @@ class Session:
         ``started`` is dropped only while the document holds no partition: once the core has
         inserted something, the drafting is real whatever happened to this one request, and
         "Continua la redazione" is the way back into it.
+            self.view.set_template(self.draft_view["template"])
+            self.view.set_field_values(self.draft_view["fields"], self.draft_view["notes"])
         """
         self._draft_request = False
         if not self.draft_view["partitions"]:

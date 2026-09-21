@@ -62,7 +62,7 @@ EXPECTED_H = 80
 ATTACHMENTS_H = 36
 SUMMARY_H = 140
 STEP_PARTITIONS_H = 60
-DRAFT_CONSENT_TEXT_H = 30
+DRAFT_CONSENT_TEXT_H = 40
 DRAFT_CONSENT_H = DRAFT_CONSENT_TEXT_H + GAP + BUTTON_H + GAP + BUTTON_H
 LETTERHEAD_LABEL_W = 60
 REFERENCE_ROW_H = 16
@@ -477,7 +477,7 @@ ACTIONS = {"VerifyDocument": "verify_document", "VerifySelection": "verify_selec
            "Start": "draft_start", "Resume": "draft_resume", "Continue": "draft_answer",
            "AttachmentAdd": "attachment_add", "AttachmentRemove": "attachment_remove",
            "LetterheadAdd": "letterhead_add", "DraftCancel": "cancel",
-           "VerifyAct": "verify_document", "NewDraft": "draft_new",
+           "VerifyAct": "verify_act", "NewDraft": "draft_new",
            "DraftConsentDocument": "consent_document", "DraftConsentOnce": "consent_once",
            "DraftConsentDeny": "consent_deny"}
 

@@ -26,7 +26,7 @@ def test_act_style_for_follows_the_pattern_order():
         ("- opponente -", "list", 9, "LibreLex Ruolo parte"),
         ("il credito è certo", "list", 9, "LibreLex Punto"),
         ("Art. 633 c.p.c.: ...", "quote", 9, "LibreLex Citazione"),
-        ("Avv. Mario Rossi", "body", 9, "LibreLex Firma"),
+        ("Avv. Mario Rossi", "body", 9, "LibreLex Corpo"),
         ("[Luogo], [Data]", "body", 9, "LibreLex Firma"),
         ("Milano, 3 marzo 2026", "body", 1, "LibreLex Firma"),
         ("Milano, 3 marzo 2026", "body", 5, "LibreLex Corpo"),

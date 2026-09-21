@@ -48,14 +48,13 @@ def rebuild_lines(frames: list[Frame]) -> str:
         pages.setdefault(frame[0], []).append(frame)
 
     out_lines: list[str] = []
-    any_page_emitted = False
+    first_page = min(pages) if pages else None
     for page in sorted(pages):
         page_frames = sorted(pages[page], key=lambda f: (f[1], f[2]))
         texts = [t for line in _group_lines(page_frames) if (t := line.text())]
         if not texts:
             continue
-        if any_page_emitted:
+        if page != first_page:
             out_lines.append(f"--- pagina {page} ---")
         out_lines.extend(texts)
-        any_page_emitted = True
     return "\n".join(out_lines)

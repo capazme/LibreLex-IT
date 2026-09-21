@@ -63,8 +63,9 @@ def act_style_for(text: str, origin: str, from_end: int) -> str:
         return "LibreLex Punto"
     if origin == "quote":
         return "LibreLex Citazione"
-    if (stripped.startswith("Avv. ") or stripped == "[Luogo], [Data]"
-            or (from_end < 5 and _SIGNATURE_DATE_RE.match(stripped))):
+    if (stripped == "[Luogo], [Data]"
+            or (from_end < 5 and (stripped.startswith("Avv. ")
+                                  or _SIGNATURE_DATE_RE.match(stripped)))):
         return "LibreLex Firma"
     return "LibreLex Corpo"
 

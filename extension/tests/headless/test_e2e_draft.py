@@ -308,7 +308,7 @@ def test_guided_drafting_through_the_redazione_and_domande_panels(soffice, stub,
                                  "esempio": "Milano", "tipo": "testo"}]
     assert out["step_start"] == 2
     assert out["status_start"] == [
-        "Passo 2 di 4 · Rispondi alle 1 domande e premi Continua", True]
+        "Passo 2 di 4 · Rispondi alla domanda e premi Continua", True]
     assert out["partitions_start"] == [BASE_PARTITION, "… segnaposto aperti: 1"]
 
     # --- the reference act and the attachment: one consent each, in order -----

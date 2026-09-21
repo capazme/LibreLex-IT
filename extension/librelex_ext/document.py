@@ -799,6 +799,7 @@ class DocumentAdapter:
         `url` None (no letterhead chosen), only `ensure_act_styles()` runs.
         """
         loaded = False
+        page_style = "Standard"
         if url:
             name = unquote(url.rsplit("/", 1)[-1])
             tmpdir = tempfile.mkdtemp(prefix="librelex-letterhead-")          # 0700 (spec §8.4)
@@ -814,12 +815,22 @@ class DocumentAdapter:
                     prop("LoadPageStyles", False), prop("LoadFrameStyles", False),
                     prop("LoadTextStyles", True), prop("LoadNumberingStyles", False),
                     prop("OverwriteStyles", False)))
+                with suppress(Exception):
+                    page_style = self.doc.getCurrentController().getViewCursor().PageStyleName
+                if page_style != "Standard":
+                    with suppress(Exception):
+                        standard = (self.doc.getStyleFamilies().getByName("PageStyles")
+                                   .getByName("Standard"))
+                        if standard.HeaderIsOn:
+                            cursor = self.doc.Text.createTextCursorByRange(self.doc.Text.Start)
+                            cursor.PageDescName = "Standard"
             except Exception as e:
                 raise DocumentActionError(f"carta intestata non applicabile: {name}") from e
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             loaded = True
-        return {"letterhead": loaded, "created": self.ensure_act_styles()}
+        return {"letterhead": loaded, "created": self.ensure_act_styles(),
+                "page_style": page_style}
 
 
 def make_letterhead(ctx, source_url: str, out_path: str) -> str:
@@ -832,7 +843,8 @@ def make_letterhead(ctx, source_url: str, out_path: str) -> str:
     basename = os.path.basename(out_path)
     if os.path.exists(out_path):
         raise DocumentActionError(f"modello già presente: {basename}")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    os.makedirs(os.path.dirname(out_path) or ".", mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(out_path) or ".", 0o700)
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     doc = desktop.loadComponentFromURL(
         "private:factory/swriter", "_blank", 0, (prop("Hidden", True),))
@@ -884,7 +896,7 @@ def read_document(ctx, url: str) -> dict:
     `com.sun.star.document.UpdateDocMode.NO_UPDATE` (no linked section, DDE field or database
     lookup is refreshed while we read it).
     """
-    name = unquote(url.rsplit("/", 1)[-1])
+    name = re.sub(r"[\x00-\x1f\x7f]+", " ", unquote(url.rsplit("/", 1)[-1])).strip()[:120]
     is_pdf = name.lower().endswith(".pdf")
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     load_props = [prop("Hidden", True), prop("ReadOnly", True),

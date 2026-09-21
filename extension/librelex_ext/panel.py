@@ -894,10 +894,15 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             for name in layout.CONSENT_BUTTONS:
                 self._set_visible(name, summary is not None)
         if self.model.hasByName("DraftConsentText"):
+            was_pending = self._consent_pending
+            was_pending = self._consent_pending
             self._consent_pending = summary is not None
             if summary is not None:
                 self.model.getByName("DraftConsentText").Label = render_consent(summary)
             self._apply_drafting_state()
+            if self._consent_pending and not was_pending:
+                with suppress(Exception):
+                    self.window.getControl("DraftConsentDocument").setFocus()
 
     def set_progress(self, done, total):
         """Show the bar at done/total; ``total`` None (or zero) hides it again."""
@@ -1049,6 +1054,11 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             return
         previous, self._step = self._step, step
         self._apply_drafting_state()
+        if previous != step:
+            focus = _STEP_FOCUS.get(step)
+            if focus and self.model.hasByName(focus):
+                with suppress(Exception):
+                    self.window.getControl(focus).setFocus()
         if previous == 1 and step == 3:
             self._collapse_other_panels()
 
@@ -1067,7 +1077,13 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
                 if name in layout.DRAFT_CONSENT or not self.model.hasByName(name):
                     continue
                 if s == step:
-                    if name not in _DYNAMIC_ROWS:
+                    if (name not in _DYNAMIC_ROWS
+                            or (name.startswith("Field")
+                                and int("".join(c for c in name if c.isdigit())) <= len(
+                                    self._field_names))
+                            or ((name.startswith("Question") or name.startswith("Answer"))
+                                and int("".join(c for c in name if c.isdigit())) <= len(
+                                    self._question_fields))):
                         self._set_visible(name, True)
                 else:
                     self._set_visible(name, False)
@@ -1083,10 +1099,6 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName("DraftStatus").Label = render_draft_consent_status(summary or {})
         else:
             self.model.getByName("DraftStatus").Label = self._draft_status_text
-        focus = "DraftConsentDocument" if modal else _STEP_FOCUS.get(step)
-        if focus and self.model.hasByName(focus):
-            with suppress(Exception):
-                self.window.getControl(focus).setFocus()
         with suppress(Exception):
             self._panel_by_id("LibreLexRedazionePanel").setTitle(_STEP_TITLES.get(step, ""))
 
