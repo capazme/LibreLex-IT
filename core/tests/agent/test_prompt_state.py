@@ -93,3 +93,39 @@ def test_draft_state_and_reference_live_on_the_session():
     s.draft = DraftState(tipo_atto="x", template={"campi_obbligatori": []}, fields={"a": "1"})
     assert s.draft.answers == {} and s.draft.partitions == [] and s.draft.done is False
     assert s.draft.base is None and s.draft.base_errore is None
+
+
+def test_attachment_limits_and_labels():
+    from librelex_core.agent.state import (
+        MAX_ATTACHMENT_CHARS,
+        MAX_ATTACHMENTS,
+        MAX_ATTACHMENTS_CHARS,
+        attachments_chars,
+        attachments_label,
+    )
+    assert (MAX_ATTACHMENT_CHARS, MAX_ATTACHMENTS, MAX_ATTACHMENTS_CHARS) == (60_000, 12, 300_000)
+    docs = [{"n": 1, "name": "fattura_12.pdf", "chars": 100, "text": "a" * 100},
+            {"n": 2, "name": "delibera.docx", "chars": 50, "text": "b" * 50}]
+    assert attachments_label(docs) == "Doc. 1 fattura_12.pdf; Doc. 2 delibera.docx"
+    assert attachments_chars(docs) == 150
+    long = [{"n": i, "name": "x" * 40 + ".pdf", "chars": 1, "text": "x"} for i in range(1, 8)]
+    label = attachments_label(long)
+    assert len(label) <= 200 and label.endswith("…")
+    s = DocSession("d1")
+    assert s.attachments == [] and s.attachments_consented is False and s.attachments_denied is False  # noqa: E501
+
+
+def test_recipe_mentions_attachments_and_short_tool_names():
+    from librelex_core.agent.prompt import load_recipe
+    text = load_recipe()
+    for needle in ("leggi_allegato", "una domanda la cui risposta è in un documento non va fatta",
+                   "- doc. N: descrizione breve", "procura alle liti", "STRUMENTI", "nome breve"):
+        assert needle in text, needle
+
+
+def test_recipe_carries_the_act_markdown_conventions():
+    from librelex_core.agent.prompt import load_recipe
+    text = load_recipe()
+    for needle in ("## Stile e forma dell'atto", "`# ` per l'intestazione",
+                   "`### ` per le partizioni", "`* * * * *`"):
+        assert needle in text, needle

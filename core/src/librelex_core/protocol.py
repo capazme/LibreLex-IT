@@ -38,7 +38,7 @@ class Chat(_Msg):
 
 CommandName = Literal[
     "verify_citations", "insert_norm", "list_citations", "show_text", "research", "draft",
-    "review", "list_templates", "template_info", "set_reference"
+    "review", "list_templates", "template_info", "set_reference", "set_attachments"
 ]
 
 
@@ -112,7 +112,7 @@ class DocCall(_Msg):
 
 
 class ConsentSummary(_Msg):
-    scope: Literal["selection", "paragraphs", "reference"]
+    scope: Literal["selection", "paragraphs", "reference", "attachments"]
     chars: int
     endpoint_host: str
     model: str

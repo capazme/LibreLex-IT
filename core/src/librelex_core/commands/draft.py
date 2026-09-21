@@ -7,10 +7,11 @@ questions the model asked) and ``continue`` (a free instruction, or a resume aft
 iteration stop). The user message of every turn is rebuilt from that state, so the model
 never depends on the compacted tool results of an earlier turn.
 
-Three hooks (``chiedi_dati``, ``redazione_completata``, ``leggi_atto_riferimento``) are added
-to the loop for the drafting turns only: the first two end the turn in an orderly way, the
-third serves the reference act after consent. Everything else (grounding on write, consent for
-document reads, limits, cancellation) is the ordinary agent turn.
+Four hooks (``chiedi_dati``, ``redazione_completata``, ``leggi_atto_riferimento``,
+``leggi_allegato``) are added to the loop for the drafting turns only: the first two end the
+turn in an orderly way, the other two serve the reference act and the case attachments after
+consent. Everything else (grounding on write, consent for document reads, limits, cancellation)
+is the ordinary agent turn.
 """
 from __future__ import annotations
 
@@ -31,7 +32,14 @@ from librelex_core.agent.loop import (
 )
 from librelex_core.agent.prompt import load_recipe, wrap_data
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, DraftState
+from librelex_core.agent.state import (
+    MAX_REFERENCE_CHARS,
+    DocSession,
+    DraftState,
+    attachments_chars,
+    attachments_label,
+)
+from librelex_core.agent.textclean import clean_tool_names
 from librelex_core.commands.templates import FIELD_TYPES, field_type
 from librelex_core.document import DocumentError
 from librelex_core.mcp.client import ToolError
@@ -46,6 +54,7 @@ TOO_MANY_QUESTIONS = "ERRORE: al massimo otto domande, le altre sono state scart
 QUESTIONS_SENT = "Domande inviate all'utente: attendi le risposte nel prossimo turno."
 DRAFT_DONE = "Redazione registrata come completata."
 NO_REFERENCE = "ERRORE: nessun atto di riferimento caricato"
+NO_ATTACHMENTS = "ERRORE: nessun allegato caricato"
 BASE_BAD_RESPONSE = "risposta non valida del generatore"
 # The four states of the deterministic base, as the user message tells them (design §3.2,
 # §4.3): failed, absent, inserted, data only.
@@ -115,6 +124,75 @@ def to_markdown(text: str) -> str:
     one paragraph; ordered lists ("1. ...") keep working, each item being its own paragraph.
     """
     return re.sub(r"\n{2,}", "\n\n", re.sub(r"(?<!\n)\n(?!\n)", "\n\n", text.strip()))
+
+
+# A line the generator's plain text already wrote as markdown (a heading, a list item, a
+# quote): idempotency means such a line is never touched a second time.
+_ALREADY_MARKDOWN_RE = re.compile(r"^(#{1,6}\s|-\s|>\s|\d+\.\s)")
+# The court/judge heading of an act (design §5.3): always the first line after the title,
+# always in capitals, and never mistaken for a section heading of the body.
+_COURT_PREFIXES = ("ILL.MO", "TRIBUNALE", "GIUDICE DI PACE", "CORTE", "AL SIG.", "ALL'ILL.MO")
+_PAREN_LINE_RE = re.compile(r"^\(.*\)$")
+_MAX_SECTION_CHARS = 40
+# The "[...]" placeholders of a line ("[LUOGO], [DATA]") are not the section rule's business:
+# a line whose only capitals sit inside them is a data line, not a heading (P.Q.M., PREMESSO CHE).
+_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]]*\]")
+
+
+def _is_court_heading(stripped: str) -> bool:
+    return stripped.upper().startswith(_COURT_PREFIXES)
+
+
+def _is_short_all_caps(stripped: str) -> bool:
+    """A short, all-capitals line: a section name (PREMESSO CHE, P.Q.M.), not a body line.
+
+    Letters inside "[...]" placeholders are ignored: a line such as "[LUOGO], [DATA]" or
+    "Avv. [LEGALE]" must keep at least one letter of its own, outside the placeholders, before
+    it counts as a section name.
+    """
+    if len(stripped) > _MAX_SECTION_CHARS:
+        return False
+    without_placeholders = _BRACKET_PLACEHOLDER_RE.sub("", stripped)
+    letters = [ch for ch in without_placeholders if ch.isalpha()]
+    return (bool(letters) and not any(ch.isdigit() for ch in without_placeholders)
+            and all(ch.isupper() for ch in letters))
+
+
+def base_to_markdown(text: str) -> str:
+    """A generator's plain act text, pre-formatted into the markdown conventions the model and
+    the act styles both read (design §5.3): every line becomes its own paragraph; the first
+    non-empty line is the act's title (``## ``); a line opening with the court's name
+    (``ILL.MO``, ``TRIBUNALE``, ...) is the court heading (``# ``); a short all-capitals line
+    elsewhere is a section name (``### ``); the line right after the title in parentheses
+    (``(Artt. 633 e ss. c.p.c.)``) stays a plain paragraph; a line that already carries a
+    markdown marker (heading, list item, quote) is left exactly as it is, so the function is
+    idempotent on text the model already wrote in markdown.
+    """
+    lines = text.strip().split("\n")
+    title_idx = next((i for i, line in enumerate(lines)
+                       if line.strip()
+                       and not _is_court_heading(line.strip())
+                       and not _ALREADY_MARKDOWN_RE.match(line.strip())), None)
+    paragraphs: list[str] = []
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if _ALREADY_MARKDOWN_RE.match(stripped):
+            paragraphs.append(stripped)
+        elif _is_court_heading(stripped):
+            paragraphs.append(f"# {stripped}")
+        elif i == title_idx:
+            paragraphs.append(f"## {stripped}")
+        elif title_idx is not None and i == title_idx + 1 and _PAREN_LINE_RE.match(stripped):
+            paragraphs.append(stripped)
+        elif _is_court_heading(stripped):
+            paragraphs.append(f"# {stripped}")
+        elif _is_short_all_caps(stripped):
+            paragraphs.append(f"### {stripped}")
+        else:
+            paragraphs.append(stripped)
+    return "\n\n".join(paragraphs)
 
 
 def parse_number(value: str) -> float:
@@ -217,7 +295,7 @@ async def insert_base(session: DocSession, deps: AgentDeps, emit: Emit,
             f"Nessun testo base da {tool}: passo i dati al modello")))
         return
     inserted = await deps.doc.insert_markdown(
-        "end", to_markdown(base), BASE_UNDO.format(tipo_atto=draft.tipo_atto),
+        "end", base_to_markdown(base), BASE_UNDO.format(tipo_atto=draft.tipo_atto),
         bookmark=BASE_BOOKMARK.format(tipo_atto=draft.tipo_atto), author=WRITE_AUTHOR)
     open_placeholders = placeholders(base)
     draft.base = {
@@ -269,6 +347,15 @@ def draft_message(session: DocSession, action: str, message: str = "",
             f"Atto di riferimento disponibile: {reference['name']} "
             f"({reference['chars']} caratteri{cut}): leggilo con leggi_atto_riferimento "
             "prima di comporre.")
+    if session.attachments:
+        items = []
+        for a in session.attachments:
+            chars = f"{a['chars']:,}".replace(",", ".")
+            note = ", troncato" if a["troncato"] else ""
+            items.append(f"Doc. {a['n']} {a['name']} ({chars} caratteri{note})")
+        blocks.append(
+            "Allegati del fascicolo: " + "; ".join(items) + ": leggi con leggi_allegato "
+            "quelli che servono ai fatti; l'elenco \"Si allegano\" segue questa numerazione.")
     if draft.base_errore:
         blocks.append(BASE_FAILED.format(motivo=draft.base_errore))
     elif draft.base is None:
@@ -335,13 +422,29 @@ LEGGI_ATTO_RIFERIMENTO_TOOL: dict = {"type": "function", "function": {
                    "usare per struttura e stile, mai per i fatti.",
     "parameters": {"type": "object", "properties": {}}}}
 
+LEGGI_ALLEGATO_TOOL: dict = {"type": "function", "function": {
+    "name": "leggi_allegato",
+    "description": "Testo dell'allegato numero N del fascicolo (fattura, delibera, decreto, "
+                   "contratto...): i fatti del caso si prendono da qui.",
+    "parameters": {"type": "object", "properties": {
+        "numero": {"type": "integer", "description": "Numero dell'allegato (Doc. N)."},
+    }, "required": ["numero"]}}}
+
 HOOK_TOOLS: list[dict] = [CHIEDI_DATI_TOOL, REDAZIONE_COMPLETATA_TOOL,
-                          LEGGI_ATTO_RIFERIMENTO_TOOL]
+                          LEGGI_ATTO_RIFERIMENTO_TOOL, LEGGI_ALLEGATO_TOOL]
 
 
 def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], list[dict]]:
-    """The three drafting hooks, closed over this session and these dependencies."""
+    """The four drafting hooks, closed over this session and these dependencies."""
     draft = session.draft
+    # Snapshot at hook-building time (design §1's follow-up): `deps.registry` is rebuilt with
+    # the hook tools right after this call returns, so a lazy read through `deps` inside the
+    # hook would pick up the wrong list; the closure keeps the one that matters here, the
+    # legal/document/internal tool names the model can mangle through a proxy. The four hook
+    # tools themselves (leggi_allegato and the rest) are not yet in `deps.registry` at this
+    # point either, so they are added by name: a riepilogo mentioning
+    # "mcp__x__y_leggi_allegato" must still clean down to "leggi_allegato".
+    names = list(deps.registry.names) + [t["function"]["name"] for t in HOOK_TOOLS]
 
     async def chiedi_dati(args: dict) -> tuple[str, str | None]:
         domande = args.get("domande")
@@ -367,7 +470,7 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
         if draft is None:
             return BAD_ARGUMENTS, None
         draft.done = True
-        draft.riepilogo = str(args.get("riepilogo") or "")
+        draft.riepilogo = clean_tool_names(str(args.get("riepilogo") or ""), names)
         draft.questions = []
         return DRAFT_DONE, "done"
 
@@ -395,9 +498,42 @@ def hooks_for(session: DocSession, deps: AgentDeps) -> tuple[dict[str, Hook], li
                 return CONSENT_DENIED, None
         return wrap_data(f"atto di riferimento ({reference['name']})", reference["text"]), None
 
+    async def leggi_allegato(args: dict) -> tuple[str, str | None]:
+        attachments = session.attachments
+        if not attachments:
+            return NO_ATTACHMENTS, None
+        numero = args.get("numero")
+        # A real document number, not a truncated float or a bool masquerading as one
+        # (``True`` is an ``int`` in Python): a model that sends "1.5" or "true" gets told its
+        # arguments are wrong instead of silently reading Doc. 1 (Task 1 review, finding 4).
+        if not isinstance(numero, int) or isinstance(numero, bool):
+            return BAD_ARGUMENTS, None
+        match = next((a for a in attachments if a["n"] == numero), None)
+        if match is None:
+            return (f"ERRORE: allegato {numero} inesistente "
+                    f"(disponibili: 1-{len(attachments)})", None)
+        if session.attachments_denied:
+            # Already refused for this set: the decision holds until set_attachments replaces
+            # it, same rule as the reference act (final review, finding 6).
+            return CONSENT_DENIED, None
+        if not session.attachments_consented:
+            # One consent per set, not per document (design §4.3): the names of every
+            # attachment are shown once, and reading another one of the same set asks nothing.
+            decision = await deps.consent(p.ConsentSummary(
+                scope="attachments", chars=attachments_chars(attachments),
+                endpoint_host=deps.endpoint_host, model=deps.model, zdr=deps.zdr,
+                name=attachments_label(attachments)))
+            if decision in ("document", "once"):
+                session.attachments_consented = True
+            else:
+                session.attachments_denied = True
+                return CONSENT_DENIED, None
+        return wrap_data(f"allegato {numero} ({match['name']})", match["text"]), None
+
     hooks: dict[str, Hook] = {"chiedi_dati": chiedi_dati,
                               "redazione_completata": redazione_completata,
-                              "leggi_atto_riferimento": leggi_atto_riferimento}
+                              "leggi_atto_riferimento": leggi_atto_riferimento,
+                              "leggi_allegato": leggi_allegato}
     return hooks, list(HOOK_TOOLS)
 
 
@@ -471,6 +607,10 @@ async def run_draft(session: DocSession, args: dict, deps: AgentDeps, emit: Emit
     for entry in outcome.inserted:      # safety net: `record` has already seen them all
         record(entry)
     await _rescan_placeholders(draft, deps)
+    # A proxy the extension sits behind may hand the model tools as `mcp__<x>__<name>` (design
+    # §1's follow-up): the core never changes the name it sends, but the model's own prose can
+    # echo it mangled, so the chat text is cleaned once the turn is over.
+    outcome.text = clean_tool_names(outcome.text, deps.registry.names)
     return outcome
 
 
@@ -487,15 +627,20 @@ async def _rescan_placeholders(draft: DraftState, deps: AgentDeps) -> None:
         draft.base.setdefault("aperti", list(draft.base["placeholders"]))
 
 
+def _allegati_summary(session: DocSession) -> list[dict[str, Any]]:
+    return [{"n": a["n"], "name": a["name"], "chars": a["chars"]} for a in session.attachments]
+
+
 def draft_summary(session: DocSession, outcome: TurnOutcome) -> dict[str, Any]:
     """The drafting half of the turn's ``Final.summary`` (design §4.4, §4.5)."""
     draft = session.draft
     if draft is None:
-        return {"ended_by": outcome.ended_by}
+        return {"ended_by": outcome.ended_by, "allegati": _allegati_summary(session)}
     base = draft.base or {}
     return {"tipo_atto": draft.tipo_atto, "domande": draft.questions,
             "partizioni": draft.partitions,
             "segnaposto_aperti": list(base.get("aperti", [])),
             "base_errore": draft.base_errore,
             "completata": draft.done, "riepilogo": draft.riepilogo,
+            "allegati": _allegati_summary(session),
             "ended_by": outcome.ended_by}

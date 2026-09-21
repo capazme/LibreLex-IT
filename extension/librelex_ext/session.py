@@ -7,22 +7,30 @@ forwards to the callback the panel registered. No UNO imports.
 from __future__ import annotations
 
 import os
+import urllib.parse
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any, Protocol
 
-from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__
+from librelex_ext import PROTOCOL_VERSION, DocumentActionError, __version__, letterheads
 from librelex_ext.bridge import BridgeError
 from librelex_ext.layout import FIELD_ROWS  # pure table module: no UNO import here
 from librelex_ext.render import (
+    EXPECTED_PARTITIONS,
+    render_attachments,
     render_base_error,
     render_draft_status,
     render_error,
+    render_expected_partitions,
     render_insert_summary,
+    render_letterhead_labels,
     render_list_summary,
+    render_log_insert,
     render_partitions,
     render_reference,
     render_riepilogo,
     render_show_text,
+    render_summary,
     render_template_notes,
     render_turn_notes,
     render_usage,
@@ -33,6 +41,24 @@ from librelex_ext.render import (
 # the core trims again, but a reference this size would already brush the 4 MiB stdio line
 # limit once JSON-escaped, so the extension trims first.
 MAX_REFERENCE_CHARS = 60_000
+
+# Drafting workbench (design §4.2, §3.6): the case documents are sent as one replaced set.
+MAX_ATTACHMENT_CHARS = 60_000
+MAX_ATTACHMENTS = 12
+MAX_ATTACHMENTS_CHARS = 300_000
+MAX_LOG_LINES = 200
+ACT_EXTENSIONS = (".odt", ".docx", ".doc", ".rtf", ".txt")
+
+
+def drop_role(name: str, reference_present: bool) -> str:
+    """Where a file dropped on the Redazione panel (design §3.1) lands: the reference slot
+
+    (act-like extension, empty slot) or the attachments set (everything else, and a second
+    act-like file once the reference is already taken).
+    """
+    if name.lower().endswith(ACT_EXTENSIONS) and not reference_present:
+        return "reference"
+    return "attachment"
 
 
 class View(Protocol):
@@ -53,6 +79,13 @@ class View(Protocol):
     def set_questions(self, questions: list[dict]) -> None: ...
     def set_field_values(self, fields: dict, notes: str) -> None: ...
     def set_answer_values(self, answers: dict) -> None: ...
+    def set_step(self, step: int) -> None: ...
+    def set_log(self, lines: list[str]) -> None: ...
+    def append_log(self, line: str) -> None: ...
+    def set_expected_partitions(self, labels: list[str]) -> None: ...
+    def set_attachments(self, labels: list[str]) -> None: ...
+    def set_letterheads(self, labels: list[str], selected: int) -> None: ...
+    def set_summary(self, text: str) -> None: ...
 
 
 class NullView:
@@ -73,10 +106,21 @@ class NullView:
     def set_questions(self, questions: list[dict]) -> None: ...
     def set_field_values(self, fields: dict, notes: str) -> None: ...
     def set_answer_values(self, answers: dict) -> None: ...
+    def set_step(self, step: int) -> None: ...
+    def set_log(self, lines: list[str]) -> None: ...
+    def append_log(self, line: str) -> None: ...
+    def set_expected_partitions(self, labels: list[str]) -> None: ...
+    def set_attachments(self, labels: list[str]) -> None: ...
+    def set_letterheads(self, labels: list[str], selected: int) -> None: ...
+    def set_summary(self, text: str) -> None: ...
 
 
-def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
-    """Map a wire doc_call onto the adapter and wrap the result as the core expects."""
+def dispatch_doc_call(adapter: Any, action: str, args: dict, act_styles: bool = False) -> dict:
+    """Map a wire doc_call onto the adapter and wrap the result as the core expects.
+
+    ``act_styles`` (design §5.3) is forwarded only to ``insert_markdown``: it is the caller's
+    decision (a drafting insertion vs. an ordinary one), never something the wire args carry.
+    """
     if action == "get_document_info":
         return adapter.get_document_info()
     if action == "read_selection":
@@ -88,7 +132,8 @@ def dispatch_doc_call(adapter: Any, action: str, args: dict) -> dict:
         return {"occurrences": adapter.find_text(args["query"], args.get("paragraph_id"))}
     if action == "insert_markdown":
         return adapter.insert_markdown(args["where"], args["markdown"], args["undo_label"],
-                                       args.get("bookmark"), args.get("author"))
+                                       args.get("bookmark"), args.get("author"),
+                                       act_styles=act_styles)
     if action == "replace_selection":
         return adapter.replace_selection(args["markdown"], args["undo_label"])
     if action == "replace_text":
@@ -126,8 +171,20 @@ class Session:
             "templates": [], "query": None, "template": None, "fields": {}, "notes": "",
             "answers_draft": {}, "reference": None, "questions": [], "partitions": [],
             "open_placeholders": [], "started": False, "done": False, "stopped": None,
-            "base_errore": None,
+            "base_errore": None, "step": 1, "log": [], "expected_partitions": [],
+            "attachments": [], "letterheads": [], "letterhead": None,
         }
+        self._letterhead_chosen = False
+        # The committed set of case documents (design §4): what the core last confirmed
+        # through a `set_attachments` final. ``_attachments_pending`` is the set sent and not
+        # yet answered (committed on the final, discarded on error or exit); the whole set is
+        # resent on every add/remove, never a delta.
+        self._attachment_texts: list[dict] = []
+        self._attachments_pending: list[dict] | None = None
+        self._attachments_request_id: str | None = None
+        self._attachments_id_pending = False
+        # The last rendered end-of-drafting summary (design §3.4), kept for replay_drafting.
+        self._summary_text: str = ""
         # True while a draft (start/answer/continue) request is queued or in flight: drives
         # the "Redazione in corso…" status independently of draft_view["started"], which
         # tracks the guided flow itself rather than a single request.
@@ -183,6 +240,8 @@ class Session:
         ``set_field_values`` must follow ``set_template`` and ``set_answer_values`` must
         follow ``set_questions``: those two clear the rows (another act, other values) and
         decide which names the rows carry, so the stored values are written back after them.
+        ``set_step`` is last: every other call may belong to the step being left, and the
+        panel toggles visibility on ``set_step``.
         """
         draft = self.draft_view
         view.set_templates(self._template_labels(), None)
@@ -193,6 +252,13 @@ class Session:
         view.set_draft_status(render_draft_status(self._status_view()), draft["started"])
         view.set_questions(draft["questions"])
         view.set_answer_values(draft["answers_draft"])
+        view.set_attachments(render_attachments(draft["attachments"]))
+        view.set_letterheads(*self._letterhead_selection())
+        view.set_log(draft["log"])
+        view.set_expected_partitions(render_expected_partitions(
+            draft["expected_partitions"], draft["partitions"]))
+        view.set_summary(self._summary_text)
+        view.set_step(draft["step"])
 
     def unbind(self) -> None:
         self.view = NullView()
@@ -273,7 +339,22 @@ class Session:
         self.draft_view["fields"], self.draft_view["notes"] = fields, notes
         self.draft_view["started"] = True
         self._draft_request = True
-        self._refresh_draft_status()
+        # The log is reset for the new drafting before anything can write to it (F4): a
+        # letterhead failure logged by _apply_letterhead below must survive, not be wiped by
+        # this reset.
+        self.draft_view["log"] = []
+        self.view.set_log([])
+        # design §5.3: the letterhead is applied before the base enters the document; a
+        # failure is logged, never raised (the drafting still starts on a plain document).
+        self._apply_letterhead()
+        self._log(f"Avvio della redazione: {tipo_atto}")
+        routing = template.get("routing") or {}
+        expected = (["Base"] if routing.get("tipo") == "tool_diretto" else []) + list(
+            EXPECTED_PARTITIONS)
+        self.draft_view["expected_partitions"] = expected
+        self.view.set_expected_partitions(render_expected_partitions(
+            expected, self.draft_view["partitions"]))
+        self._set_step(3)
 
     def draft_answer(self, answers: dict[str, str]) -> None:
         if not self.draft_view["questions"]:
@@ -285,18 +366,136 @@ class Session:
         # the answers are on their way: the Domande panel starts a fresh round (I5)
         self.draft_view["answers_draft"] = {}
         self._draft_request = True
-        self._refresh_draft_status()
+        self._set_step(3)
+        self._log("Risposte inviate")
 
     def draft_continue(self, message: str = "") -> None:
         if not self.draft_view["started"]:
             self._refuse_draft("Nessuna redazione in corso")
             return
+        message = message.strip()
         if not self.run_command(
-                "draft", {"action": "continue", "message": message.strip()},
+                "draft", {"action": "continue", "message": message},
                 label=f"Tu: continua{': ' + message if message else ''}"):
             return
         self._draft_request = True
-        self._refresh_draft_status()
+        self._set_step(3)
+        self._log(f"Riprendo: {message or 'continua'}")
+
+    def new_drafting(self) -> None:
+        """Back to step 1 for another act (design §3.4): attachments and letterhead stay."""
+        if self._draft_request:
+            self._refuse_draft("Attendi la fine del turno o premi Annulla")
+            return
+        self.draft_view.update(
+            answers_draft={}, questions=[], partitions=[], open_placeholders=[],
+            started=False, done=False, stopped=None, base_errore=None, log=[],
+            expected_partitions=[])
+        self.view.set_template(self.draft_view["template"])
+        self.view.set_field_values(self.draft_view["fields"], self.draft_view["notes"])
+        self._summary_text = ""
+        self.view.set_questions([])
+        self.view.set_answer_values({})
+        self.view.set_partitions([])
+        self.view.set_log([])
+        self.view.set_expected_partitions([])
+        self.view.set_summary("")
+        self._set_step(1)
+
+    def verify_act(self) -> None:
+        self.run_command("verify_citations", {"scope": "document"},
+                         label="Tu: verifica citazioni dell'atto")
+
+    # --- drafting workbench: case documents (design §4) -----------------------
+    def add_attachment(self, name: str, text: str, kind: str) -> bool:
+        if self.state == "starting":
+            # The single ``pending`` slot would drop one of two attachment requests queued
+            # behind the hello (F6): refuse instead of silently losing one.
+            self._refuse_draft("Attendi l'avvio del core")
+            return False
+        if len(self._attachment_texts) >= MAX_ATTACHMENTS:
+            self._refuse_draft("Allegati: al massimo 12 documenti")
+            return False
+        trimmed = text[:MAX_ATTACHMENT_CHARS]
+        troncato = len(text) > MAX_ATTACHMENT_CHARS
+        total = sum(len(a["text"]) for a in self._attachment_texts) + len(trimmed)
+        if total > MAX_ATTACHMENTS_CHARS:
+            self._refuse_draft("Allegati: al massimo 300.000 caratteri in totale")
+            return False
+        new = {"name": name, "text": trimmed, "kind": kind, "troncato": troncato}
+        pending = [*self._attachment_texts, new]
+        return self._send_attachments(pending, label=f"Tu: allegato {name}")
+
+    def remove_attachment(self, index: int) -> bool:
+        if self.state == "starting":
+            self._refuse_draft("Attendi l'avvio del core")
+            return False
+        if not (0 <= index < len(self._attachment_texts)):
+            return False
+        name = self._attachment_texts[index]["name"]
+        pending = [a for i, a in enumerate(self._attachment_texts) if i != index]
+        return self._send_attachments(pending, label=f"Tu: tolgo l'allegato {name}")
+
+    def _send_attachments(self, pending: list[dict], label: str) -> bool:
+        documenti = [{"name": a["name"], "text": a["text"], "kind": a["kind"]} for a in pending]
+        if not self.run_command("set_attachments", {"documenti": documenti}, label):
+            return False
+        self._attachments_pending = pending
+        self._attachments_request_id = self.request_id
+        self._attachments_id_pending = self.request_id is None
+        return True
+
+    # --- drafting workbench: letterhead (design §5.2, §5.3) --------------------
+    def set_letterheads(self, entries: list[dict]) -> None:
+        self.draft_view["letterheads"] = entries
+        current = self.draft_view.get("letterhead")
+        if (not self._letterhead_chosen
+                and (current is None or not any(e["name"] == current for e in entries))):
+            self.draft_view["letterhead"] = letterheads.initial_choice(
+                entries, letterheads.load_index())
+        labels, selected = self._letterhead_selection()
+        self.view.set_letterheads(labels, selected)
+
+    def choose_letterhead(self, index: int) -> None:
+        entries = self.draft_view["letterheads"]
+        if not (0 <= index <= len(entries)):
+            return       # a ListBox reports -1 with no selection: not a valid row
+        name = None if index == 0 else entries[index - 1]["name"]
+        self.draft_view["letterhead"] = name
+        self._letterhead_chosen = True
+        with suppress(OSError):
+            letterheads.remember_choice(name)
+
+    def letterhead_path(self) -> str | None:
+        name = self.draft_view.get("letterhead")
+        if name is None:
+            return None
+        entry = next((e for e in self.draft_view["letterheads"] if e["name"] == name), None)
+        return entry["path"] if entry else None
+
+    def _letterhead_selection(self) -> tuple[list[str], int]:
+        entries = self.draft_view["letterheads"]
+        selected = 0
+        name = self.draft_view.get("letterhead")
+        if name is not None:
+            for i, e in enumerate(entries):
+                if e["name"] == name:
+                    selected = i + 1
+                    break
+        return render_letterhead_labels(entries), selected
+
+    def _apply_letterhead(self) -> None:
+        path = self.letterhead_path()
+        url = "file://" + urllib.parse.quote(path) if path else None
+        try:
+            result = self.adapter.apply_letterhead(url)
+            if result.get("page_style") and result["page_style"] != "Standard":
+                self._log("Carta intestata applicata (pagina «{}» sostituita)".format(
+                    result["page_style"]))
+        except Exception as e:
+            line = f"Carta intestata non applicata: {e}"
+            self._log(line)
+            self._append(line)
 
     def goto_partition(self, index: int) -> None:
         partitions = self.draft_view["partitions"]
@@ -306,6 +505,22 @@ class Session:
             self.adapter.goto(partitions[index]["from_id"])
         except Exception as e:  # navigation is best effort, as in select_citation
             self.view.set_status(f"Posizione non raggiungibile: {e}")
+
+    def goto_expected(self, index: int) -> None:
+        """A row of the Expected checklist names an expected section, not a position: resolve
+        it to the first inserted partition whose title matches, the same rule
+        ``render_expected_partitions`` uses to mark the row found, then jump there as
+        ``goto_partition`` would. No match (the section is not inserted yet, or the index is
+        out of range) is a no-op.
+        """
+        expected = self.draft_view["expected_partitions"]
+        if not (0 <= index < len(expected)):
+            return
+        key = expected[index].lower()[:5]
+        for i, p in enumerate(self.draft_view["partitions"]):
+            if key in (p.get("titolo") or "").lower():
+                self.goto_partition(i)
+                return
 
     def _template_labels(self) -> list[str]:
         return [f"{m['categoria']} · {m['descrizione']}" for m in self.draft_view["templates"]]
@@ -405,6 +620,8 @@ class Session:
         self.request_id = None
         self._draft_request = False
         self._forget_draft_start()
+        self._attachments_pending = None
+        self._forget_attachments_request()
 
     # --- events from the core (UI thread) -----------------------------------
     def handle_event(self, ev: dict) -> None:
@@ -416,7 +633,16 @@ class Session:
                 "stopped", None, None, None)
             was_draft, self._draft_request = self._draft_request, False
             self._forget_draft_start()
+            self._attachments_pending = None
+            self._forget_attachments_request()
             if was_draft:      # same as _on_error: no drafting is running any more
+                self._log("Il core si è chiuso")
+                if self.draft_view["step"] == 3:
+                    self._set_step(4)
+                self._attachment_texts.clear()
+                self.draft_view["attachments"] = []
+                self.view.set_attachments([])
+                self._append("Il core si è chiuso: riaggiungi i documenti del caso")
                 self._refresh_draft_status()
             self._flush_stream()
             self._clear_pending_consent()
@@ -465,6 +691,8 @@ class Session:
 
     def _on_status(self, msg: dict) -> None:
         self.view.set_status(msg.get("text", ""))
+        if self._draft_request:
+            self._log(msg.get("text", ""))
 
     def _on_progress(self, msg: dict) -> None:
         done, total = msg.get("done", 0), msg.get("total", 0)
@@ -495,13 +723,23 @@ class Session:
             # no bridge left to answer on, so drop it.
             return
         reply = {"type": "doc_result", "id": msg["request_id"], "call_id": msg["call_id"]}
+        action, args = msg["action"], msg.get("args") or {}
         try:
-            reply.update(ok=True, result=dispatch_doc_call(self.adapter, msg["action"],
-                                                           msg.get("args") or {}))
+            reply.update(ok=True, result=dispatch_doc_call(self.adapter, action, args,
+                                                           act_styles=self._draft_request))
         except Exception as e:
             reply.update(ok=False, error=f"{type(e).__name__}: {e}"
                          if not isinstance(e, DocumentActionError) else str(e))
+        succeeded = reply["ok"]
+        # The reply goes out before the drafting log line (F5): a dead panel control (a
+        # closed/rebuilding Redazione deck) must never keep the core waiting on this reply.
         self.bridge.send(reply)
+        if succeeded and self._draft_request:
+            with suppress(Exception):
+                if action == "insert_markdown":
+                    self._log(render_log_insert(args["markdown"]))
+                elif action == "replace_text":
+                    self._log(f"Sostituito: «{args['query']}»")
 
     def _on_final(self, msg: dict) -> None:
         self.state, self.request_id = "ready", None
@@ -512,7 +750,7 @@ class Session:
         self.view.set_status("Pronto")
         self._clear_pending_consent()
         was_streamed = self._streamed
-        self._flush_stream()
+        self._flush_stream(msg.get("text", ""))
         summary = msg.get("summary") or {}
         if "modelli" in summary:
             self.draft_view["templates"] = summary["modelli"]
@@ -543,6 +781,28 @@ class Session:
             self.draft_view["reference"] = ref
             self.view.set_reference(render_reference(ref), bool(ref))
             self._append(msg["text"])
+        elif ("allegati" in summary and msg.get("request_id") == self._attachments_request_id
+              and "partizioni" not in summary and "usage_totals" not in summary):
+            # set_attachments' Final (design §4.3): the pending set the panel sent is what
+            # was actually stored; an empty ``allegati`` (the last one removed) clears both.
+            # The core puts "allegati" in EVERY draft-turn Final too, so the request_id (and,
+            # as a belt, the absence of "partizioni"/"usage_totals") is what tells the two
+            # finals apart: a draft turn must still reach _merge_draft_turn below (F1).
+            allegati = summary["allegati"] or []
+            pending = self._attachments_pending or []
+            self._attachment_texts = pending
+            merged = []
+            for i, a in enumerate(allegati):
+                local_troncato = pending[i]["troncato"] if i < len(pending) else False
+                merged.append({**a, "troncato": bool(a.get("troncato") or local_troncato)})
+            self.draft_view["attachments"] = merged
+            self.view.set_attachments(render_attachments(merged))
+            self._append(msg["text"])
+            if allegati:
+                self.view.set_draft_status(
+                    "Allegato aggiunto: " + allegati[-1].get("name", ""), True)
+            self._attachments_pending = None
+            self._forget_attachments_request()
         elif was_streamed or "usage_totals" in summary or "tool_calls" in summary:
             # A model turn (chat, research or draft) is recognised by the shape of its final,
             # not by whether anything was streamed: a turn that ends on tool calls only
@@ -602,7 +862,15 @@ class Session:
         self.view.set_answer_values({})
         self.view.set_partitions(render_partitions(self.draft_view["partitions"],
                                                     self.draft_view["open_placeholders"]))
-        self._refresh_draft_status()
+        self.view.set_expected_partitions(render_expected_partitions(
+            self.draft_view["expected_partitions"], self.draft_view["partitions"]))
+        questions = self.draft_view["questions"]
+        self._set_step(2 if questions else 4)
+        if not questions:
+            summary_with_attachments = summary if "allegati" in summary else {
+                **summary, "allegati": self.draft_view["attachments"]}
+            self._summary_text = render_summary(summary_with_attachments)
+            self.view.set_summary(self._summary_text)
         if self.draft_view["base_errore"]:
             self._append(render_base_error(self.draft_view["base_errore"]))
         if self.draft_view["done"] and summary.get("riepilogo"):
@@ -613,6 +881,8 @@ class Session:
         # can be continued, so the "started" the panel committed to has to go (M5).
         failed_start = (self._draft_start_request_id is not None
                         and msg.get("request_id") in (self._draft_start_request_id, None))
+        failed_attachments = (self._attachments_request_id is not None
+                              and msg.get("request_id") in (self._attachments_request_id, None))
         was_draft = False
         if self.state == "busy" and msg.get("request_id") in (self.request_id, None):
             self.state, self.request_id = "ready", None
@@ -620,9 +890,16 @@ class Session:
             self._set_busy(False)
             self.view.set_status("Pronto")
         self.view.set_progress(0, None)
-        self._flush_stream()
+        self._flush_stream(msg.get("text", ""))
         self._clear_pending_consent()
         self._append(render_error(msg.get("code", "?"), msg.get("message", ""), self.config_path))
+        if failed_attachments:
+            self._attachments_pending = None
+            self._forget_attachments_request()
+        if was_draft:
+            self._log(f"Errore: {msg.get('message', '')}")
+            if self.draft_view["step"] == 3:
+                self._set_step(4)
         if failed_start:
             self._forget_draft_start()
             self._abandon_draft_request()
@@ -668,6 +945,8 @@ class Session:
         self.request_id = request_id
         if self._draft_start_pending:       # a start queued behind the hello: this is its id
             self._draft_start_request_id, self._draft_start_pending = request_id, False
+        if self._attachments_id_pending:    # same rule, for a set_attachments queued the same way
+            self._attachments_request_id, self._attachments_id_pending = request_id, False
         self.state = "busy"
         self._set_busy(True)
         self.view.set_status("Invio della richiesta...")
@@ -675,9 +954,13 @@ class Session:
             self._append(label)
         return True
 
-    def _flush_stream(self) -> None:
+    def _flush_stream(self, final_text: str = "") -> None:
         if self._streamed:
-            self.transcript.append(self._stream_buffer)
+            text = (final_text if final_text and final_text != self._stream_buffer
+                    else self._stream_buffer)
+            self.transcript.append(
+                text if text.startswith("LibreLex: ") else "LibreLex: " + text)
+            self.view.set_transcript("\n".join(self.transcript))
         self._streamed = False
         self._stream_buffer = ""
 
@@ -701,14 +984,33 @@ class Session:
         ``started`` is dropped only while the document holds no partition: once the core has
         inserted something, the drafting is real whatever happened to this one request, and
         "Continua la redazione" is the way back into it.
+            self.view.set_template(self.draft_view["template"])
+            self.view.set_field_values(self.draft_view["fields"], self.draft_view["notes"])
         """
         self._draft_request = False
         if not self.draft_view["partitions"]:
             self.draft_view["started"] = False
-        self._refresh_draft_status()
+            self._set_step(1)
+        else:
+            self._refresh_draft_status()
 
     def _forget_draft_start(self) -> None:
         self._draft_start_request_id, self._draft_start_pending = None, False
+
+    def _forget_attachments_request(self) -> None:
+        self._attachments_request_id, self._attachments_id_pending = None, False
+
+    def _set_step(self, step: int) -> None:
+        self.draft_view["step"] = step
+        self.view.set_step(step)
+        self._refresh_draft_status()
+
+    def _log(self, line: str) -> None:
+        log = self.draft_view["log"]
+        log.append(line)
+        if len(log) > MAX_LOG_LINES:
+            del log[: len(log) - MAX_LOG_LINES]
+        self.view.append_log(line)
 
     def _refresh_draft_status(self) -> None:
         self.view.set_draft_status(render_draft_status(self._status_view()),

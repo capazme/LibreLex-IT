@@ -5,9 +5,11 @@ official sources through [mcp-legal-it](https://github.com/capazme/mcp-legal-it)
 
 Status: M1 complete (verify citations, list citations, show the text of a reference and
 insert a norm from the sidebar); M2 complete (chat, Ricerca, in-panel consent and usage line
-in the sidebar, see "Chat e ricerca"); M3 complete (guided drafting in the Redazione and
-Domande panels).
-Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`.
+in the sidebar, see "Chat e ricerca"); M3.6 complete (the Redazione drafting workbench: one
+panel, four steps, case attachments, letterhead templates and the firm's act styles, see
+"Guided drafting").
+Design: `docs/superpowers/specs/2026-09-07-librelex-it-design.md`,
+`docs/superpowers/specs/2026-09-20-drafting-workbench-design.md`.
 
 ## Install (macOS, LibreOffice 26.2+)
 
@@ -63,42 +65,75 @@ Text written into the document is grounded: a reference the model did not read f
 is verified before the insertion and commented when it turns out to be non-existent or
 inconsistent.
 
-### Guided drafting: the Redazione and Domande panels
+### Guided drafting: the Redazione workbench
 
-Drafting is no longer a button in Azioni: it has its own panel, *Redazione*, and the data the
-model asks for along the way appear in *Domande*.
+Drafting is not a button in Azioni: it is its own panel, *Redazione*, one step at a time, the
+status line always naming the step ("Passo 2 di 4 · Rispondi alle 3 domande e premi
+Continua") and the panel title following it. Starting a drafting collapses Azioni and
+Citazioni (best effort, some LibreOffice builds do not support it) so Redazione and Risposte
+have the height; nothing re-expands on its own.
 
-1. **Choose the act**: type a keyword in the search box and press *Cerca* to filter the
-   mcp-legal-it catalogue (empty box: the whole catalogue), then pick an entry from the list.
-   The grey line under it says which base the act gets, a deterministic generator
-   ("Base deterministica: decreto_ingiuntivo") or a composition by the model, followed by the
-   catalogue's own caveats.
-2. **Fill the fields**: the mandatory ones first (marked `*`), the optional ones after, each
-   labelled with its type (numero, data, sì/no). *Avvia redazione* stays disabled until every
-   mandatory field is filled; fields beyond the eighth are named in the notes label and go in
-   the notes box.
-3. **Notes**: facts of the case and instructions for the model, free text.
-4. **Similar case** (optional): *Sfoglia…* picks an act of yours (odt, docx, rtf, txt) the
-   model may use for structure and style, never for the facts, and the file can also be
-   dropped onto the panel. It is read through LibreOffice's own filters in a hidden read-only
-   document that is closed straight away, and it reaches the model only after a consent block
-   that names the file. *Rimuovi* drops it; loading another one asks for consent again.
-5. **Avvia redazione**: the deterministic base enters the document at once, as a tracked
-   insertion signed LibreLex, with the exact formulas of the generator and its `[...]`
-   placeholders left open. The model then works on that base and asks for what is missing:
-   the questions appear as labelled boxes in *Domande*. Answer them and press *Continua*: the
-   model fills the placeholders with tracked replacements, computes the amounts (interests,
-   revaluation, contributo unificato, fees) with the calculators, and adds the remaining
-   sections one at a time.
-6. **Partizioni** lists what is in the document so far ("✓ Base: ...", "✓ Conclusioni"), with
-   a trailing "… segnaposto aperti: N" while placeholders remain; clicking an entry jumps to
-   it in the document.
-7. **Continua la redazione** resumes a drafting stopped by the iteration limit, by the time
-   limit or by *Annulla*, with the instruction typed above the button if you give one. The
-   thread lives in the core until the document is closed.
-8. When the model declares the act complete, Risposte shows "Riepilogo della redazione:" with
-   the calculations, the attachments and the caveats, and the status line of Redazione reads
-   "Redazione completata".
+**Passo 1 · Atto e dati**
+
+1. Type a keyword in the search box and press *Cerca* to filter the mcp-legal-it catalogue
+   (empty box: the whole catalogue), then pick an entry from the list. The grey line under it
+   says which base the act gets, a deterministic generator ("Base deterministica:
+   decreto_ingiuntivo") or a composition by the model, followed by the catalogue's own caveats.
+2. Fill the fields, mandatory ones first (marked `*`), each labelled with its type (numero,
+   data, sì/no); fields beyond the eighth are named in the notes label and go in the notes box
+   below, together with facts of the case and instructions for the model.
+3. **Allegati**: the case documents (fattura, delibera, decreto, contratto, PEC...), given to
+   the model as numbered facts ("Doc. 1", "Doc. 2", ...) it reads on demand and lists in the
+   act's "Si allegano" section. *Aggiungi…* picks a file (odt, docx, doc, rtf, txt or PDF) or
+   it can be dropped onto the panel; *Togli* removes the one selected. Up to 12 documents, each
+   trimmed to 60.000 characters, 300.000 in total; the panel refuses beyond that with a status
+   line. A PDF is read through LibreOffice's own Draw import, rebuilding the reading order from
+   the positioned text of each page; a scanned PDF with no text layer is refused ("PDF senza
+   testo (scansione): non leggibile"). Every add or remove is read through LibreOffice's own
+   filters in a hidden, read-only document closed right away, and reaches the model only after
+   a consent block naming the whole set ("Doc. 1 fattura.pdf; Doc. 2 delibera.docx"); a new set
+   asks for consent again.
+4. **Caso simile** (optional, as before): *Sfoglia…* picks an act of yours the model may use
+   for structure and style, never for the facts, or it can be dropped too; *Rimuovi* drops it.
+   The drop rule for the whole panel: an act-like file (odt, docx, doc, rtf, txt) becomes the
+   similar case when that slot is empty, otherwise it is added as an attachment, and any other
+   file is always an attachment; one file per drop, a second one in the same drop is ignored
+   with a note.
+5. **Carta intestata**: a dropdown of the firm's letterhead templates plus "Nessuna
+   (impaginazione del documento)". Templates live as `.ott` files under
+   `~/Library/Application Support/LibreLex/modelli/` (Linux: the XDG config dir), indexed by
+   `modelli.json` (name, file, default). *Aggiungi…* picks an odt, docx or doc file that
+   already carries the firm's letterhead in its page style (header with the logo, footer with
+   the addresses) and turns it into a template named after the file's own stem, with no naming
+   dialog; the same can be done from a terminal with
+   `python3 scripts/make_letterhead.py NAME SOURCE [--out DIR]`. A letterhead available only as
+   a PDF is out of scope for now: convert it to Word first. The extension never overwrites an
+   existing template; open one in Writer to adjust it by hand.
+6. *Avvia redazione* applies the chosen letterhead (page style, header, footer) and creates any
+   of the ten `LibreLex` act styles the document is still missing, then inserts the
+   deterministic base as a tracked change signed LibreLex, its `[...]` placeholders left open,
+   and moves to step 3.
+
+**Passo 2 · Domande**: the model's questions appear as labelled boxes, up to eight, an empty
+one counting as "not available"; *Continua* sends the answers and moves back to step 3.
+
+**Passo 3 · Redazione in corso**: a read-only log shows the model's activity line by line
+("Inserito: Premesse in fatto", "Sostituito: «[SEDE]»"), kept across a panel rebuild; the
+expected partitions of the act are marked as they are inserted; *Annulla* stops the turn. A
+consent block appears here too when a turn mid-drafting needs to read something.
+
+**Passo 4 · Fine**: the partitions inserted so far (click to jump), the drafting's summary
+(calculations, attachments, open placeholders, warnings). *Verifica citazioni* runs the
+citation-checking pipeline on the finished act; *Riprendi* goes back to step 3 with an
+optional free instruction, for "continua" or a change (the core keeps the thread until the
+document is closed); *Nuova redazione* goes back to step 1 for another act, keeping the
+attachments and the letterhead chosen.
+
+Every inserted paragraph, base and model alike, is formatted with one of the ten `LibreLex`
+paragraph styles that reproduce the firm's canon (court heading, act title, section names,
+justified body, dashed or numbered points, party roles, "contro", separators, quoted norms,
+signature), each adjustable by editing the style in the letterhead template; a style the
+template already defines is never overwritten.
 
 Amounts and dates are typed the Italian way: "12.000" is twelve thousand, "12,50" is twelve
 and a half, and a "€" or "euro" written around the figure is ignored.
@@ -108,7 +143,7 @@ from the generator of mcp-legal-it, not from the model, and enter the document v
 *Verifica citazioni* on the finished act before filing it.
 
 On some LibreOffice builds the panel cannot register itself as a drop target: the transcript
-says so once, and *Sfoglia…* stays the way to pick the similar case.
+says so once, and *Sfoglia…*/*Aggiungi…* stay the way to pick a file.
 
 ### Consent for the document text
 
@@ -126,6 +161,10 @@ and model) and whether the routing is zero-data-retention, with three choices:
 The question comes after the read and before the text enters the conversation, so refusing
 means nothing has left the machine. The consent block stays usable while the core is busy:
 answering it is the one thing to do while a turn is running.
+
+The same mechanism, with its own scope, covers the similar case ("reference", named by file)
+and the case attachments ("attachments", named by the whole set) of the Redazione workbench:
+see above.
 
 ### Token cost per turn
 
@@ -166,11 +205,11 @@ Rule of thumb: with real client data use a provider you have a DPA with, keep
 
 ## Usage
 
-The LibreLex deck has five panels: **Azioni** (buttons, consent, progress and status),
-**Redazione** (the guided drafting, see above), **Domande** (the data the model asks for
-during a drafting), **Citazioni** (the references found in the document) and **Risposte**
-(the answers). Each panel opens and closes from its own title bar, like every other sidebar
-panel, and Risposte takes the height the others leave.
+The LibreLex deck has four panels: **Azioni** (buttons, consent, progress and status),
+**Redazione** (the drafting workbench, four steps, see above), **Citazioni** (the references
+found in the document) and **Risposte** (the answers). Each panel opens and closes from its
+own title bar, like every other sidebar panel, and Risposte takes the height the others leave;
+starting a drafting collapses Azioni and Citazioni, best effort.
 
 - **Verifica citazioni** (or *Verifica selezione*): checks every citation of the document
   (or of the selection) against the official sources and comments the problematic ones in
@@ -184,6 +223,11 @@ panel, and Risposte takes the height the others leave.
 
 The first action runs `uv run` on the bundled core: network access is needed once to build its environment.
 Logs of the core process: `~/Library/Application Support/LibreLex/core-stderr.log` (no document text).
+
+### Diagnostica
+
+`~/Library/Application Support/LibreLex/panel-metrics.log` records one line per panel
+creation (best effort, no document text), useful when reporting a layout problem.
 
 - `core/` — the local Python process (`librelex-core`), see `core/README.md`
 - `extension/` — the LibreOffice `.oxt` sources (`uv run pytest` there; headless adapter tests need `soffice`)

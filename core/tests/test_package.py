@@ -3,5 +3,5 @@ import librelex_core
 
 
 def test_version_and_protocol():
-    assert librelex_core.__version__ == "0.4.0"
+    assert librelex_core.__version__ == "0.5.0"
     assert librelex_core.PROTOCOL_VERSION == 1

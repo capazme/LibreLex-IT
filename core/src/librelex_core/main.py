@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from typing import Any, Protocol
 
@@ -12,7 +13,15 @@ from librelex_core import PROTOCOL_VERSION, __version__
 from librelex_core import protocol as p
 from librelex_core.agent.loop import AgentDeps, TurnOutcome
 from librelex_core.agent.registry import ToolRegistry
-from librelex_core.agent.state import MAX_REFERENCE_CHARS, DocSession, LimitReached, check_ceiling
+from librelex_core.agent.state import (
+    MAX_ATTACHMENT_CHARS,
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENTS_CHARS,
+    MAX_REFERENCE_CHARS,
+    DocSession,
+    LimitReached,
+    check_ceiling,
+)
 from librelex_core.commands.chat import PROFILE as CHAT_PROFILE
 from librelex_core.commands.chat import run_chat
 from librelex_core.commands.draft import ACTIONS as DRAFT_ACTIONS
@@ -37,6 +46,9 @@ NEEDS_TOOLS = ("verify_citations", "insert_norm", "show_text", "list_templates",
 # Model-driven commands still to come (spec §6.3).
 NOT_IMPLEMENTED = ("review",)
 NO_LEGAL_TOOLS_STATUS = "mcp-legal-it non disponibile: rispondo senza strumenti giuridici"
+BAD_ATTACHMENTS = (
+    f"allegati non validi: al massimo {MAX_ATTACHMENTS} documenti e "
+    f"{MAX_ATTACHMENTS_CHARS:,} caratteri in totale".replace(",", "."))
 # asyncio.StreamReader defaults to 64 KiB per line, which a set_reference carrying a 60,000
 # character act crosses as soon as JSON escaping is counted: readline() then raises and,
 # uncaught, killed the core (final review, finding 1). 4 MiB leaves room for every message
@@ -423,6 +435,9 @@ class CoreServer:
         if msg.name == "set_reference":
             await self._set_reference(msg)
             return
+        if msg.name == "set_attachments":
+            await self._set_attachments(msg)
+            return
         tools: LegalToolsClient | None = None
         if msg.name in NEEDS_TOOLS:
             try:
@@ -492,7 +507,9 @@ class CoreServer:
         session.reference_consented = False
         session.reference_denied = False
         if text:
-            name = str(msg.args.get("name") or "atto di riferimento")
+            name = re.sub(
+                r"[\x00-\x1f\x7f]+", " ",
+                str(msg.args.get("name") or "atto di riferimento")).strip()[:120]
             troncato = len(text) > MAX_REFERENCE_CHARS
             kept = text[:MAX_REFERENCE_CHARS]
             # The number the panel and the consent block show is the text that will actually
@@ -507,6 +524,46 @@ class CoreServer:
             session.reference = None
             await self.send(p.Final(request_id=msg.id, text="Atto di riferimento rimosso.",
                                     summary={"riferimento": None}))
+
+    async def _set_attachments(self, msg: p.Command) -> None:
+        """No mcp-legal-it needed: the case documents are stored on the session as-is
+        (Drafting Workbench design §4.3); replaces the whole set every time, the panel sends
+        the full list after every add or remove."""
+        session = self._session(msg.doc_id)
+        documenti = msg.args.get("documenti")
+        valid = (isinstance(documenti, list) and len(documenti) <= MAX_ATTACHMENTS and all(
+            isinstance(d, dict) and isinstance(d.get("name"), str)
+            and isinstance(d.get("text"), str) for d in documenti))
+        if not valid:
+            await self.send(p.Error(request_id=msg.id, code="bad_request", message=BAD_ATTACHMENTS))
+            return
+        attachments: list[dict[str, Any]] = []
+        total = 0
+        for n, d in enumerate(documenti, start=1):
+            text = str(d["text"])
+            troncato = len(text) > MAX_ATTACHMENT_CHARS
+            kept = text[:MAX_ATTACHMENT_CHARS]
+            total += len(kept)
+            name = re.sub(r"[\x00-\x1f\x7f]+", " ", str(d["name"])).strip()[:120]
+            attachments.append({"n": n, "name": name, "text": kept, "chars": len(kept),
+                                "kind": str(d.get("kind") or "writer"), "troncato": troncato})
+        if total > MAX_ATTACHMENTS_CHARS:
+            await self.send(p.Error(request_id=msg.id, code="bad_request", message=BAD_ATTACHMENTS))
+            return
+        session.attachments = attachments
+        # A new set is a new decision: both the consent given and the refusal recorded for the
+        # previous set are dropped (design §4.3, same rule as set_reference).
+        session.attachments_consented = False
+        session.attachments_denied = False
+        if attachments:
+            summary = [{"n": a["n"], "name": a["name"], "chars": a["chars"], "kind": a["kind"],
+                       "troncato": a["troncato"]} for a in attachments]
+            await self.send(p.Final(
+                request_id=msg.id, text=f"Allegati: {len(attachments)} documenti ({total} caratteri).",  # noqa: E501
+                summary={"allegati": summary}))
+        else:
+            await self.send(p.Final(request_id=msg.id, text="Allegati rimossi.",
+                                    summary={"allegati": []}))
 
 
 def main() -> None:

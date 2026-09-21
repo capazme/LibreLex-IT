@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager, suppress
 from datetime import datetime
@@ -22,6 +23,8 @@ from com.sun.star.beans import PropertyValue
 from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 
 from librelex_ext import DocumentActionError
+from librelex_ext import styles as act_styles_module
+from librelex_ext.pdftext import rebuild_lines
 
 PARAGRAPH = "com.sun.star.text.Paragraph"
 TABLE = "com.sun.star.text.TextTable"
@@ -29,7 +32,7 @@ ANNOTATION = "com.sun.star.text.TextField.Annotation"
 PROFILE_NODE = "/org.openoffice.UserProfile/Data"
 
 __all__ = ["DocumentActionError", "DocumentAdapter", "has_markdown_filter", "lo_version",
-           "read_reference"]
+           "make_letterhead", "read_document", "read_reference"]
 
 
 def prop(name, value):
@@ -316,6 +319,96 @@ class DocumentAdapter:
         finally:
             self.doc.RecordChanges = before
 
+    # --- act styles (design §5.1, §5.3) ---------------------------------------
+    @staticmethod
+    def _convert_style_property(name: str, value):
+        """A `styles.style_properties` value converted to what UNO expects for `name`."""
+        if name == "ParaAdjust":
+            return uno.Enum("com.sun.star.style.ParagraphAdjust", value)
+        if name == "ParaLineSpacing":
+            mode, height = value
+            ls = uno.createUnoStruct("com.sun.star.style.LineSpacing")
+            ls.Mode, ls.Height = 0, height     # 0 = PROP, whatever `mode` spells
+            return ls
+        return value
+
+    def ensure_act_styles(self) -> list[str]:
+        """Create every `styles.ACT_STYLES` name missing from the document (design §5.1, §6).
+
+        A style already present (created by an earlier call, or adjusted by the lawyer in a
+        letterhead template) is left untouched. Returns the names actually created.
+        """
+        family = self.doc.getStyleFamilies().getByName("ParagraphStyles")
+        created = []
+        for name in act_styles_module.ACT_STYLES:
+            if family.hasByName(name):
+                continue
+            style = self.doc.createInstance("com.sun.star.style.ParagraphStyle")
+            family.insertByName(name, style)
+            style.ParentStyle = "Standard"
+            for prop_name, value in act_styles_module.style_properties(name).items():
+                setattr(style, prop_name, self._convert_style_property(prop_name, value))
+            created.append(name)
+        return created
+
+    @staticmethod
+    def _origin_of(para) -> str:
+        """One of `styles.ORIGINS`, from the paragraph style and list state (design §5.3)."""
+        style_name = para.ParaStyleName
+        if style_name.startswith("Heading "):
+            try:
+                level = int(style_name[len("Heading "):])
+            except ValueError:
+                level = 1
+            return f"heading{min(level, 3)}"
+        if para.NumberingIsNumber or para.ListLabelString:
+            return "list"
+        if style_name == "Quotations":
+            return "quote"
+        return "body"
+
+    def _apply_act_styles(self, container, paras: list, author) -> None:
+        """Restyle every paragraph of `paras` (freshly inserted) to its LibreLex act style.
+
+        Must run inside the caller's `_identity(author)` context (`_insert_block` holds it for
+        the whole call): the literal text inserted below (a list prefix, a restored `* * * *
+        *` separator) is then signed as that same tracked insertion, not the user's own.
+
+        Every list item's prefix is read from `ListLabelString` in one pass over all of
+        `paras` before any paragraph's numbering is touched: on 26.8 clearing one paragraph's
+        `NumberingRules` reflows the whole list, so a later paragraph's own `ListLabelString`
+        would otherwise already have shifted (item 2 reading "1." once item 1 lost its number)
+        by the time it is its own turn.
+
+        Deviation from the design: the Markdown filter renders a `* * * * *` line as an empty
+        `Horizontal Line`-styled paragraph (a border, no text), not literal text, so it cannot
+        reach `act_style_for` at all; the literal text is restored here before the pattern
+        match, the same way a list item's numbering is turned back into literal text, and for
+        the same reason (the act must survive copy and paste into other tools).
+        """
+        total = len(paras)
+        origins = [self._origin_of(p) for p in paras]
+        prefixes = {i: act_styles_module.list_prefix(p.ListLabelString)
+                   for i, p in enumerate(paras) if origins[i] == "list"}
+        for i, para in enumerate(paras):
+            if para.ParaStyleName == "Horizontal Line" and not para.getString():
+                with self._recording(True):
+                    cur = container.createTextCursorByRange(para.getStart())
+                    container.insertString(cur, "* * * * *", False)
+                para.ParaStyleName = "LibreLex Separatore"
+                continue
+            origin = origins[i]
+            if origin == "list":
+                with self._recording(True):
+                    cur = container.createTextCursorByRange(para.getStart())
+                    container.insertString(cur, prefixes[i], False)
+                with suppress(Exception):
+                    para.setPropertyToDefault("NumberingRules")
+                with suppress(Exception):
+                    para.NumberingStyleName = ""
+            style = act_styles_module.act_style_for(para.getString(), origin, total - 1 - i)
+            para.ParaStyleName = style
+
     # --- writing actions -----------------------------------------------------
     def _target(self, where: str):
         """(collapsed cursor, container XText) for `cursor` | `end` | `after:<id>`."""
@@ -420,7 +513,8 @@ class DocumentAdapter:
         c.gotoRange(last.getEnd(), True)
         container.insertTextContent(c, bm, True)
 
-    def _insert_block(self, cur, container, markdown, bookmark, author) -> tuple[int, int]:
+    def _insert_block(self, cur, container, markdown, bookmark, author,
+                      act_styles=False) -> tuple[int, int]:
         """Shared by insert_markdown and replace_selection; caller holds the undo context."""
         with self._identity(author):
             with self._recording(True):
@@ -436,16 +530,19 @@ class DocumentAdapter:
                     last -= 1
                     paras = _paragraphs_of(container)
                 self._fix_first_style(paras[i0], markdown)
+                if act_styles:
+                    self.ensure_act_styles()
+                    self._apply_act_styles(container, paras[i0:last + 1], author)
                 if bookmark:
                     self._add_bookmark(container, paras[i0], paras[last], bookmark)
         return i0, last
 
     def insert_markdown(self, where: str, markdown: str, undo_label: str,
-                        bookmark=None, author=None) -> dict:
+                        bookmark=None, author=None, act_styles=False) -> dict:
         cur, container = self._target(where)
         prefix = self._prefix_for(container, cur)
         with self._undo(undo_label):
-            i0, last = self._insert_block(cur, container, markdown, bookmark, author)
+            i0, last = self._insert_block(cur, container, markdown, bookmark, author, act_styles)
         return {"from_id": f"{prefix}{i0}", "to_id": f"{prefix}{last}"}
 
     def replace_selection(self, markdown: str, undo_label: str) -> dict:
@@ -663,12 +760,135 @@ class DocumentAdapter:
                 f.dispose()
         return len(targets)
 
+    # --- letterhead (design §5.2, §5.3) ---------------------------------------
+    def _odt_copy_of(self, url: str, tmpdir: str):
+        """A same-content `.odt` copy of `url`, opened hidden/read-only/macro-free (design §6).
 
-def read_reference(ctx, url: str) -> dict:
-    """Read a lawyer-chosen "similar case" file into a hidden, read-only document opened
-    through LibreOffice's own filters, and return its body/footnote/table-cell text (design
-    §5.2). The document is loaded invisibly (`Hidden`) and never edited (`ReadOnly`), and is
-    always closed before this function returns, whether the read succeeded or not.
+        Deviation from the brief: `loadStylesFromURL` called directly on a `.docx` source
+        does not carry the header, the footer or their images on 26.8 (probed: the same call
+        on an `.odt` source does), presumably because a foreign format's page setup lives in
+        the document body, not in a style resource the loader can read on its own. Every
+        source is therefore normalised to `.odt` first through an ordinary hidden load and
+        `storeToURL`, and `loadStylesFromURL` always reads that copy; the odt copy lives in
+        `tmpdir` (0700, spec §8.4), which the caller removes.
+        """
+        desktop = self.ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.frame.Desktop", self.ctx)
+        source = desktop.loadComponentFromURL(
+            url, "_blank", 0, (prop("Hidden", True), prop("ReadOnly", True),
+                               prop("MacroExecutionMode", 0), prop("UpdateDocMode", 0)))
+        if source is None:
+            raise DocumentActionError("impossibile aprire il file")
+        try:
+            copy_path = os.path.join(tmpdir, "letterhead.odt")
+            source.storeToURL(uno.systemPathToFileUrl(copy_path), (prop("FilterName", "writer8"),))
+        finally:
+            with suppress(Exception):
+                source.close(True)
+        return copy_path
+
+    def apply_letterhead(self, url: str | None) -> dict:
+        """Bring a letterhead template's page style into the document, then the act styles.
+
+        Two `loadStylesFromURL` calls, in this order: the first brings only the page and
+        frame styles (`LoadTextStyles` False), so the document's own paragraph styles are
+        never touched, even with `OverwriteStyles` True; the second brings the template's own
+        text styles (`LibreLex` included) without overwriting anything (`OverwriteStyles`
+        False), so a lawyer's own adjustment already in the document survives, and a
+        `LibreLex` style the template itself adjusted comes in as the template has it. With
+        `url` None (no letterhead chosen), only `ensure_act_styles()` runs.
+        """
+        loaded = False
+        page_style = "Standard"
+        if url:
+            name = unquote(url.rsplit("/", 1)[-1])
+            tmpdir = tempfile.mkdtemp(prefix="librelex-letterhead-")          # 0700 (spec §8.4)
+            try:
+                copy_path = self._odt_copy_of(url, tmpdir)
+                copy_url = uno.systemPathToFileUrl(copy_path)
+                loader = self.doc.getStyleFamilies()
+                loader.loadStylesFromURL(copy_url, (
+                    prop("LoadPageStyles", True), prop("LoadFrameStyles", True),
+                    prop("LoadTextStyles", False), prop("LoadNumberingStyles", False),
+                    prop("OverwriteStyles", True)))
+                loader.loadStylesFromURL(copy_url, (
+                    prop("LoadPageStyles", False), prop("LoadFrameStyles", False),
+                    prop("LoadTextStyles", True), prop("LoadNumberingStyles", False),
+                    prop("OverwriteStyles", False)))
+                with suppress(Exception):
+                    page_style = self.doc.getCurrentController().getViewCursor().PageStyleName
+                if page_style != "Standard":
+                    with suppress(Exception):
+                        standard = (self.doc.getStyleFamilies().getByName("PageStyles")
+                                   .getByName("Standard"))
+                        if standard.HeaderIsOn:
+                            cursor = self.doc.Text.createTextCursorByRange(self.doc.Text.Start)
+                            cursor.PageDescName = "Standard"
+            except Exception as e:
+                raise DocumentActionError(f"carta intestata non applicabile: {name}") from e
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            loaded = True
+        return {"letterhead": loaded, "created": self.ensure_act_styles(),
+                "page_style": page_style}
+
+
+def make_letterhead(ctx, source_url: str, out_path: str) -> str:
+    """Build a `.ott` letterhead template from an odt/docx/doc source (design §5.2, §5.4).
+
+    Refuses to overwrite an existing template. The template is built in a fresh hidden Writer
+    document, through the same `apply_letterhead` the panel uses, so it carries the source's
+    page style (header, footer, any logo) and the `LibreLex` act styles; the body stays empty.
+    """
+    basename = os.path.basename(out_path)
+    if os.path.exists(out_path):
+        raise DocumentActionError(f"modello già presente: {basename}")
+    os.makedirs(os.path.dirname(out_path) or ".", mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(out_path) or ".", 0o700)
+    desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    doc = desktop.loadComponentFromURL(
+        "private:factory/swriter", "_blank", 0, (prop("Hidden", True),))
+    try:
+        DocumentAdapter(ctx, doc).apply_letterhead(source_url)
+        try:
+            doc.storeToURL(uno.systemPathToFileUrl(out_path),
+                           (prop("FilterName", "writer8_template"),))
+        except Exception as e:
+            raise DocumentActionError(f"modello non salvato: {basename}") from e
+    finally:
+        with suppress(Exception):
+            doc.close(True)
+    return out_path
+
+
+def _pdf_frames(model) -> list:
+    """Every shape of every page of a Draw-imported PDF with non-empty text, as
+    `pdftext.Frame` tuples `(page, y, x, height, text)` (design §4.2)."""
+    frames = []
+    pages = model.DrawPages
+    for page_index in range(pages.getCount()):
+        page = pages.getByIndex(page_index)
+        for shape_index in range(page.getCount()):
+            shape = page.getByIndex(shape_index)
+            try:
+                text = shape.getString()
+            except Exception:
+                continue
+            if not text:
+                continue
+            pos, size = shape.Position, shape.Size
+            frames.append((page_index + 1, pos.Y, pos.X, size.Height, text))
+    return frames
+
+
+def read_document(ctx, url: str) -> dict:
+    """Read a file (a lawyer-chosen "similar case", a case attachment, or a letterhead
+    source) into a hidden, read-only document opened through LibreOffice's own filters, and
+    return its text (design §4.2, §5.2). A `.pdf` goes through the Draw import filter and its
+    text frames are rebuilt into reading-order lines (`pdftext.rebuild_lines`); every other
+    supported format goes through the Writer model's body/footnote/table-cell text, as before.
+    The document is loaded invisibly (`Hidden`) and never edited (`ReadOnly`), and is always
+    closed before this function returns, whether the read succeeded or not.
 
     The file comes from outside the lawyer's own work (a client's act, an attachment), so it
     is loaded with its macros disabled and its links left alone: `MacroExecutionMode` 0 is
@@ -676,23 +896,36 @@ def read_reference(ctx, url: str) -> dict:
     `com.sun.star.document.UpdateDocMode.NO_UPDATE` (no linked section, DDE field or database
     lookup is refreshed while we read it).
     """
-    name = unquote(url.rsplit("/", 1)[-1])
+    name = re.sub(r"[\x00-\x1f\x7f]+", " ", unquote(url.rsplit("/", 1)[-1])).strip()[:120]
+    is_pdf = name.lower().endswith(".pdf")
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    load_props = [prop("Hidden", True), prop("ReadOnly", True),
+                  prop("MacroExecutionMode", 0), prop("UpdateDocMode", 0)]
+    if is_pdf:
+        load_props.append(prop("FilterName", "draw_pdf_import"))
     try:
-        model = desktop.loadComponentFromURL(
-            url, "_blank", 0, (prop("Hidden", True), prop("ReadOnly", True),
-                               prop("MacroExecutionMode", 0), prop("UpdateDocMode", 0)))
+        model = desktop.loadComponentFromURL(url, "_blank", 0, tuple(load_props))
     except Exception as e:
         raise DocumentActionError(f"impossibile aprire il file: {name}") from e
     if model is None:
         raise DocumentActionError(f"impossibile aprire il file: {name}")
     try:
+        if is_pdf:
+            if not hasattr(model, "DrawPages"):
+                raise DocumentActionError(f"impossibile aprire il file: {name}")
+            text = rebuild_lines(_pdf_frames(model))
+            if not text:
+                raise DocumentActionError(f"PDF senza testo (scansione): non leggibile: {name}")
+            return {"name": name, "text": text, "chars": len(text), "kind": "pdf"}
         if not hasattr(model, "Text"):
             raise DocumentActionError(
-                f"formato non supportato (usa odt, docx, rtf o txt): {name}")
+                f"formato non supportato (usa odt, docx, doc, rtf, txt o pdf): {name}")
         paragraphs = DocumentAdapter(ctx, model).read_paragraphs()
         text = "\n\n".join(p["text"] for p in paragraphs)
-        return {"name": name, "text": text, "chars": len(text)}
+        return {"name": name, "text": text, "chars": len(text), "kind": "writer"}
     finally:
         with suppress(Exception):
             model.close(True)
+
+
+read_reference = read_document

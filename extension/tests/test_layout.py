@@ -3,13 +3,22 @@ import pytest
 
 from librelex_ext.layout import (
     ACTIONS,
+    ATTACHMENTS_H,
     BUSY_DISABLED,
+    BUTTON_H,
     CONSENT_BUTTONS,
+    CONSENT_LABELS,
     CONTROLS,
+    DRAFT_AREA_H,
+    DRAFT_CONSENT,
+    DRAFT_CONSENT_H,
+    DRAFT_CONSENT_TEXT_H,
+    DRAFT_SHARED,
+    DRAFT_STEPS,
     FIELD_ROWS,
     GAP,
-    GRAY,
     KINDS,
+    LOG_H,
     MARGIN,
     MIN_WIDTH,
     NOTICE,
@@ -21,21 +30,12 @@ from librelex_ext.layout import (
     total_height,
 )
 
-_FIELD_NAMES = {f"FieldLabel{n}" for n in range(1, FIELD_ROWS + 1)} | {
-    f"Field{n}" for n in range(1, FIELD_ROWS + 1)}
-_QUESTION_NAMES = {f"QuestionLabel{n}" for n in range(1, FIELD_ROWS + 1)} | {
-    f"Answer{n}" for n in range(1, FIELD_ROWS + 1)}
-
 EXPECTED = {
     "Actions": {"Notice", "DocumentLabel", "ListCitations", "VerifyDocument", "VerifySelection",
                 "Cancel", "ReferenceLabel", "Input", "Send", "Research", "ShowText", "InsertNorm",
                 "ConsentText", "ConsentDocument", "ConsentOnce", "ConsentDeny", "Progress",
                 "Status", "Settings", "Usage"},
-    "Drafting": {"TemplateSearch", "TemplateRefresh", "Template", "TemplateNotes", "FieldsLabel",
-                 "NotesLabel", "Notes", "ReferenceInfo", "ReferenceBrowse", "ReferenceClear",
-                 "Start", "PartitionsLabel", "Partitions", "ResumeInput", "Resume",
-                 "DraftStatus"} | _FIELD_NAMES,
-    "Questions": {"QuestionsHint", "Continue", "QuestionsStatus"} | _QUESTION_NAMES,
+    "Drafting": set().union(*DRAFT_STEPS.values()) | set(DRAFT_SHARED),
     "Citations": {"CitationsHint", "Citations"},
     "Answers": {"Clear", "Transcript"},
 }
@@ -52,19 +52,108 @@ def _no_overlap(controls, width):
             assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (a, b)
 
 
+def _drafting_groups(controls):
+    by = {c.name: c for c in controls}
+    for step, names in DRAFT_STEPS.items():
+        yield step, [by[n] for n in (*names, *DRAFT_SHARED)]
+
+
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("width", [MIN_WIDTH, WIDTH, 260])
 def test_each_kind_fits_its_width_without_overlaps(kind, width):
     controls = build(kind, width)
-    _no_overlap(controls, width)
+    if kind == "Drafting":
+        for _step, group in _drafting_groups(controls):
+            _no_overlap(group, width)
+        assert len({c.name for c in controls}) == len(controls)
+    else:
+        _no_overlap(controls, width)
     assert {c.name for c in controls} == EXPECTED[kind]
-    assert total_height(controls) == total_height(build(kind, WIDTH))   # width-independent height
+    assert total_height(controls) == total_height(build(kind, WIDTH))
+
+
+def test_drafting_steps_share_one_area_and_the_status_sits_under_it():
+    controls = build("Drafting", WIDTH)
+    by = {c.name: c for c in controls}
+    names = {c.name for c in controls}
+    assert set().union(*DRAFT_STEPS.values()) | set(DRAFT_SHARED) == names
+    for step, group in _drafting_groups(controls):
+        for c in group:
+            if c.name not in DRAFT_SHARED:
+                assert c.y >= MARGIN and c.y + c.h <= MARGIN + DRAFT_AREA_H, (step, c.name)
+    assert by["DraftStatus"].y == MARGIN + DRAFT_AREA_H + GAP
+    assert total_height(controls) <= 440
+    for name in (*DRAFT_STEPS[2], *DRAFT_STEPS[3], *DRAFT_STEPS[4]):
+        assert by[name].props.get("Visible") is False, name        # only step 1 shows at first
+    for name in ("TemplateSearch", "Template", "Notes", "Attachments", "Start", "Letterhead"):
+        assert by[name].props.get("Visible", True) is True, name
+    # the consent block is one block, shared by steps 2 and 3, right above the status
+    assert set(DRAFT_CONSENT) <= set(DRAFT_STEPS[2]) and set(DRAFT_CONSENT) <= set(DRAFT_STEPS[3])
+    text, document, once, deny = (by[n] for n in DRAFT_CONSENT)
+    assert text.y == MARGIN + DRAFT_AREA_H - DRAFT_CONSENT_H and text.h == DRAFT_CONSENT_TEXT_H
+    assert document.y == text.y + text.h + GAP and once.y == deny.y == document.y + BUTTON_H + GAP
+    assert deny.y + deny.h <= MARGIN + DRAFT_AREA_H
+    assert by["Continue"].y + by["Continue"].h <= text.y                # step 2 fits above it
+    assert by["DraftCancel"].y + by["DraftCancel"].h <= text.y           # step 3 too
+    assert [by[n].props["Label"] for n in DRAFT_CONSENT[1:]] == list(CONSENT_LABELS)
+
+
+def test_step_one_rows():
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    assert by["Attachments"].props["Dropdown"] is False and by["Attachments"].h == ATTACHMENTS_H
+    assert by["AttachmentAdd"].y == by["AttachmentRemove"].y
+    assert by["AttachmentRemove"].props["Enabled"] is False
+    assert by["ReferenceInfo"].y == by["ReferenceBrowse"].y == by["ReferenceClear"].y
+    assert by["ReferenceClear"].x + by["ReferenceClear"].w == WIDTH - MARGIN
+    assert by["ReferenceBrowse"].x + by["ReferenceBrowse"].w + GAP == by["ReferenceClear"].x
+    assert by["ReferenceInfo"].x + by["ReferenceInfo"].w <= by["ReferenceBrowse"].x
+    assert by["LetterheadLabel"].y == by["Letterhead"].y == by["LetterheadAdd"].y
+    assert by["Letterhead"].props["Dropdown"] is True
+    assert by["LetterheadAdd"].x + by["LetterheadAdd"].w == WIDTH - MARGIN
+    assert by["Start"].props["Enabled"] is False and by["Start"].y > by["Letterhead"].y
+    order = [c.name for c in build("Drafting", WIDTH) if c.name in DRAFT_STEPS[1]]
+    assert order.index("Notes") < order.index("Attachments") < order.index("ReferenceInfo") \
+        < order.index("Letterhead") < order.index("Start")
+
+
+def test_steps_two_three_four_rows():
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    for n in range(1, FIELD_ROWS + 1):
+        label, edit = by[f"QuestionLabel{n}"], by[f"Answer{n}"]
+        assert edit.y == label.y + label.h and label.props["MultiLine"] is True
+    assert by["QuestionsHint"].props["Label"].endswith(
+        "una casella vuota vale come risposta non disponibile.")
+    assert by["Log"].props["ReadOnly"] is True and by["Log"].h == LOG_H
+    assert by["Expected"].props["Dropdown"] is False and by["DraftCancel"].props["Enabled"] is False
+    assert by["Summary"].props["ReadOnly"] is True
+    assert by["VerifyAct"].props["Label"] == "Verifica citazioni"
+    assert by["NewDraft"].props["Label"] == "Nuova redazione"
+    assert by["Resume"].props["Label"] == "Riprendi"
+    assert by["ResumeInput"].y < by["Resume"].y < by["NewDraft"].y
+
+
+def test_workbench_buttons_are_wired():
+    for name, command in (("AttachmentAdd", "attachment_add"),
+                          ("AttachmentRemove", "attachment_remove"),
+                          ("LetterheadAdd", "letterhead_add"), ("DraftCancel", "cancel"),
+                          ("VerifyAct", "verify_act"), ("NewDraft", "draft_new"),
+                          ("DraftConsentDocument", "consent_document"),
+                          ("DraftConsentOnce", "consent_once"),
+                          ("DraftConsentDeny", "consent_deny")):
+        assert ACTIONS[name] == command and name in TOOLTIPS
+    for name in ("AttachmentAdd", "AttachmentRemove", "LetterheadAdd", "Letterhead", "VerifyAct",
+                 "NewDraft", "Start", "Resume", "Continue"):
+        assert name in BUSY_DISABLED
+    assert not (set(DRAFT_CONSENT) | {"DraftCancel"}) & set(BUSY_DISABLED)
+    assert KINDS == ("Actions", "Drafting", "Citations", "Answers")
+    with pytest.raises(ValueError):
+        build("Questions", WIDTH)
 
 
 def test_kinds_partition_the_controls_and_actions():
     all_names = [c.name for k in KINDS for c in build_all(WIDTH)[k]]
     assert len(all_names) == len(set(all_names))   # every control name is unique across the deck
-    # BUSY_DISABLED now spans several panels (Drafting/Questions controls disabled while the
+    # BUSY_DISABLED now spans several steps of the Drafting panel (controls disabled while the
     # core is busy too), so its invariant is "every name is a real control", same as ACTIONS.
     assert set(ACTIONS) <= set(all_names) and set(BUSY_DISABLED) <= set(all_names)
     assert set(TOOLTIPS) <= set(all_names)
@@ -105,7 +194,7 @@ def test_consent_block_is_hidden_and_takes_two_rows(width):
     by = {c.name: c for c in build("Actions", width)}
     text = by["ConsentText"]
     assert text.kind == "FixedText" and text.h == 40           # the question is ~110 characters
-    assert text.props["MultiLine"] is True and text.props["TextColor"] == GRAY
+    assert text.props["MultiLine"] is True
     document, once, deny = (by[name] for name in CONSENT_BUTTONS)
     assert [b.props["Label"] for b in (document, once, deny)] == ["Per questo documento",
                                                                   "Solo stavolta", "Annulla"]
@@ -149,21 +238,14 @@ def test_drafting_panel_rows_and_hidden_blocks():
     assert by["Partitions"].props["Dropdown"] is False
     assert by["ResumeInput"].props["Visible"] is False and by["Resume"].props["Visible"] is False
     assert by["DraftStatus"].props["Label"] == "Scegli un atto"
-    order = [c.name for c in build("Drafting", WIDTH)]
-    assert (order.index("Start") < order.index("PartitionsLabel") < order.index("Resume")
-            < order.index("DraftStatus"))
-    assert total_height(build("Drafting", WIDTH)) <= 460
 
 
-def test_questions_panel_rows_hidden_until_needed():
-    by = {c.name: c for c in build("Questions", WIDTH)}
-    for n in range(1, FIELD_ROWS + 1):
-        label, edit = by[f"QuestionLabel{n}"], by[f"Answer{n}"]
-        assert label.props["MultiLine"] is True and edit.y == label.y + label.h + GAP
-        assert label.props["Visible"] is False and edit.props["Visible"] is False
-    assert by["Continue"].props["Visible"] is False
-    assert by["QuestionsStatus"].props["Label"] == "Nessuna domanda in sospeso"
-    assert total_height(build("Questions", WIDTH)) <= 380
+def test_continue_y_tracks_the_visible_questions_and_never_exceeds_the_table_position():
+    from librelex_ext.layout import continue_y
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    assert continue_y(FIELD_ROWS) == by["Continue"].y
+    assert continue_y(0) < continue_y(1) < continue_y(2) < continue_y(FIELD_ROWS)
+    assert continue_y(FIELD_ROWS + 3) == continue_y(FIELD_ROWS)          # clamped
 
 
 def test_actions_lost_the_draft_button_and_the_new_actions_are_wired():
@@ -174,4 +256,23 @@ def test_actions_lost_the_draft_button_and_the_new_actions_are_wired():
                           ("ReferenceClear", "reference_clear"), ("Start", "draft_start"),
                           ("Resume", "draft_resume"), ("Continue", "draft_answer")):
         assert ACTIONS[name] == command and name in BUSY_DISABLED and name in TOOLTIPS
-    assert KINDS == ("Actions", "Drafting", "Questions", "Citations", "Answers")
+    assert KINDS == ("Actions", "Drafting", "Citations", "Answers")
+
+
+def test_section_labels_are_fixedlines_with_no_control_carrying_color():
+    """F7: FieldsLabel, NotesLabel, AttachmentsLabel, ExpectedLabel and PartitionsLabel are
+    the five section rules of the Drafting panel (design review §5 item 9): a FixedLine reads
+    as a header on its own emphasis, so no control anywhere in the deck needs a TextColor or
+    a BackgroundColor to stand out (LetterheadLabel is an inline row label, not a section
+    header, and stays FixedText).
+    """
+    by = {c.name: c for c in build("Drafting", WIDTH)}
+    section_labels = ("FieldsLabel", "NotesLabel", "AttachmentsLabel", "ExpectedLabel",
+                      "PartitionsLabel")
+    for name in section_labels:
+        assert by[name].kind == "FixedLine", name
+    assert by["LetterheadLabel"].kind == "FixedText"
+    for kind in KINDS:
+        for c in build(kind, WIDTH):
+            assert "TextColor" not in c.props, (kind, c.name)
+            assert "BackgroundColor" not in c.props, (kind, c.name)
