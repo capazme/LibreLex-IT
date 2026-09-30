@@ -25,3 +25,6 @@ spike/lo_profile/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Local tool state
+.freebuff/
