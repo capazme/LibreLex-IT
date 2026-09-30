@@ -1,0 +1,35 @@
+# Weekly dependency PRs, grouped so a routine bump is one PR per project, not ten.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/core"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(core)"
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "core"]
+
+  - package-ecosystem: "uv"
+    directory: "/extension"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(extension)"
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "extension"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(ci)"
+    labels: ["dependencies", "ci"]
