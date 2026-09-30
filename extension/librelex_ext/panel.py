@@ -15,7 +15,7 @@ from urllib.parse import unquote
 
 import uno
 import unohelper
-from com.sun.star.awt import Size, XActionListener, XItemListener, XWindowListener
+from com.sun.star.awt import Size, XActionListener, XCallback, XItemListener, XWindowListener
 from com.sun.star.datatransfer.dnd import XDropTargetListener
 from com.sun.star.lang import XComponent
 from com.sun.star.ui import LayoutSize, XSidebarPanel, XToolPanel, XUIElement, XUIElementFactory
@@ -208,7 +208,8 @@ class PanelFactory(unohelper.Base, XUIElementFactory):
 
 
 class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
-            XActionListener, XItemListener, XWindowListener, XDropTargetListener):
+            XActionListener, XItemListener, XWindowListener, XDropTargetListener,
+            XCallback):
     """One panel of the deck. Its ``kind`` decides which controls it builds, which listeners
     it registers and which of the View methods actually do something: each one is a no-op
     when its control belongs to another panel, so a misrouted call can never raise inside a
@@ -249,6 +250,10 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         # consent is answered or cleared
         self._draft_status_text = ""
         self._draft_status_started = False
+        # sidebar API calls (setTitle, collapse) queued until the sidebar callback that
+        # triggered them has returned: see _sidebar_later
+        self._sidebar_ops = []
+        self._async_cb = None
 
     # --- XUIElement ------------------------------------------------------------
     def getRealInterface(self):
@@ -378,6 +383,7 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.panel_set.composite.detach(self.kind)
         self.panel_set = None
         self.session = None
+        self._sidebar_ops = []
 
     def _store_typed_values(self):
         """Push the Redazione panel's rows into the session's drafting state (fields, notes
@@ -1059,8 +1065,19 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             if focus and self.model.hasByName(focus):
                 with suppress(Exception):
                     self.window.getControl(focus).setFocus()
-        if previous == 1 and step == 3:
-            self._collapse_other_panels()
+        title = _STEP_TITLES.get(step, "")
+        collapse = previous == 1 and step == 3
+
+        def update_title():
+            with suppress(Exception):
+                self._panel_by_id("LibreLexRedazionePanel").setTitle(title)
+            if collapse:
+                # Collapsing another panel can cause LibreOffice to rebuild the deck. Give
+                # the title callback its own completed main-loop turn first; doing both in
+                # one callback can still re-enter CreatePanels while it registers the deck.
+                self._sidebar_later(self._collapse_other_panels)
+
+        self._sidebar_later(update_title)
 
     def _apply_drafting_state(self):
         """What ``set_step`` and ``set_consent`` share on the Drafting panel: which step's
@@ -1099,8 +1116,28 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
             self.model.getByName("DraftStatus").Label = render_draft_consent_status(summary or {})
         else:
             self.model.getByName("DraftStatus").Label = self._draft_status_text
-        with suppress(Exception):
-            self._panel_by_id("LibreLexRedazionePanel").setTitle(_STEP_TITLES.get(step, ""))
+
+    def _sidebar_later(self, fn):
+        """Run ``fn`` on the UI thread once the sidebar callback we are in has returned.
+
+        The sidebar's own UNO API (XDecks/XPanels) must never be entered while LibreOffice
+        is still building this deck: ``SfxUnoPanel``'s constructor calls
+        ``SidebarController::CreateDeck``, which re-runs ``CreatePanels``, and every panel
+        not yet registered in the deck (registration happens only after the whole loop) is
+        created again, recursively, until the process aborts (Signal 6). An ``AsyncCallback``
+        lands after ``CreatePanels`` has finished, where the same calls are harmless.
+        """
+        self._sidebar_ops.append(fn)
+        if self._async_cb is None:
+            self._async_cb = self.ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.awt.AsyncCallback", self.ctx)
+        self._async_cb.addCallback(self, None)
+
+    def notify(self, data):                     # XCallback, UI thread
+        ops, self._sidebar_ops = self._sidebar_ops, []
+        for fn in ops:
+            with suppress(Exception):
+                fn()
 
     def _panel_by_id(self, panel_id):
         """The live sidebar panel named ``panel_id``, may raise (every caller wraps it in its
@@ -1114,8 +1151,8 @@ class Panel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent,
         """Collapse Azioni and Citazioni when a drafting starts (design §3.5): best effort,
         never re-expanded by this panel, and a no-op wherever the sidebar API disagrees
         (headless LibreOffice, an already-collapsed panel)."""
-        with suppress(Exception):
-            for panel_id in ("LibreLexActionsPanel", "LibreLexCitationsPanel"):
+        for panel_id in ("LibreLexActionsPanel", "LibreLexCitationsPanel"):
+            with suppress(Exception):
                 self._panel_by_id(panel_id).collapse()
 
     def set_log(self, lines):
