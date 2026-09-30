@@ -16,7 +16,10 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["headless: runs a macro inside soffice --headless (skipped when soffice is absent)"]
+markers = [
+    "headless: runs a macro inside soffice --headless (skipped when soffice is absent)",
+    "gui: opens a visible LibreOffice (skipped unless LIBRELEX_GUI_TESTS=1)",
+]
 
 [tool.ruff]
 line-length = 100
