@@ -9,10 +9,43 @@ noted per release.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-30
+
+Core 0.5.0. Milestone M3.6: the Redazione drafting workbench. Includes 0.6.0 (guided drafting
+with a deterministic base), which was never published on its own.
+
 ### Added
 
+- **Redazione** panel: drafting in four steps (Atto e dati, Domande, In corso, Fine) with the
+  step in the status line and in the panel title. Pick the act from the mcp-legal-it catalogue,
+  fill its typed fields, answer the model's structured questions, resume a cut drafting.
+- A deterministic base: the act starts from the generator's text when mcp-legal-it has one,
+  and the model only completes it, section by section, as redlines.
+- Case attachments (PDF included, read through Draw) and a reference act, each sent to the
+  model only after consent; one consent covers the whole set of attachments.
+- Letterhead templates and the firm's act styles: the act is written with the LibreLex styles
+  on the letterhead page style; a script builds a letterhead from an existing document.
+- `replace_text`: a grounded, tracked replacement of the template placeholders.
+- `librelex-dev` CLI commands for templates and drafting; the drafting recipe comes from the
+  mcp-legal-it plugin.
 - Community files: contributing guide, code of conduct, security policy, issue and pull
   request templates, Dependabot, a `release` workflow that publishes the `.oxt` on a tag.
+- A GUI test that drives a drafting through the real Writer sidebar in a visible LibreOffice
+  (`LIBRELEX_GUI_TESTS=1`).
+
+### Changed
+
+- The deck has four panels (Azioni, Redazione, Citazioni, Risposte); the *Redigi da modello*
+  button in Azioni is gone, drafting lives in Redazione. Starting a drafting collapses Azioni
+  and Citazioni, best effort.
+
+### Fixed
+
+- LibreOffice aborted (Signal 6) when the sidebar was built with a drafting in progress: the
+  panel title and the collapse of the other panels entered the sidebar API while the deck
+  was still being built. Those calls now run in a later main-loop turn.
+- A core that fails to start, or a dead pipe, leaves the drafting untouched and is reported.
+- `replace_text` and `find_text` skip pending tracked deletions.
 
 ## [0.5.0] - 2026-09-19
 
